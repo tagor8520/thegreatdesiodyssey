@@ -1,13 +1,20 @@
 import * as THREE from 'three';
 import { terrainHeight } from './BiomeManager.js';
-import { disposeGroup } from './VoxelBatch.js';
+import { VoxelBatch, disposeGroup } from './VoxelBatch.js';
 import { ThirdPersonCamera } from './ThirdPersonCamera.js';
 
 // Match the rendered four-unit tile centers, including shoreline steps.
 export function tileHeight(x, z) { return terrainHeight(Math.floor(x / 4) * 4 + 2, Math.floor(z / 4) * 4 + 2); }
 
 export class Player {
-  constructor(scene, camera, bridges, { inputTarget = window, canvas, onCameraHint, spawn = new THREE.Vector3(-42, 3, -20) } = {}) {
+  constructor(scene, camera, bridges, {
+    inputTarget = window,
+    canvas,
+    onCameraHint,
+    spawn = new THREE.Vector3(-42, 3, -20),
+    orbitOptions = {},
+    castShadow = true,
+  } = {}) {
     this.camera = camera; this.bridges = bridges; this.inputTarget = inputTarget;
     this.enabled = true;
     this.spawn = spawn.clone(); this.position = spawn.clone(); this.velocity = new THREE.Vector3();
@@ -18,28 +25,39 @@ export class Player {
     const box = (parent, x, y, z, sx, sy, sz, color) => {
       if (!this.materials.has(color)) this.materials.set(color, new THREE.MeshStandardMaterial({ color, roughness: .85 }));
       const mesh = new THREE.Mesh(this.geometry, this.materials.get(color));
-      mesh.position.set(x, y, z); mesh.scale.set(sx, sy, sz); mesh.castShadow = mesh.receiveShadow = true; parent.add(mesh); return mesh;
+      mesh.position.set(x, y, z); mesh.scale.set(sx, sy, sz);
+      mesh.castShadow = castShadow; mesh.receiveShadow = castShadow; parent.add(mesh); return mesh;
     };
-    // Local +Z faces forward. All geometry is relative to the character's feet.
+    const staticBatch = new VoxelBatch();
+    const staticBox = (x, y, z, sx, sy, sz, color) => staticBatch.box(x, y, z, sx, sy, sz, color);
+
+    // Local +Z faces forward. Animated limbs keep independent pivots; all
+    // non-animated body voxels share one instanced palette draw.
     this.legs = [-1, 1].map(side => {
       const pivot = new THREE.Group(); pivot.position.set(side * .4, 1.6, 0); this.root.add(pivot);
       box(pivot, 0, -.6, 0, .65, 1.2, .7, '#253c60'); box(pivot, 0, -1.4, .12, .7, .4, 1, '#f2e8cb'); return pivot;
     });
-    box(this.root, 0, 2.25, 0, 1.65, 1.4, .85, '#f5d795');
-    for (const side of [-1, 1]) box(this.root, side * .58, 2.25, .48, .5, 1.45, .18, '#387aac');
-    box(this.root, 0, 2.4, .46, .42, .38, .08, '#ed7148');
-    box(this.root, 0, 2.05, .46, .25, .2, .08, '#428e70');
+    staticBox(0, 2.25, 0, 1.65, 1.4, .85, '#f5d795');
+    for (const side of [-1, 1]) staticBox(side * .58, 2.25, .48, .5, 1.45, .18, '#387aac');
+    staticBox(0, 2.4, .46, .42, .38, .08, '#ed7148');
+    staticBox(0, 2.05, .46, .25, .2, .08, '#428e70');
     this.arms = [-1, 1].map(side => {
       const pivot = new THREE.Group(); pivot.position.set(side * 1.05, 2.8, 0); this.root.add(pivot);
       box(pivot, 0, -.5, 0, .5, 1, .65, '#387aac'); box(pivot, 0, -1.1, 0, .48, .4, .6, '#b9794e'); return pivot;
     });
-    box(this.root, 0, 3.6, 0, 1.3, 1.25, 1.15, '#b9794e');
-    box(this.root, 0, 4.2, -.06, 1.38, .3, 1.2, '#292322');
-    box(this.root, 0, 3.97, .01, 1.43, .25, 1.24, '#d52e37');
-    box(this.root, .83, 3.85, -.2, .4, .3, .45, '#db3942');
-    box(this.root, 1, 3.45, -.3, .25, .8, .2, '#d52e37');
-    for (const side of [-1, 1]) { box(this.root, side * .34, 3.68, .61, .58, .34, .15, '#18242d'); box(this.root, side * .34 - .12, 3.74, .7, .14, .1, .04, '#b7e5df'); }
-    box(this.root, 0, 3.7, .62, .18, .1, .15, '#18242d');
+    staticBox(0, 3.6, 0, 1.3, 1.25, 1.15, '#b9794e');
+    staticBox(0, 4.2, -.06, 1.38, .3, 1.2, '#292322');
+    staticBox(0, 3.97, .01, 1.43, .25, 1.24, '#d52e37');
+    staticBox(.83, 3.85, -.2, .4, .3, .45, '#db3942');
+    staticBox(1, 3.45, -.3, .25, .8, .2, '#d52e37');
+    for (const side of [-1, 1]) {
+      staticBox(side * .34, 3.68, .61, .58, .34, .15, '#18242d');
+      staticBox(side * .34 - .12, 3.74, .7, .14, .1, .04, '#b7e5df');
+    }
+    staticBox(0, 3.7, .62, .18, .1, .15, '#18242d');
+    const staticRoot = staticBatch.build();
+    staticRoot.traverse(object => { if (object.isMesh) object.castShadow = castShadow; });
+    this.root.add(staticRoot);
     scene.add(this.root);
     this.keydown = event => {
       if (!this.enabled) return;
@@ -52,7 +70,12 @@ export class Player {
     this.keyup = event => this.keys.delete(event.code);
     this.blur = () => { this.keys.clear(); this.jumpQueued = false; this.velocity.x = this.velocity.z = 0; };
     inputTarget.addEventListener('keydown', this.keydown); inputTarget.addEventListener('keyup', this.keyup); inputTarget.addEventListener('blur', this.blur);
-    this.orbit = new ThirdPersonCamera(camera, canvas, spawn, { groundHeight: tileHeight, onHint: onCameraHint });
+    this.orbit = new ThirdPersonCamera(camera, canvas, spawn, {
+      groundHeight: tileHeight,
+      clipCamera: (target, desired, radius, out) => bridges.clipCamera(target, desired, radius, out),
+      onHint: onCameraHint,
+      ...orbitOptions,
+    });
     this.updateBounds();
   }
   groundAt(x, z) { return Math.max(tileHeight(x, z), this.bridges.heightAt(x, z)); }

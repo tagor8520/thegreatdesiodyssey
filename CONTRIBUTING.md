@@ -30,13 +30,15 @@ We are an inclusive, welcoming community. Whether you're adding a detailed monum
 
 ---
 
-## 🗺️ The Low-Code State Contribution Guide
+## 🗺️ Experimental Low-Code State Format
 
-Not a Three.js expert? No problem! Our engine is designed to parse JSON schemas to generate new states, landmarks, and collectibles. You don't need to write complex WebGL code to add your home state to the map.
+The long-term goal is a validated content pipeline that generates chunked states, landmarks, and collectibles without requiring contributors to write Three.js code. The JSON below documents the proposed authoring direction.
 
-### Adding a New State via JSON
+> **Current status:** files under `public/content/states/` are not yet loaded by the current game runtime. A state contribution must include the runtime integration until the compiler described in `PROJECT_AUDIT.md` is implemented.
 
-To add a new state, create a new JSON file under `public/content/states/` (e.g., `punjab.json`). The engine will automatically parse this schema and generate the world.
+### Draft State JSON
+
+Draft state data belongs under `public/content/states/` (for example, `punjab.json`). Treat the format as experimental until a versioned schema and validator are added.
 
 **Example: `punjab.json`**
 ```json

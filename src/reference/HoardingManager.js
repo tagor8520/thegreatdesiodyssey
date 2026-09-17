@@ -5,13 +5,40 @@ import { tileHeight } from './Player.js';
 import { HOARDINGS } from './GameplayLayout.js';
 export { HOARDINGS } from './GameplayLayout.js';
 
+/** Board and separate post proxies leave the real under-sign opening clear. */
+export function createHoardingCameraBlockers() {
+  const boxes = [];
+  for (const spec of HOARDINGS) {
+    const ground = tileHeight(spec.x, spec.z);
+    const board = new THREE.Box3(
+      new THREE.Vector3(spec.x - 7.75, ground + 3.5, spec.z - .35),
+      new THREE.Vector3(spec.x + 7.75, ground + 9.5, spec.z + .35),
+    );
+    board.userData = { id: `hoarding:${spec.text}:board`, role: 'camera-blocker' };
+    boxes.push(board);
+    for (const dx of [-5.5, 5.5]) {
+      const post = new THREE.Box3(
+        new THREE.Vector3(spec.x + dx - .325, ground, spec.z - .325),
+        new THREE.Vector3(spec.x + dx + .325, ground + 7, spec.z + .325),
+      );
+      post.userData = { id: `hoarding:${spec.text}:post:${dx}`, role: 'camera-blocker' };
+      boxes.push(post);
+    }
+  }
+  return boxes;
+}
+
 export class HoardingManager {
-  constructor(scene) {
+  constructor(scene, { textureScale = 1 } = {}) {
+    if (!(textureScale > 0 && textureScale <= 1)) throw new RangeError('textureScale must be between 0 and 1');
     this.root = new THREE.Group(); this.root.name = 'biome-welcome-signs'; this.textures = []; this.disposed = false;
+    this.cameraBlockers = createHoardingCameraBlockers();
     for (const spec of HOARDINGS) {
-      const canvas = document.createElement('canvas'); canvas.width = 1024; canvas.height = 384;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(1024 * textureScale); canvas.height = Math.round(384 * textureScale);
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('Canvas2D is required for biome sign textures');
+      ctx.scale(textureScale, textureScale);
       ctx.fillStyle = spec.color; ctx.fillRect(0, 0, 1024, 384);
       ctx.strokeStyle = '#eac791'; ctx.lineWidth = 14; ctx.strokeRect(12, 12, 1000, 360);
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff4d8';
