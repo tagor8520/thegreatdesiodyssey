@@ -80,19 +80,19 @@ function geometryTransfers(geometry, includeColliders = false) {
   return transfers;
 }
 
-function bridgeTransferables(bridge) {
-  if (!bridge) return [];
+function structuralTransferables(structure) {
+  if (!structure) return [];
   return [
-    bridge.positions.buffer,
-    bridge.normals.buffer,
-    bridge.colors.buffer,
-    bridge.indices.buffer,
-    bridge.colliders.buffer,
-    bridge.collisionVertices.buffer,
-    bridge.collisionRingOffsets.buffer,
-    bridge.collisionPolygonOffsets.buffer,
-    bridge.collisionSpans.buffer,
-    bridge.collisionMasks.buffer,
+    structure.positions.buffer,
+    structure.normals.buffer,
+    structure.colors.buffer,
+    structure.indices.buffer,
+    structure.colliders.buffer,
+    structure.collisionVertices.buffer,
+    structure.collisionRingOffsets.buffer,
+    structure.collisionPolygonOffsets.buffer,
+    structure.collisionSpans.buffer,
+    structure.collisionMasks.buffer,
   ];
 }
 
@@ -144,7 +144,8 @@ async function buildTile(request) {
       ...geometryTransfers(context.land),
       ...geometryTransfers(context.water),
       ...waterDomainTransferables(context.waterDomain),
-      ...bridgeTransferables(context.bridge),
+      ...structuralTransferables(context.bridge),
+      ...structuralTransferables(context.landmarks),
       context.streetFurniture.placements.buffer,
       context.decorations.buffer,
       context.decorationClearances.buffer,

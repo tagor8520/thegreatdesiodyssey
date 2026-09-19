@@ -13,6 +13,7 @@ export const GEO_FIXTURE_MATRIX = Object.freeze([
   Object.freeze({ id: 'concave-building', category: 'concave', variants: Object.freeze(['openmaptiles']) }),
   Object.freeze({ id: 'courtyard-hole', category: 'hole', variants: Object.freeze(['openmaptiles']) }),
   Object.freeze({ id: 'stacked-bridge', category: 'bridge', variants: Object.freeze(['openmaptiles']) }),
+  Object.freeze({ id: 'landmark-opening', category: 'landmark', variants: Object.freeze(['openmaptiles']) }),
   Object.freeze({ id: 'mapped-coast', category: 'coast', variants: Object.freeze(['openmaptiles']) }),
   Object.freeze({ id: 'provider-equivalence', category: 'provider-schema', variants: Object.freeze(['openmaptiles', 'shortbread']) }),
 ]);
@@ -110,6 +111,21 @@ function bridgeLayers() {
   };
 }
 
+function landmarkLayers() {
+  return {
+    transportation: [line(55, [[0, 3450], [4096, 3450]], { class: 'tertiary', name: 'Monument Road' })],
+    landmark: [
+      polygon(56, [[[1250, 1400], [2846, 1400], [2846, 2350], [1250, 2350]]], {
+        kind: 'gateway', render_height: 34, opening_width: 900, name: 'Fixture Gateway',
+      }),
+      polygon(57, [[[3000, 700], [3600, 700], [3600, 1250], [3000, 1250]]], {
+        kind: 'monument', render_height: 22, opening_width: 240,
+      }),
+    ],
+    landuse: [polygon(58, [[[0, 0], [4096, 0], [4096, 4096], [0, 4096]]], { class: 'park' })],
+  };
+}
+
 function coastLayers() {
   return {
     transportation: [line(60, [[0, 2750], [2100, 2450], [4096, 2380]], { class: 'secondary', name: 'Coast Road' })],
@@ -147,6 +163,7 @@ function fixtureLayers(id, variant) {
   if (id === 'concave-building') return concaveLayers();
   if (id === 'courtyard-hole') return courtyardLayers();
   if (id === 'stacked-bridge') return bridgeLayers();
+  if (id === 'landmark-opening') return landmarkLayers();
   if (id === 'mapped-coast') return coastLayers();
   if (id === 'provider-equivalence') return providerLayers(variant);
   throw new RangeError(`Unknown geographic fixture: ${id}`);
@@ -238,6 +255,10 @@ export function geoFixtureTypedViews(compilation) {
       'positions', 'normals', 'colors', 'indices', 'colliders', 'collisionVertices',
       'collisionRingOffsets', 'collisionPolygonOffsets', 'collisionSpans', 'collisionMasks',
     ]],
+    ['landmarks', compilation.context.landmarks, [
+      'positions', 'normals', 'colors', 'indices', 'colliders', 'collisionVertices',
+      'collisionRingOffsets', 'collisionPolygonOffsets', 'collisionSpans', 'collisionMasks',
+    ]],
     ['context', compilation.context, ['decorations', 'decorationClearances', 'decorationMorphologies']],
     ['environment', compilation.context.environment, ['fields', 'topBiomeIds', 'topBiomeWeights', 'ground']],
     ['buildings', compilation.buildings, [
@@ -277,6 +298,7 @@ function semanticSnapshot(compilation) {
     decorationClearanceStride: compilation.context.decorationClearanceStride,
     streetFurniture: compilation.context.streetFurniture.meta,
     bridge: compilation.context.bridge.meta,
+    landmarks: compilation.context.landmarks.meta,
     labels: compilation.context.labels,
     biome: compilation.context.biome,
     buildings: compilation.buildings.meta,
@@ -315,7 +337,7 @@ function typedBytes(value) { return ArrayBuffer.isView(value) && !(value instanc
 export function collectGeoFixtureBudgetMetrics(compilation) {
   if (!compilation?.fixture) throw new TypeError('Compiled geographic fixture required');
   const presentDraws = [compilation.terrain, compilation.roads, compilation.context.land,
-    compilation.context.water, compilation.context.bridge, compilation.buildings]
+    compilation.context.water, compilation.context.bridge, compilation.context.landmarks, compilation.buildings]
     .reduce((count, geometry) => count + Number(Boolean(geometry?.indices?.length)), 0) +
     Number(Boolean(compilation.buildings?.detailIndices?.length));
   const decorationCounts = Array(DECORATION_TRIANGLES.length).fill(0);
@@ -341,7 +363,10 @@ export function collectGeoFixtureBudgetMetrics(compilation) {
     .reduce((total, field) => total + typedBytes(compilation.buildings?.[field]), 0) +
     ['colliders', 'collisionVertices', 'collisionRingOffsets', 'collisionPolygonOffsets',
       'collisionSpans', 'collisionMasks']
-      .reduce((total, field) => total + typedBytes(compilation.context.bridge?.[field]), 0);
+      .reduce((total, field) => total + typedBytes(compilation.context.bridge?.[field]), 0) +
+    ['colliders', 'collisionVertices', 'collisionRingOffsets', 'collisionPolygonOffsets',
+      'collisionSpans', 'collisionMasks']
+      .reduce((total, field) => total + typedBytes(compilation.context.landmarks?.[field]), 0);
   const waterDomainBytesPerTile = ['waterVertices', 'waterRingOffsets', 'waterPolygonOffsets', 'waterBounds',
     'waterClasses', 'waterFlowDirections', 'wetlandVertices', 'wetlandRingOffsets', 'wetlandPolygonOffsets',
     'wetlandBounds', 'waterways']
@@ -352,7 +377,7 @@ export function collectGeoFixtureBudgetMetrics(compilation) {
     drawCalls: presentDraws + decorationDraws + streetFurnitureAddedDrawCalls,
     triangles: rawTriangles(compilation.terrain) + rawTriangles(compilation.roads) +
       rawTriangles(compilation.context.land) + rawTriangles(compilation.context.water) +
-      rawTriangles(compilation.context.bridge) + rawTriangles(compilation.buildings) +
+      rawTriangles(compilation.context.bridge) + rawTriangles(compilation.context.landmarks) + rawTriangles(compilation.buildings) +
       compilation.buildings.detailIndices.length / 3 +
       decorationTriangles + streetFurnitureVisibleTriangles,
     buildingDetailBuildings: compilation.buildings.meta.buildingGrammar?.selectedBuildings ?? 0,
@@ -367,6 +392,13 @@ export function collectGeoFixtureBudgetMetrics(compilation) {
     bridgeBytesPerTile: compilation.context.bridge.meta.bytes ?? 0,
     bridgeAddedDrawCalls: Number(Boolean(compilation.context.bridge.indices.length)),
     bridgeRailPostsPerTile: compilation.context.bridge.meta.railPosts ?? 0,
+    landmarkCountPerTile: compilation.context.landmarks.meta.landmarks ?? 0,
+    landmarkCompoundsPerTile: compilation.context.landmarks.meta.compounds ?? 0,
+    landmarkBoxesPerTile: compilation.context.landmarks.meta.boxes ?? 0,
+    landmarkVisibleTriangles: compilation.context.landmarks.meta.triangles ?? 0,
+    landmarkBytesPerTile: compilation.context.landmarks.meta.bytes ?? 0,
+    landmarkAddedDrawCalls: Number(Boolean(compilation.context.landmarks.indices.length)),
+    landmarkOpeningsPerTile: compilation.context.landmarks.meta.openings ?? 0,
     streetFurnitureEntries: compilation.context.streetFurniture.meta.placements,
     streetFurnitureFamilies: STREET_FURNITURE_TRIANGLES.length,
     streetFurnitureVisibleTriangles,

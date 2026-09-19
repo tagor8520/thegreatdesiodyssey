@@ -38,6 +38,9 @@ function snapshotText(snapshot, metrics, report) {
   const bridgeFields = summary.bridgeProfiles?.map(record =>
     `${record.owner} segments:${record.segments} rails:${record.railRuns} piers:${record.piers} compounds:${record.compounds}`,
   ).join(' · ') || 'none';
+  const landmarkFields = summary.landmarkProfiles?.map(record =>
+    `${record.owner}${record.visible ? '*' : ''} landmarks:${record.landmarks} openings:${record.openings} compounds:${record.compounds} repeated:${record.repeatedModules}`,
+  ).join(' · ') || 'none';
   return [
     `DEBUG ${report.ok ? 'PASS' : 'OVER BUDGET'} · ${snapshot.lineSegments} lines${snapshot.truncated ? ' · line cap' : ''}`,
     `owners ${summary.owners.join(', ') || 'none'}`,
@@ -50,6 +53,7 @@ function snapshotText(snapshot, metrics, report) {
     `water fields ${formatBytes(metrics.waterDomainBytesPerTile)}/tile · ${waterFields}`,
     `building grammar visible:${metrics.buildingDetailBuildings} boxes:${metrics.buildingDetailBoxes} tris:${metrics.buildingDetailTriangles} draw:${metrics.buildingDetailAddedDrawCalls} ${formatBytes(metrics.buildingDetailBytesPerTile)}/tile · ${buildingFields}`,
     `bridge segments:${metrics.bridgeSegmentsPerTile} compounds:${metrics.bridgeCompoundsPerTile} tris:${metrics.bridgeVisibleTriangles} draw:${metrics.bridgeAddedDrawCalls} ${formatBytes(metrics.bridgeBytesPerTile)}/tile posts:${metrics.bridgeRailPostsPerTile} · ${bridgeFields}`,
+    `landmarks count:${metrics.landmarkCountPerTile} compounds:${metrics.landmarkCompoundsPerTile} boxes:${metrics.landmarkBoxesPerTile} openings:${metrics.landmarkOpeningsPerTile} tris:${metrics.landmarkVisibleTriangles} draw:${metrics.landmarkAddedDrawCalls} ${formatBytes(metrics.landmarkBytesPerTile)}/tile · ${landmarkFields}`,
     `street furniture entries:${metrics.streetFurnitureEntries} families:${metrics.streetFurnitureFamilies} active:${summary.streetFurniture?.activeDrawPools ?? 0} tris:${metrics.streetFurnitureVisibleTriangles} draw:${metrics.streetFurnitureAddedDrawCalls} GPU:${formatBytes(metrics.streetFurnitureGpuBytes)} tile:${formatBytes(metrics.streetFurnitureBytesPerTile)} · ${furnitureFields}`,
     `materials ${summary.materials?.ready ? 'ready' : 'generating'} ${formatBytes(metrics.materialTextureBytes)} · ${materials}`,
     `plant IR ${summary.plantGrammar?.profile ?? 'none'} cache:${metrics.plantArchetypes} nodes:${metrics.plantSkeletonNodes} modules:${metrics.plantSkeletonModules}`,

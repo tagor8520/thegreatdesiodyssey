@@ -133,6 +133,9 @@ test('feature versions provide stable namespaces and explicit unavailable schema
   assert.equal(featureAvailable('bridgeGrammar'), true);
   assert.equal(featureNamespace('bridgeGrammar'), `gdo:bridgeGrammar:v${GDO_FEATURE_VERSIONS.bridgeGrammar}`);
   assert.ok(GDO_GENERATOR_VERSION.includes('bridgeGrammar@1'));
+  assert.equal(featureAvailable('landmarkGrammar'), true);
+  assert.equal(featureNamespace('landmarkGrammar'), `gdo:landmarkGrammar:v${GDO_FEATURE_VERSIONS.landmarkGrammar}`);
+  assert.ok(GDO_GENERATOR_VERSION.includes('landmarkGrammar@1'));
   assert.ok(GDO_GENERATOR_VERSION.includes('vegetationClearance@1'));
   assert.ok(GDO_GENERATOR_VERSION.includes('vegetationWind@1'));
   assert.throws(() => featureNamespace('not-a-feature'), RangeError);

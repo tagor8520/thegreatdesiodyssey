@@ -96,7 +96,7 @@ function assertMountedSnapshotsEqual(first, second) {
 
 test('canonical geographic fixture matrix covers every required topology and provider schema', () => {
   assert.deepEqual(GEO_FIXTURE_MATRIX.map(item => item.category),
-    ['dense', 'sparse', 'concave', 'hole', 'bridge', 'coast', 'provider-schema']);
+    ['dense', 'sparse', 'concave', 'hole', 'bridge', 'landmark', 'coast', 'provider-schema']);
   assert.equal(new Set(GEO_FIXTURE_MATRIX.map(item => item.id)).size, GEO_FIXTURE_MATRIX.length);
 
   const dense = compileGeoFixture('dense-urban');
@@ -104,6 +104,7 @@ test('canonical geographic fixture matrix covers every required topology and pro
   const concave = compileGeoFixture('concave-building');
   const courtyard = compileGeoFixture('courtyard-hole');
   const bridge = compileGeoFixture('stacked-bridge');
+  const landmark = compileGeoFixture('landmark-opening');
   const coast = compileGeoFixture('mapped-coast');
   assert.ok(dense.buildings.meta.features > 80);
   assert.equal(dense.buildings.meta.buildingGrammar.namespace, 'gdo:objectGrammar:v2');
@@ -126,6 +127,9 @@ test('canonical geographic fixture matrix covers every required topology and pro
   'the hole fixture must retain a traversable courtyard');
   assert.equal(bridge.roads.meta.junctions, 0, 'stacked grades must not create a visual junction merge');
   assert.deepEqual(bridge.roads.meta.transportLevels.levels.map(level => level.physicalLevel), [-1, 0, 1]);
+  assert.equal(landmark.context.landmarks.meta.landmarks, 2);
+  assert.equal(landmark.context.landmarks.meta.openings, 2);
+  assert.ok(landmark.context.landmarks.meta.compounds > landmark.context.landmarks.meta.openings);
   assert.equal(coast.context.water.meta.features, 1);
   assert.equal(coast.context.waterDomain.meta.classCounts.ocean, 1);
   const coastWater = queryWaterDomain(coast.context.waterDomain, 50, 20);
@@ -158,7 +162,7 @@ test('every canonical fixture is byte-equivalent after deterministic recompilati
     assert.match(fingerprint, /^[0-9a-f]{8}$/);
     fingerprints.add(fingerprint);
   }
-  assert.equal(fingerprints.size, 8, 'each fixture/provider payload should retain a distinct fingerprint');
+  assert.equal(fingerprints.size, 9, 'each fixture/provider payload should retain a distinct fingerprint');
 });
 
 test('fixture tile eviction and remount reproduce bytes and release owned resources', () => {
@@ -468,6 +472,13 @@ test('canonical fixtures fit low-profile budgets and every ceiling fails clearly
     bridgeBytesPerTile: GDO_LOW_PROFILE_BUDGETS.bridgeBytesPerTile + 1,
     bridgeAddedDrawCalls: GDO_LOW_PROFILE_BUDGETS.bridgeAddedDrawCalls + 1,
     bridgeRailPostsPerTile: GDO_LOW_PROFILE_BUDGETS.bridgeRailPostsPerTile + 1,
+    landmarkCountPerTile: GDO_LOW_PROFILE_BUDGETS.landmarkCountPerTile + 1,
+    landmarkCompoundsPerTile: GDO_LOW_PROFILE_BUDGETS.landmarkCompoundsPerTile + 1,
+    landmarkBoxesPerTile: GDO_LOW_PROFILE_BUDGETS.landmarkBoxesPerTile + 1,
+    landmarkVisibleTriangles: GDO_LOW_PROFILE_BUDGETS.landmarkVisibleTriangles + 1,
+    landmarkBytesPerTile: GDO_LOW_PROFILE_BUDGETS.landmarkBytesPerTile + 1,
+    landmarkAddedDrawCalls: GDO_LOW_PROFILE_BUDGETS.landmarkAddedDrawCalls + 1,
+    landmarkOpeningsPerTile: GDO_LOW_PROFILE_BUDGETS.landmarkOpeningsPerTile + 1,
     streetFurnitureEntries: GDO_LOW_PROFILE_BUDGETS.streetFurnitureEntries + 1,
     streetFurnitureFamilies: GDO_LOW_PROFILE_BUDGETS.streetFurnitureFamilies + 1,
     streetFurnitureVisibleTriangles: GDO_LOW_PROFILE_BUDGETS.streetFurnitureVisibleTriangles + 1,
@@ -497,6 +508,8 @@ test('canonical fixtures fit low-profile budgets and every ceiling fails clearly
     'buildingDetailAddedDrawCalls', 'buildingDetailRoadTestsPerTile',
     'bridgeSegmentsPerTile', 'bridgeCompoundsPerTile', 'bridgeVisibleTriangles', 'bridgeBytesPerTile',
     'bridgeAddedDrawCalls', 'bridgeRailPostsPerTile',
+    'landmarkCountPerTile', 'landmarkCompoundsPerTile', 'landmarkBoxesPerTile', 'landmarkVisibleTriangles',
+    'landmarkBytesPerTile', 'landmarkAddedDrawCalls', 'landmarkOpeningsPerTile',
     'streetFurnitureEntries', 'streetFurnitureFamilies', 'streetFurnitureVisibleTriangles', 'streetFurnitureGpuBytes',
     'streetFurnitureAddedDrawCalls', 'streetFurnitureBytesPerTile', 'streetFurniturePlacementTests',
     'streetFurnitureSteadyFrameMatrixUpdates', 'waterDomainBytesPerTile', 'collisionBytesPerTile',

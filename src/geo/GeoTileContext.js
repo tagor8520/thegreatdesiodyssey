@@ -5,6 +5,7 @@ import { GEO_SURFACE_Y, landSurfaceY } from './GeoLayers.js';
 import { terrainHeightAt } from './GeoTerrain.js';
 import { compileStreetFurniture } from './GeoStreetFurnitureGrammar.js';
 import { compileBridgeGrammar } from './GeoBridgeGrammar.js';
+import { compileLandmarkGrammar } from './GeoLandmarkGrammar.js';
 import {
   GEO_WATER_CLASS,
   GEO_WATER_DOMAIN_LIMITS,
@@ -717,6 +718,9 @@ export function buildContextData(vectorTile, request) {
   // Bridge details share the mapped transport truth and are emitted alongside
   // context so rails/pier compounds are available before building extrusion.
   const bridge = compileBridgeGrammar(vectorTile, request);
+  // Landmark visual modules are explicit map features; their opening compounds
+  // stay separate from ordinary ambience and building collision ownership.
+  const landmarks = compileLandmarkGrammar(vectorTile, request);
 
   const decorationClearances = [];
   const decorationMorphologies = [];
@@ -766,6 +770,7 @@ export function buildContextData(vectorTile, request) {
     waterDomain,
     streetFurniture,
     bridge,
+    landmarks,
     decorations: new Float32Array(decorations),
     decorationStride: 6,
     decorationClearances: new Float32Array(decorationClearances),

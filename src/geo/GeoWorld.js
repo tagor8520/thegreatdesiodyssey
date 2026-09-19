@@ -136,30 +136,41 @@ function considerSweepHit(out, time, normalX, normalY, normalZ, tile, colliderIn
   out.polygonIndex = colliderIndex / 4;
 }
 
-function mergeCollisionData(building, bridge) {
-  if (!bridge?.colliders?.length) return building;
-  const buildingVertices = building.collisionVertices ?? new Float32Array();
-  const buildingRings = building.collisionRingOffsets ?? new Uint32Array([0]);
-  const buildingPolygons = building.collisionPolygonOffsets ?? new Uint32Array([0]);
-  const bridgeVertices = bridge.collisionVertices ?? new Float32Array();
-  const bridgeRings = bridge.collisionRingOffsets ?? new Uint32Array([0]);
-  const bridgePolygons = bridge.collisionPolygonOffsets ?? new Uint32Array([0]);
-  const vertexOffset = buildingVertices.length / 2;
-  const ringOffset = buildingRings.length - 1;
-  const ringOffsets = new Uint32Array(buildingRings.length + Math.max(0, bridgeRings.length - 1));
-  ringOffsets.set(buildingRings);
-  for (let index = 1; index < bridgeRings.length; index++) ringOffsets[buildingRings.length + index - 1] = bridgeRings[index] + vertexOffset;
-  const polygonOffsets = new Uint32Array(buildingPolygons.length + Math.max(0, bridgePolygons.length - 1));
-  polygonOffsets.set(buildingPolygons);
-  for (let index = 1; index < bridgePolygons.length; index++) polygonOffsets[buildingPolygons.length + index - 1] = bridgePolygons[index] + ringOffset;
-  return {
-    colliders: new Float32Array([...(building.colliders ?? []), ...bridge.colliders]),
-    collisionVertices: new Float32Array([...buildingVertices, ...bridgeVertices]),
-    collisionRingOffsets: ringOffsets,
-    collisionPolygonOffsets: polygonOffsets,
-    collisionSpans: new Float32Array([...(building.collisionSpans ?? []), ...(bridge.collisionSpans ?? [])]),
-    collisionMasks: new Uint16Array([...(building.collisionMasks ?? []), ...(bridge.collisionMasks ?? [])]),
+function mergeCollisionData(building, ...structures) {
+  let merged = {
+    colliders: building?.colliders ?? new Float32Array(),
+    collisionVertices: building?.collisionVertices ?? new Float32Array(),
+    collisionRingOffsets: building?.collisionRingOffsets ?? new Uint32Array([0]),
+    collisionPolygonOffsets: building?.collisionPolygonOffsets ?? new Uint32Array([0]),
+    collisionSpans: building?.collisionSpans ?? new Float32Array(),
+    collisionMasks: building?.collisionMasks ?? new Uint16Array(),
   };
+  for (const structure of structures) {
+    if (!structure?.colliders?.length) continue;
+    const vertexOffset = merged.collisionVertices.length / 2;
+    const ringOffset = merged.collisionRingOffsets.length - 1;
+    const sourceRings = structure.collisionRingOffsets ?? new Uint32Array([0]);
+    const sourcePolygons = structure.collisionPolygonOffsets ?? new Uint32Array([0]);
+    const ringOffsets = new Uint32Array(merged.collisionRingOffsets.length + Math.max(0, sourceRings.length - 1));
+    ringOffsets.set(merged.collisionRingOffsets);
+    for (let index = 1; index < sourceRings.length; index++) {
+      ringOffsets[merged.collisionRingOffsets.length + index - 1] = sourceRings[index] + vertexOffset;
+    }
+    const polygonOffsets = new Uint32Array(merged.collisionPolygonOffsets.length + Math.max(0, sourcePolygons.length - 1));
+    polygonOffsets.set(merged.collisionPolygonOffsets);
+    for (let index = 1; index < sourcePolygons.length; index++) {
+      polygonOffsets[merged.collisionPolygonOffsets.length + index - 1] = sourcePolygons[index] + ringOffset;
+    }
+    merged = {
+      colliders: new Float32Array([...merged.colliders, ...structure.colliders]),
+      collisionVertices: new Float32Array([...merged.collisionVertices, ...(structure.collisionVertices ?? [])]),
+      collisionRingOffsets: ringOffsets,
+      collisionPolygonOffsets: polygonOffsets,
+      collisionSpans: new Float32Array([...merged.collisionSpans, ...(structure.collisionSpans ?? [])]),
+      collisionMasks: new Uint16Array([...merged.collisionMasks, ...(structure.collisionMasks ?? [])]),
+    };
+  }
+  return merged;
 }
 
 function createBufferGeometry(data) {
@@ -600,9 +611,9 @@ export class GeoWorld {
     const tile = {
       key, x, y, root, bounds, ground,
       state: 'queued', requestId: this.nextRequestId++, priority,
-      roads: null, land: null, water: null, bridgeDetails: null, decorations: [], buildings: null, buildingDetails: null,
-      labels: [], biome: null, environment: null, roadMeta: null, buildingMeta: null, bridgeMeta: null, timings: null,
-      waterDomain: null, waterDomainMeta: null, streetFurnitureMeta: null, bridgeCount: 0, streetFurnitureCount: 0,
+      roads: null, land: null, water: null, bridgeDetails: null, landmarkDetails: null, decorations: [], buildings: null, buildingDetails: null,
+      labels: [], biome: null, environment: null, roadMeta: null, buildingMeta: null, bridgeMeta: null, landmarkMeta: null, timings: null,
+      waterDomain: null, waterDomainMeta: null, streetFurnitureMeta: null, bridgeCount: 0, landmarkCount: 0, streetFurnitureCount: 0,
       clearanceDiagnostics: null, morphologyDiagnostics: null,
       roadSupportSegments: null, roadSupportStride: 0, roadSupportGrid: null,
       colliders: null, collisionGrid: null,
@@ -610,6 +621,8 @@ export class GeoWorld {
       collisionSpans: null, collisionMasks: null,
       bridgeColliders: null, bridgeCollisionVertices: null, bridgeCollisionRingOffsets: null,
       bridgeCollisionPolygonOffsets: null, bridgeCollisionSpans: null, bridgeCollisionMasks: null,
+      landmarkColliders: null, landmarkCollisionVertices: null, landmarkCollisionRingOffsets: null,
+      landmarkCollisionPolygonOffsets: null, landmarkCollisionSpans: null, landmarkCollisionMasks: null,
       supportSlots: null, supportSlotStates: null, supportSlotStride: 0,
       lastUsed: performance.now(), bytes: 0,
       roadFeatures: 0, landFeatures: 0, waterFeatures: 0, decorationCount: 0, plantPoolCount: 0, buildingFeatures: 0, truncated: false,
@@ -857,15 +870,20 @@ export class GeoWorld {
         Boolean(context.clearanceDiagnostics?.capEvents &&
           Object.values(context.clearanceDiagnostics.capEvents).some(Boolean)) ||
         Boolean(context.bridge?.meta?.capEvents &&
-          Object.values(context.bridge.meta.capEvents).some(Boolean));
+          Object.values(context.bridge.meta.capEvents).some(Boolean)) ||
+        Boolean(context.landmarks?.meta?.capEvents &&
+          Object.values(context.landmarks.meta.capEvents).some(Boolean));
       const warnings = [];
       tile.land?.geometry.dispose();
       tile.water?.geometry.dispose();
       tile.bridgeDetails?.geometry.dispose();
+      tile.landmarkDetails?.geometry.dispose();
       tile.land?.removeFromParent();
       tile.water?.removeFromParent();
       tile.bridgeDetails?.removeFromParent();
+      tile.landmarkDetails?.removeFromParent();
       tile.bridgeDetails = null;
+      tile.landmarkDetails = null;
       for (const decoration of tile.decorations) decoration.removeFromParent();
       this.pendingPlantOwners.delete(tile.key);
       this.plantRenderPools.removeOwner(tile.key);
@@ -912,6 +930,27 @@ export class GeoWorld {
           tile.root.add(tile.bridgeDetails);
         }
       } catch (error) { warnings.push(`bridge details: ${error.message || error}`); }
+      try {
+        const landmarks = context.landmarks;
+        tile.landmarkMeta = landmarks?.meta ?? null;
+        tile.landmarkCount = landmarks?.meta?.landmarks ?? 0;
+        tile.landmarkColliders = landmarks?.colliders ?? null;
+        tile.landmarkCollisionVertices = landmarks?.collisionVertices ?? null;
+        tile.landmarkCollisionRingOffsets = landmarks?.collisionRingOffsets ?? null;
+        tile.landmarkCollisionPolygonOffsets = landmarks?.collisionPolygonOffsets ?? null;
+        tile.landmarkCollisionSpans = landmarks?.collisionSpans ?? null;
+        tile.landmarkCollisionMasks = landmarks?.collisionMasks ?? null;
+        const landmarkGeometry = createBufferGeometry(landmarks);
+        if (landmarkGeometry) {
+          tile.landmarkDetails = new THREE.Mesh(landmarkGeometry, this.decorationMaterial);
+          tile.landmarkDetails.name = `landmark-details:${tile.key}`;
+          tile.landmarkDetails.renderOrder = GEO_LAYER.landmark.renderBand;
+          tile.landmarkDetails.userData.geoLayer = GEO_LAYER.landmark;
+          tile.landmarkDetails.userData.visualOnly = true;
+          tile.landmarkDetails.visible = tile.key === (this.lastFocusKey ?? this.initialKey);
+          tile.root.add(tile.landmarkDetails);
+        }
+      } catch (error) { warnings.push(`landmark details: ${error.message || error}`); }
       try {
         const furnitureValues = context.streetFurniture?.placements instanceof Float32Array
           ? context.streetFurniture.placements : new Float32Array();
@@ -977,6 +1016,13 @@ export class GeoWorld {
         collisionPolygonOffsets: tile.bridgeCollisionPolygonOffsets,
         collisionSpans: tile.bridgeCollisionSpans,
         collisionMasks: tile.bridgeCollisionMasks,
+      }, {
+        colliders: tile.landmarkColliders,
+        collisionVertices: tile.landmarkCollisionVertices,
+        collisionRingOffsets: tile.landmarkCollisionRingOffsets,
+        collisionPolygonOffsets: tile.landmarkCollisionPolygonOffsets,
+        collisionSpans: tile.landmarkCollisionSpans,
+        collisionMasks: tile.landmarkCollisionMasks,
       });
       tile.colliders = mergedCollision.colliders;
       tile.collisionVertices = mergedCollision.collisionVertices;
@@ -1013,6 +1059,7 @@ export class GeoWorld {
     let morphologySamples = 0, morphologyPlants = 0, waterDomainBytes = 0;
     let buildingDetailBuildings = 0, buildingDetailBoxes = 0, buildingDetailTriangles = 0, buildingDetailBytes = 0;
     let bridges = 0, bridgeCompounds = 0, bridgeTriangles = 0, bridgeBytes = 0;
+    let landmarks = 0, landmarkCompounds = 0, landmarkTriangles = 0, landmarkBytes = 0;
     const waterClassCounts = { unknown: 0, stream: 0, canal: 0, river: 0, lake: 0, ocean: 0 };
     let supportSlots = 0, occupiedSupportSlots = 0, ready = 0, truncated = false;
     for (const tile of this.tiles.values()) {
@@ -1026,6 +1073,10 @@ export class GeoWorld {
       bridgeCompounds += tile.bridgeMeta?.compounds ?? 0;
       bridgeTriangles += tile.bridgeMeta?.triangles ?? 0;
       bridgeBytes += tile.bridgeMeta?.bytes ?? 0;
+      landmarks += tile.landmarkCount;
+      landmarkCompounds += tile.landmarkMeta?.compounds ?? 0;
+      landmarkTriangles += tile.landmarkMeta?.triangles ?? 0;
+      landmarkBytes += tile.landmarkMeta?.bytes ?? 0;
       labels += tile.labels.length;
       plantClearanceRejected += tile.clearanceDiagnostics?.rejected ?? 0;
       plantClearanceAdapted += tile.clearanceDiagnostics?.adapted ?? 0;
@@ -1069,6 +1120,10 @@ export class GeoWorld {
       bridgeCompounds,
       bridgeTriangles,
       bridgeBytes,
+      landmarks,
+      landmarkCompounds,
+      landmarkTriangles,
+      landmarkBytes,
       streetFurnitureFamilies: streetFurnitureDiagnostics.activeDrawPools,
       streetFurnitureTriangles: streetFurnitureDiagnostics.visibleTriangles,
       labels,
@@ -1179,6 +1234,7 @@ export class GeoWorld {
       this._applyBiome(this.tiles.get(focusKey)?.biome);
       for (const tile of this.tiles.values()) {
         if (tile.buildingDetails) tile.buildingDetails.visible = tile.key === focusKey;
+        if (tile.landmarkDetails) tile.landmarkDetails.visible = tile.key === focusKey;
       }
     }
     this.lastFocusKey = focusKey;
@@ -1234,6 +1290,7 @@ export class GeoWorld {
     tile.land?.geometry.dispose();
     tile.water?.geometry.dispose();
     tile.bridgeDetails?.geometry.dispose();
+    tile.landmarkDetails?.geometry.dispose();
     tile.buildings?.geometry.dispose();
     tile.buildingDetails?.geometry.dispose();
     tile.bridgeDetails = null;
@@ -1243,6 +1300,15 @@ export class GeoWorld {
     tile.bridgeCollisionPolygonOffsets = null;
     tile.bridgeCollisionSpans = null;
     tile.bridgeCollisionMasks = null;
+    tile.landmarkDetails = null;
+    tile.landmarkColliders = null;
+    tile.landmarkCollisionVertices = null;
+    tile.landmarkCollisionRingOffsets = null;
+    tile.landmarkCollisionPolygonOffsets = null;
+    tile.landmarkCollisionSpans = null;
+    tile.landmarkCollisionMasks = null;
+    tile.landmarkMeta = null;
+    tile.landmarkCount = 0;
     tile.bridgeMeta = null;
     tile.bridgeCount = 0;
     tile.decorations.length = 0;

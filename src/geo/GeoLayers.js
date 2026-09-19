@@ -167,6 +167,13 @@ export const GEO_LAYER = Object.freeze({
     GEO_DEPTH_POLICY.OPAQUE,
     0,
   ),
+  landmark: descriptor(
+    GEO_GENERATION_STAGE.DETAILS,
+    0,
+    GEO_RENDER_BAND.OPAQUE_WORLD,
+    GEO_DEPTH_POLICY.OPAQUE,
+    0,
+  ),
   ambience: descriptor(
     GEO_GENERATION_STAGE.AMBIENCE,
     0,
