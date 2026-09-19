@@ -80,6 +80,22 @@ function geometryTransfers(geometry, includeColliders = false) {
   return transfers;
 }
 
+function bridgeTransferables(bridge) {
+  if (!bridge) return [];
+  return [
+    bridge.positions.buffer,
+    bridge.normals.buffer,
+    bridge.colors.buffer,
+    bridge.indices.buffer,
+    bridge.colliders.buffer,
+    bridge.collisionVertices.buffer,
+    bridge.collisionRingOffsets.buffer,
+    bridge.collisionPolygonOffsets.buffer,
+    bridge.collisionSpans.buffer,
+    bridge.collisionMasks.buffer,
+  ];
+}
+
 async function buildTile(request) {
   const controller = new AbortController();
   const requestStarted = performance.now();
@@ -128,6 +144,7 @@ async function buildTile(request) {
       ...geometryTransfers(context.land),
       ...geometryTransfers(context.water),
       ...waterDomainTransferables(context.waterDomain),
+      ...bridgeTransferables(context.bridge),
       context.streetFurniture.placements.buffer,
       context.decorations.buffer,
       context.decorationClearances.buffer,

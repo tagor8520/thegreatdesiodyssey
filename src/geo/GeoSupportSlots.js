@@ -5,6 +5,9 @@ export const GEO_SUPPORT_ROLE = Object.freeze({
   FACADE_DETAIL: 1 << 3,
   BUILDING_DETAIL: 1 << 4,
   STREET_FURNITURE: 1 << 5,
+  BRIDGE_DECK: 1 << 6,
+  BRIDGE_RAIL: 1 << 7,
+  BRIDGE_PIER: 1 << 8,
 });
 
 export const GEO_SUPPORT_SLOT_STRIDE = 8;

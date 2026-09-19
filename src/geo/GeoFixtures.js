@@ -234,6 +234,10 @@ export function geoFixtureTypedViews(compilation) {
       'wetlandVertices', 'wetlandRingOffsets', 'wetlandPolygonOffsets', 'wetlandBounds', 'waterways',
     ]],
     ['streetFurniture', compilation.context.streetFurniture, ['placements']],
+    ['bridge', compilation.context.bridge, [
+      'positions', 'normals', 'colors', 'indices', 'colliders', 'collisionVertices',
+      'collisionRingOffsets', 'collisionPolygonOffsets', 'collisionSpans', 'collisionMasks',
+    ]],
     ['context', compilation.context, ['decorations', 'decorationClearances', 'decorationMorphologies']],
     ['environment', compilation.context.environment, ['fields', 'topBiomeIds', 'topBiomeWeights', 'ground']],
     ['buildings', compilation.buildings, [
@@ -272,6 +276,7 @@ function semanticSnapshot(compilation) {
     decorationStride: compilation.context.decorationStride,
     decorationClearanceStride: compilation.context.decorationClearanceStride,
     streetFurniture: compilation.context.streetFurniture.meta,
+    bridge: compilation.context.bridge.meta,
     labels: compilation.context.labels,
     biome: compilation.context.biome,
     buildings: compilation.buildings.meta,
@@ -310,7 +315,7 @@ function typedBytes(value) { return ArrayBuffer.isView(value) && !(value instanc
 export function collectGeoFixtureBudgetMetrics(compilation) {
   if (!compilation?.fixture) throw new TypeError('Compiled geographic fixture required');
   const presentDraws = [compilation.terrain, compilation.roads, compilation.context.land,
-    compilation.context.water, compilation.buildings]
+    compilation.context.water, compilation.context.bridge, compilation.buildings]
     .reduce((count, geometry) => count + Number(Boolean(geometry?.indices?.length)), 0) +
     Number(Boolean(compilation.buildings?.detailIndices?.length));
   const decorationCounts = Array(DECORATION_TRIANGLES.length).fill(0);
@@ -333,7 +338,10 @@ export function collectGeoFixtureBudgetMetrics(compilation) {
   const typedOutputBytes = geoFixtureTypedViews(compilation).reduce((total, item) => total + item.view.byteLength, 0);
   const collisionBytesPerTile = ['colliders', 'collisionVertices', 'collisionRingOffsets', 'collisionPolygonOffsets',
     'collisionSpans', 'collisionMasks', 'supportSlots', 'supportSlotStates']
-    .reduce((total, field) => total + typedBytes(compilation.buildings?.[field]), 0);
+    .reduce((total, field) => total + typedBytes(compilation.buildings?.[field]), 0) +
+    ['colliders', 'collisionVertices', 'collisionRingOffsets', 'collisionPolygonOffsets',
+      'collisionSpans', 'collisionMasks']
+      .reduce((total, field) => total + typedBytes(compilation.context.bridge?.[field]), 0);
   const waterDomainBytesPerTile = ['waterVertices', 'waterRingOffsets', 'waterPolygonOffsets', 'waterBounds',
     'waterClasses', 'waterFlowDirections', 'wetlandVertices', 'wetlandRingOffsets', 'wetlandPolygonOffsets',
     'wetlandBounds', 'waterways']
@@ -344,7 +352,8 @@ export function collectGeoFixtureBudgetMetrics(compilation) {
     drawCalls: presentDraws + decorationDraws + streetFurnitureAddedDrawCalls,
     triangles: rawTriangles(compilation.terrain) + rawTriangles(compilation.roads) +
       rawTriangles(compilation.context.land) + rawTriangles(compilation.context.water) +
-      rawTriangles(compilation.buildings) + compilation.buildings.detailIndices.length / 3 +
+      rawTriangles(compilation.context.bridge) + rawTriangles(compilation.buildings) +
+      compilation.buildings.detailIndices.length / 3 +
       decorationTriangles + streetFurnitureVisibleTriangles,
     buildingDetailBuildings: compilation.buildings.meta.buildingGrammar?.selectedBuildings ?? 0,
     buildingDetailBoxes: compilation.buildings.meta.buildingGrammar?.boxes ?? 0,
@@ -352,6 +361,12 @@ export function collectGeoFixtureBudgetMetrics(compilation) {
     buildingDetailBytesPerTile: compilation.buildings.meta.buildingGrammar?.bytes ?? 0,
     buildingDetailAddedDrawCalls: Number(Boolean(compilation.buildings.detailIndices.length)),
     buildingDetailRoadTestsPerTile: compilation.buildings.meta.buildingGrammar?.roadTests ?? 0,
+    bridgeSegmentsPerTile: compilation.context.bridge.meta.segments ?? 0,
+    bridgeCompoundsPerTile: compilation.context.bridge.meta.compounds ?? 0,
+    bridgeVisibleTriangles: compilation.context.bridge.meta.triangles ?? 0,
+    bridgeBytesPerTile: compilation.context.bridge.meta.bytes ?? 0,
+    bridgeAddedDrawCalls: Number(Boolean(compilation.context.bridge.indices.length)),
+    bridgeRailPostsPerTile: compilation.context.bridge.meta.railPosts ?? 0,
     streetFurnitureEntries: compilation.context.streetFurniture.meta.placements,
     streetFurnitureFamilies: STREET_FURNITURE_TRIANGLES.length,
     streetFurnitureVisibleTriangles,

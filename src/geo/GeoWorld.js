@@ -136,6 +136,32 @@ function considerSweepHit(out, time, normalX, normalY, normalZ, tile, colliderIn
   out.polygonIndex = colliderIndex / 4;
 }
 
+function mergeCollisionData(building, bridge) {
+  if (!bridge?.colliders?.length) return building;
+  const buildingVertices = building.collisionVertices ?? new Float32Array();
+  const buildingRings = building.collisionRingOffsets ?? new Uint32Array([0]);
+  const buildingPolygons = building.collisionPolygonOffsets ?? new Uint32Array([0]);
+  const bridgeVertices = bridge.collisionVertices ?? new Float32Array();
+  const bridgeRings = bridge.collisionRingOffsets ?? new Uint32Array([0]);
+  const bridgePolygons = bridge.collisionPolygonOffsets ?? new Uint32Array([0]);
+  const vertexOffset = buildingVertices.length / 2;
+  const ringOffset = buildingRings.length - 1;
+  const ringOffsets = new Uint32Array(buildingRings.length + Math.max(0, bridgeRings.length - 1));
+  ringOffsets.set(buildingRings);
+  for (let index = 1; index < bridgeRings.length; index++) ringOffsets[buildingRings.length + index - 1] = bridgeRings[index] + vertexOffset;
+  const polygonOffsets = new Uint32Array(buildingPolygons.length + Math.max(0, bridgePolygons.length - 1));
+  polygonOffsets.set(buildingPolygons);
+  for (let index = 1; index < bridgePolygons.length; index++) polygonOffsets[buildingPolygons.length + index - 1] = bridgePolygons[index] + ringOffset;
+  return {
+    colliders: new Float32Array([...(building.colliders ?? []), ...bridge.colliders]),
+    collisionVertices: new Float32Array([...buildingVertices, ...bridgeVertices]),
+    collisionRingOffsets: ringOffsets,
+    collisionPolygonOffsets: polygonOffsets,
+    collisionSpans: new Float32Array([...(building.collisionSpans ?? []), ...(bridge.collisionSpans ?? [])]),
+    collisionMasks: new Uint16Array([...(building.collisionMasks ?? []), ...(bridge.collisionMasks ?? [])]),
+  };
+}
+
 function createBufferGeometry(data) {
   if (!data?.positions?.length || !data?.indices?.length) return null;
   const geometry = new THREE.BufferGeometry();
@@ -574,14 +600,16 @@ export class GeoWorld {
     const tile = {
       key, x, y, root, bounds, ground,
       state: 'queued', requestId: this.nextRequestId++, priority,
-      roads: null, land: null, water: null, decorations: [], buildings: null, buildingDetails: null,
-      labels: [], biome: null, environment: null, roadMeta: null, buildingMeta: null, timings: null,
-      waterDomain: null, waterDomainMeta: null, streetFurnitureMeta: null, streetFurnitureCount: 0,
+      roads: null, land: null, water: null, bridgeDetails: null, decorations: [], buildings: null, buildingDetails: null,
+      labels: [], biome: null, environment: null, roadMeta: null, buildingMeta: null, bridgeMeta: null, timings: null,
+      waterDomain: null, waterDomainMeta: null, streetFurnitureMeta: null, bridgeCount: 0, streetFurnitureCount: 0,
       clearanceDiagnostics: null, morphologyDiagnostics: null,
       roadSupportSegments: null, roadSupportStride: 0, roadSupportGrid: null,
       colliders: null, collisionGrid: null,
       collisionVertices: null, collisionRingOffsets: null, collisionPolygonOffsets: null,
       collisionSpans: null, collisionMasks: null,
+      bridgeColliders: null, bridgeCollisionVertices: null, bridgeCollisionRingOffsets: null,
+      bridgeCollisionPolygonOffsets: null, bridgeCollisionSpans: null, bridgeCollisionMasks: null,
       supportSlots: null, supportSlotStates: null, supportSlotStride: 0,
       lastUsed: performance.now(), bytes: 0,
       roadFeatures: 0, landFeatures: 0, waterFeatures: 0, decorationCount: 0, plantPoolCount: 0, buildingFeatures: 0, truncated: false,
@@ -827,12 +855,17 @@ export class GeoWorld {
       tile.morphologyDiagnostics = context.morphologyDiagnostics ?? null;
       tile.truncated ||= Boolean(context.land?.meta?.truncated) ||
         Boolean(context.clearanceDiagnostics?.capEvents &&
-          Object.values(context.clearanceDiagnostics.capEvents).some(Boolean));
+          Object.values(context.clearanceDiagnostics.capEvents).some(Boolean)) ||
+        Boolean(context.bridge?.meta?.capEvents &&
+          Object.values(context.bridge.meta.capEvents).some(Boolean));
       const warnings = [];
       tile.land?.geometry.dispose();
       tile.water?.geometry.dispose();
+      tile.bridgeDetails?.geometry.dispose();
       tile.land?.removeFromParent();
       tile.water?.removeFromParent();
+      tile.bridgeDetails?.removeFromParent();
+      tile.bridgeDetails = null;
       for (const decoration of tile.decorations) decoration.removeFromParent();
       this.pendingPlantOwners.delete(tile.key);
       this.plantRenderPools.removeOwner(tile.key);
@@ -859,6 +892,26 @@ export class GeoWorld {
           tile.root.add(tile.water);
         }
       } catch (error) { warnings.push(`water: ${error.message || error}`); }
+      try {
+        const bridge = context.bridge;
+        tile.bridgeMeta = bridge?.meta ?? null;
+        tile.bridgeCount = bridge?.meta?.segments ?? 0;
+        tile.bridgeColliders = bridge?.colliders ?? null;
+        tile.bridgeCollisionVertices = bridge?.collisionVertices ?? null;
+        tile.bridgeCollisionRingOffsets = bridge?.collisionRingOffsets ?? null;
+        tile.bridgeCollisionPolygonOffsets = bridge?.collisionPolygonOffsets ?? null;
+        tile.bridgeCollisionSpans = bridge?.collisionSpans ?? null;
+        tile.bridgeCollisionMasks = bridge?.collisionMasks ?? null;
+        const bridgeGeometry = createBufferGeometry(bridge);
+        if (bridgeGeometry) {
+          tile.bridgeDetails = new THREE.Mesh(bridgeGeometry, this.decorationMaterial);
+          tile.bridgeDetails.name = `bridge-details:${tile.key}`;
+          tile.bridgeDetails.renderOrder = GEO_LAYER.bridgeDeck.renderBand + 1;
+          tile.bridgeDetails.userData.geoLayer = GEO_LAYER.bridgeDeck;
+          tile.bridgeDetails.userData.visualOnly = true;
+          tile.root.add(tile.bridgeDetails);
+        }
+      } catch (error) { warnings.push(`bridge details: ${error.message || error}`); }
       try {
         const furnitureValues = context.streetFurniture?.placements instanceof Float32Array
           ? context.streetFurniture.placements : new Float32Array();
@@ -917,12 +970,20 @@ export class GeoWorld {
       tile.buildingMeta = message.geometry.meta ?? null;
       tile.buildingFeatures = message.geometry.meta?.features ?? 0;
       tile.truncated ||= Boolean(message.geometry.meta?.truncated);
-      tile.colliders = message.geometry.colliders;
-      tile.collisionVertices = message.geometry.collisionVertices;
-      tile.collisionRingOffsets = message.geometry.collisionRingOffsets;
-      tile.collisionPolygonOffsets = message.geometry.collisionPolygonOffsets;
-      tile.collisionSpans = message.geometry.collisionSpans;
-      tile.collisionMasks = message.geometry.collisionMasks;
+      const mergedCollision = mergeCollisionData(message.geometry, {
+        colliders: tile.bridgeColliders,
+        collisionVertices: tile.bridgeCollisionVertices,
+        collisionRingOffsets: tile.bridgeCollisionRingOffsets,
+        collisionPolygonOffsets: tile.bridgeCollisionPolygonOffsets,
+        collisionSpans: tile.bridgeCollisionSpans,
+        collisionMasks: tile.bridgeCollisionMasks,
+      });
+      tile.colliders = mergedCollision.colliders;
+      tile.collisionVertices = mergedCollision.collisionVertices;
+      tile.collisionRingOffsets = mergedCollision.collisionRingOffsets;
+      tile.collisionPolygonOffsets = mergedCollision.collisionPolygonOffsets;
+      tile.collisionSpans = mergedCollision.collisionSpans;
+      tile.collisionMasks = mergedCollision.collisionMasks;
       tile.supportSlots = message.geometry.supportSlots;
       tile.supportSlotStates = message.geometry.supportSlotStates;
       tile.supportSlotStride = message.geometry.supportSlotStride ?? 0;
@@ -951,6 +1012,7 @@ export class GeoWorld {
     let plantClearanceRejected = 0, plantClearanceAdapted = 0, plantObstacleSamples = 0, waterDomainSegments = 0;
     let morphologySamples = 0, morphologyPlants = 0, waterDomainBytes = 0;
     let buildingDetailBuildings = 0, buildingDetailBoxes = 0, buildingDetailTriangles = 0, buildingDetailBytes = 0;
+    let bridges = 0, bridgeCompounds = 0, bridgeTriangles = 0, bridgeBytes = 0;
     const waterClassCounts = { unknown: 0, stream: 0, canal: 0, river: 0, lake: 0, ocean: 0 };
     let supportSlots = 0, occupiedSupportSlots = 0, ready = 0, truncated = false;
     for (const tile of this.tiles.values()) {
@@ -960,6 +1022,10 @@ export class GeoWorld {
       water += tile.waterFeatures;
       decorations += tile.decorationCount;
       streetFurniture += tile.streetFurnitureCount;
+      bridges += tile.bridgeCount;
+      bridgeCompounds += tile.bridgeMeta?.compounds ?? 0;
+      bridgeTriangles += tile.bridgeMeta?.triangles ?? 0;
+      bridgeBytes += tile.bridgeMeta?.bytes ?? 0;
       labels += tile.labels.length;
       plantClearanceRejected += tile.clearanceDiagnostics?.rejected ?? 0;
       plantClearanceAdapted += tile.clearanceDiagnostics?.adapted ?? 0;
@@ -999,6 +1065,10 @@ export class GeoWorld {
       water,
       decorations,
       streetFurniture,
+      bridges,
+      bridgeCompounds,
+      bridgeTriangles,
+      bridgeBytes,
       streetFurnitureFamilies: streetFurnitureDiagnostics.activeDrawPools,
       streetFurnitureTriangles: streetFurnitureDiagnostics.visibleTriangles,
       labels,
@@ -1163,8 +1233,18 @@ export class GeoWorld {
     tile.roads?.geometry.dispose();
     tile.land?.geometry.dispose();
     tile.water?.geometry.dispose();
+    tile.bridgeDetails?.geometry.dispose();
     tile.buildings?.geometry.dispose();
     tile.buildingDetails?.geometry.dispose();
+    tile.bridgeDetails = null;
+    tile.bridgeColliders = null;
+    tile.bridgeCollisionVertices = null;
+    tile.bridgeCollisionRingOffsets = null;
+    tile.bridgeCollisionPolygonOffsets = null;
+    tile.bridgeCollisionSpans = null;
+    tile.bridgeCollisionMasks = null;
+    tile.bridgeMeta = null;
+    tile.bridgeCount = 0;
     tile.decorations.length = 0;
     tile.waterDomain = null;
     tile.waterDomainMeta = null;
