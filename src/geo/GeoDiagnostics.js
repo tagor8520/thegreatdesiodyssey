@@ -54,6 +54,7 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
   let buildingDetailBuildings = 0, buildingDetailBoxes = 0, buildingDetailTriangles = 0;
   let buildingDetailBytesPerTile = 0, buildingDetailAddedDrawCalls = 0, buildingDetailRoadTestsPerTile = 0;
   let streetFurnitureBytesPerTile = 0, streetFurniturePlacementTests = 0;
+  let bridgeBytesPerTile = 0, bridgeSpansPerTile = 0, bridgePiersPerTile = 0;
   world?.root?.traverse?.(object => {
     estimatedGpuBytes += geometryBytes(object.geometry, seenBuffers);
     if (object.instanceMatrix?.array) {
@@ -73,6 +74,10 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
     streetFurniturePlacementTests = Math.max(streetFurniturePlacementTests,
       (furniture?.roadTests ?? 0) + (furniture?.buildingTests ?? 0) +
       (furniture?.decorationTests ?? 0) + (furniture?.conflictTests ?? 0));
+    const bridge = tile.bridgeMeta;
+    bridgeBytesPerTile = Math.max(bridgeBytesPerTile, bridge?.bytes ?? 0);
+    bridgeSpansPerTile = Math.max(bridgeSpansPerTile, bridge?.spans ?? 0);
+    bridgePiersPerTile = Math.max(bridgePiersPerTile, bridge?.piers ?? 0);
     const grammar = tile.buildingMeta?.buildingGrammar;
     buildingDetailBytesPerTile = Math.max(buildingDetailBytesPerTile, grammar?.bytes ?? 0);
     buildingDetailRoadTestsPerTile = Math.max(buildingDetailRoadTestsPerTile, grammar?.roadTests ?? 0);
@@ -92,6 +97,7 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
   const plantRenderDiagnostics = world?.plantRenderPools?.diagnostics;
   const streetFurnitureDiagnostics = world?.streetFurniturePools?.diagnostics;
   const ambientLifeDiagnostics = world?.ambientLifePools?.diagnostics;
+  const bridgeDiagnostics = world?.bridgePools?.diagnostics;
   estimatedGpuBytes += materialTextureBytes;
   return Object.freeze({
     view,
@@ -140,6 +146,17 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
     streetFurnitureAddedDrawCalls: streetFurnitureDiagnostics?.addedDrawCalls ?? 0,
     streetFurnitureBytesPerTile,
     streetFurniturePlacementTests,
+    bridgeBytesPerTile,
+    bridgeSpansPerTile,
+    bridgePiersPerTile,
+    bridgeEntries: bridgeDiagnostics?.entries ?? 0,
+    bridgeFamilies: bridgeDiagnostics?.activeDrawPools ?? 0,
+    bridgeVisibleTriangles: bridgeDiagnostics?.visibleTriangles ?? 0,
+    bridgeAddedDrawCalls: bridgeDiagnostics?.addedDrawCalls ?? 0,
+    bridgeCompounds: bridgeDiagnostics?.compounds ?? 0,
+    bridgeStructuralCompounds: bridgeDiagnostics?.structuralCompounds ?? 0,
+    bridgeGpuBytes: bridgeDiagnostics?.gpuBytes ?? 0,
+    bridgeSteadyFrameMatrixUpdates: bridgeDiagnostics?.steadyFrameMatrixUpdates ?? 0,
     streetFurnitureSteadyFrameMatrixUpdates: streetFurnitureDiagnostics?.steadyFrameMatrixUpdates ?? 0,
     ambientLifeEntries: ambientLifeDiagnostics?.entries ?? 0,
     ambientLifeFamilies: ambientLifeDiagnostics?.activeDrawPools ?? 0,
@@ -188,7 +205,7 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
     throw new RangeError('Invalid geographic debug line budget');
   }
   const positions = [], colors = [], owners = [], environmentProfiles = [], morphologyProfiles = [];
-  const waterDomainProfiles = [], buildingGrammarProfiles = [], streetFurnitureProfiles = [];
+  const waterDomainProfiles = [], buildingGrammarProfiles = [], streetFurnitureProfiles = [], bridgeProfiles = [];
   const maskCounts = new Map(), layerCounts = new Map();
   let lineSegments = 0, collisionPolygons = 0, roadSupports = 0, supportSlots = 0, occupiedSlots = 0, truncated = false;
   const pushLine = (first, second, color) => {
@@ -239,6 +256,10 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
     if (tile.streetFurnitureMeta) streetFurnitureProfiles.push(Object.freeze({
       owner: tile.key,
       ...tile.streetFurnitureMeta,
+    }));
+    if (tile.bridgeMeta) bridgeProfiles.push(Object.freeze({
+      owner: tile.key,
+      ...tile.bridgeMeta,
     }));
     layerCounts.set('ground', (layerCounts.get('ground') ?? 0) + 1);
     if (tile.roads || tile.roadSupportSegments?.length) layerCounts.set('road', (layerCounts.get('road') ?? 0) + 1);
@@ -351,11 +372,13 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
       plantRender: world?.plantRenderPools?.diagnostics ?? null,
       streetFurniture: world?.streetFurniturePools?.diagnostics ?? null,
       ambientLife: world?.ambientLifePools?.diagnostics ?? null,
+      bridges: world?.bridgePools?.diagnostics ?? null,
       environmentProfiles: Object.freeze(environmentProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       morphologyProfiles: Object.freeze(morphologyProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       waterDomainProfiles: Object.freeze(waterDomainProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       buildingGrammarProfiles: Object.freeze(buildingGrammarProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       streetFurnitureProfiles: Object.freeze(streetFurnitureProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
+      bridgeProfiles: Object.freeze(bridgeProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       focusSupport: focusSupport ? Object.freeze({
         kind: focusSupport.kind,
         physicalLevel: focusSupport.physicalLevel,

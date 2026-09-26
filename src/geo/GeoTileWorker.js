@@ -129,6 +129,7 @@ async function buildTile(request) {
       ...geometryTransfers(context.water),
       ...waterDomainTransferables(context.waterDomain),
       context.streetFurniture.placements.buffer,
+      context.bridges.placements.buffer,
       context.decorations.buffer,
       context.decorationClearances.buffer,
       context.decorationMorphologies.buffer,

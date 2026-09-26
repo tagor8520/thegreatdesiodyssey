@@ -15,6 +15,7 @@ import {
 import { roadStyle, buildRoadGeometry, buildBuildingGeometry } from './GeoTileBuilder.js';
 import { buildContextData } from './GeoTileContext.js';
 import { GDO_VEGETATION_MORPHOLOGY_NAMESPACE } from './PlantMorphology.js';
+import { GEO_BRIDGE_STRIDE, compileBridges } from './GeoBridgeGrammar.js';
 import { GEO_BUILDING_DETAIL_LIMITS } from './GeoBuildingGrammar.js';
 import {
   GeoWorld,
@@ -691,6 +692,66 @@ test('context phase mounts fallback ambience as shared 2D sprite pools without C
     assert.equal(world.setReducedMotion(false), true);
     assert.equal(world.stats.biome, 'Indo-Gangetic');
     assert.equal(world.visibleLabels[0].name, 'Baghpat Road');
+  } finally {
+    world.dispose(); globalThis.Worker = originalWorker;
+  }
+});
+
+test('DET-08 bridge detail mounts in its own bounded pool and releases on tile eviction', () => {
+  const originalWorker = globalThis.Worker;
+  globalThis.Worker = class { addEventListener() {} postMessage() {} terminate() {} };
+  const world = new GeoWorld(new THREE.Scene(), { latitude: 28.99, longitude: 77.71 });
+  try {
+    const tile = [...world.tiles.values()][0];
+    const empty = {
+      positions: new Float32Array(), normals: new Float32Array(), colors: new Float32Array(), indices: new Uint32Array(), meta: { features: 0 },
+    };
+    const bridges = compileBridges({
+      layers: {
+        transportation: {
+          length: 1,
+          feature: () => ({
+            type: 2, extent: 100,
+            properties: { class: 'primary', brunnel: 'bridge' },
+            loadGeometry: () => [[{ x: 10, y: 50 }, { x: 90, y: 50 }]],
+          }),
+        },
+      },
+    }, { tileX: 0, tileY: 0, originX: 0, originY: 0, tileSize: 100, terrainSeed: 7 });
+    assert.ok(bridges.meta.placements > 0);
+    world._handleWorkerMessage({
+      type: 'tile-phase', phase: 'context', key: tile.key, requestId: tile.requestId,
+      context: {
+        land: empty, water: empty, decorations: new Float32Array(), decorationStride: 6,
+        bridges, labels: [], biome: { id: 'subtropical', label: 'Indo-Gangetic', ground: [.18, .31, .10] },
+      },
+    });
+    const pool = world.bridgePools;
+    assert.equal(tile.bridgeCount, bridges.meta.placements);
+    assert.equal(pool.diagnostics.namespace, 'gdo:bridgeGrammar:v1');
+    assert.equal(pool.diagnostics.entries, bridges.meta.placements);
+    assert.equal(pool.diagnostics.addedDrawCalls, bridges.meta.familyCounts.filter(Boolean).length);
+    assert.ok(pool.diagnostics.addedDrawCalls <= 7);
+    assert.ok(pool.meshes.every(mesh => mesh.userData.visualOnly === true));
+    // Bridge modules never become collision, camera, interaction, or clearance truth.
+    assert.equal(tile.colliders?.length ?? 0, 0);
+    assert.equal(pool.diagnostics.steadyFrameMatrixUpdates, 0);
+    assert.equal(world.stats.bridges, bridges.meta.placements);
+    assert.equal(world.stats.bridgeFamilies, pool.diagnostics.activeDrawPools);
+    assert.equal(world.stats.bridgeTriangles, pool.diagnostics.visibleTriangles);
+    assert.ok(world.stats.bridgeCompounds >= 3, 'a bridge is several tight compounds, never one AABB');
+    assert.equal(world.stats.bridgeStructuralCompounds, world.stats.bridgeCompounds);
+    // A steady frame rewrites no bridge matrix.
+    const snapshot = JSON.stringify(pool.snapshot());
+    world.update({ x: 0, z: 0 }, null, 720, 4_000);
+    world.update({ x: 0, z: 0 }, null, 720, 4_100);
+    assert.equal(JSON.stringify(pool.snapshot()), snapshot);
+    assert.equal(pool.diagnostics.matrixUploads, pool.diagnostics.repacks * pool.meshes.length);
+    // Eviction releases exactly this owner's modules.
+    world._evictTile(tile);
+    assert.equal(pool.diagnostics.owners, 0);
+    assert.equal(pool.diagnostics.entries, 0);
+    assert.ok(pool.meshes.every(mesh => mesh.count === 0));
   } finally {
     world.dispose(); globalThis.Worker = originalWorker;
   }

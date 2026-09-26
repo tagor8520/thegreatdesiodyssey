@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GDO_FEATURE_VERSIONS, GDO_GENERATOR_VERSION } from '../engine/FeatureVersions.js';
 import { PlantRenderPools } from '../engine/PlantRenderPools.js';
 import { StreetFurniturePools } from './GeoStreetFurniturePools.js';
+import { BridgePools } from './GeoBridgePools.js';
 import {
   AmbientLifePools,
   GDO_AMBIENT_LIFE_SOURCE_TYPES,
@@ -498,6 +499,12 @@ export class GeoWorld {
       terrainSeed: this.terrainSeed,
       renderOrder: GEO_LAYER.decoration.renderBand,
     });
+    // DET-08 bridge detail is a purely self-describing instanced stream: the
+    // pool never samples terrain and never re-derives the authoritative deck.
+    this.bridgePools = new BridgePools(this.root, {
+      material: this.decorationMaterial,
+      renderOrder: GEO_LAYER.decoration.renderBand,
+    });
     // VEG-09 already owns reduced motion for plants; ambient life reads the
     // same flag so one preference change covers every animated family.
     this.ambientLifePools = new AmbientLifePools(this.root, {
@@ -578,6 +585,7 @@ export class GeoWorld {
       roads: null, land: null, water: null, decorations: [], buildings: null, buildingDetails: null,
       labels: [], biome: null, environment: null, roadMeta: null, buildingMeta: null, timings: null,
       waterDomain: null, waterDomainMeta: null, streetFurnitureMeta: null, streetFurnitureCount: 0,
+      bridgeMeta: null, bridgeCount: 0,
       clearanceDiagnostics: null, morphologyDiagnostics: null,
       roadSupportSegments: null, roadSupportStride: 0, roadSupportGrid: null,
       colliders: null, collisionGrid: null,
@@ -821,6 +829,7 @@ export class GeoWorld {
       tile.waterDomain = context.waterDomain ?? null;
       tile.waterDomainMeta = context.waterDomain?.meta ?? null;
       tile.streetFurnitureMeta = context.streetFurniture?.meta ?? null;
+      tile.bridgeMeta = context.bridges?.meta ?? null;
       tile.clearanceDiagnostics = context.clearanceDiagnostics ?? null;
       tile.morphologyDiagnostics = context.morphologyDiagnostics ?? null;
       tile.truncated ||= Boolean(context.land?.meta?.truncated) ||
@@ -835,6 +844,7 @@ export class GeoWorld {
       this.pendingPlantOwners.delete(tile.key);
       this.plantRenderPools.removeOwner(tile.key);
       this.streetFurniturePools.removeOwner(tile.key);
+      this.bridgePools.removeOwner(tile.key);
       this.ambientLifePools.removeOwner(tile.key);
       tile.land = null; tile.water = null; tile.decorations.length = 0;
       tile.decorationCount = 0; tile.plantPoolCount = 0; tile.streetFurnitureCount = 0;
@@ -866,6 +876,15 @@ export class GeoWorld {
           tile.key, furnitureValues, context.streetFurniture?.stride || 6,
         );
       } catch (error) { warnings.push(`street furniture: ${error.message || error}`); }
+      try {
+        // Bridge detail is its own bounded pool: a malformed or over-capped
+        // span stream must never suppress furniture or decoration mounting.
+        const bridgeValues = context.bridges?.placements instanceof Float32Array
+          ? context.bridges.placements : new Float32Array();
+        tile.bridgeCount = this.bridgePools.addOwner(
+          tile.key, bridgeValues, context.bridges?.stride || 11,
+        );
+      } catch (error) { warnings.push(`bridges: ${error.message || error}`); }
       try {
         const decorationValues = context.decorations instanceof Float32Array ? context.decorations : new Float32Array();
         const clearanceValues = context.decorationClearances instanceof Float32Array ? context.decorationClearances : null;
@@ -953,7 +972,7 @@ export class GeoWorld {
   }
 
   get stats() {
-    let roads = 0, buildings = 0, land = 0, water = 0, decorations = 0, streetFurniture = 0, labels = 0;
+    let roads = 0, buildings = 0, land = 0, water = 0, decorations = 0, streetFurniture = 0, bridges = 0, labels = 0;
     let plantClearanceRejected = 0, plantClearanceAdapted = 0, plantObstacleSamples = 0, waterDomainSegments = 0;
     let morphologySamples = 0, morphologyPlants = 0, waterDomainBytes = 0;
     let buildingDetailBuildings = 0, buildingDetailBoxes = 0, buildingDetailTriangles = 0, buildingDetailBytes = 0;
@@ -966,6 +985,7 @@ export class GeoWorld {
       water += tile.waterFeatures;
       decorations += tile.decorationCount;
       streetFurniture += tile.streetFurnitureCount;
+      bridges += tile.bridgeCount;
       labels += tile.labels.length;
       plantClearanceRejected += tile.clearanceDiagnostics?.rejected ?? 0;
       plantClearanceAdapted += tile.clearanceDiagnostics?.adapted ?? 0;
@@ -991,6 +1011,7 @@ export class GeoWorld {
     }
     const streetFurnitureDiagnostics = this.streetFurniturePools.diagnostics;
     const ambientLifeDiagnostics = this.ambientLifePools.diagnostics;
+    const bridgeDiagnostics = this.bridgePools.diagnostics;
     return Object.freeze({
       provider: this.provider,
       generatorVersion: GDO_GENERATOR_VERSION,
@@ -1008,6 +1029,11 @@ export class GeoWorld {
       streetFurniture,
       streetFurnitureFamilies: streetFurnitureDiagnostics.activeDrawPools,
       streetFurnitureTriangles: streetFurnitureDiagnostics.visibleTriangles,
+      bridges,
+      bridgeFamilies: bridgeDiagnostics.activeDrawPools,
+      bridgeTriangles: bridgeDiagnostics.visibleTriangles,
+      bridgeCompounds: bridgeDiagnostics.compounds,
+      bridgeStructuralCompounds: bridgeDiagnostics.structuralCompounds,
       ambientLifeEntries: ambientLifeDiagnostics.entries,
       ambientLifeFamilies: ambientLifeDiagnostics.activeDrawPools,
       ambientLifeTriangles: ambientLifeDiagnostics.visibleTriangles,
@@ -1142,9 +1168,11 @@ export class GeoWorld {
     this.pendingPlantOwners.delete(tile.key);
     this.plantRenderPools.removeOwner(tile.key);
     this.streetFurniturePools.removeOwner(tile.key);
+    this.bridgePools.removeOwner(tile.key);
     this.ambientLifePools.removeOwner(tile.key);
     tile.plantPoolCount = 0;
     tile.streetFurnitureCount = 0;
+    tile.bridgeCount = 0;
     tile.ambientLifeCount = 0;
     tile.root.removeFromParent();
     tile.ground?.geometry.dispose();
@@ -1157,6 +1185,7 @@ export class GeoWorld {
     tile.waterDomain = null;
     tile.waterDomainMeta = null;
     tile.streetFurnitureMeta = null;
+    tile.bridgeMeta = null;
     tile.clearanceDiagnostics = null;
     tile.morphologyDiagnostics = null;
     tile.environment = null;
@@ -1683,6 +1712,7 @@ export class GeoWorld {
     this.tiles.clear(); this.queue.length = 0;
     this.plantRenderPools.dispose();
     this.streetFurniturePools.dispose();
+    this.bridgePools.dispose();
     this.ambientLifePools.dispose();
     this.root.removeFromParent(); this.root.clear();
     this.groundMaterial.dispose();

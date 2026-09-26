@@ -100,6 +100,7 @@ Every stage must preserve these requirements:
 - Plant placement now uses family/role-specific declared base, root, and crown extents against exact building rings, route reservations, terrain support, water/shore domains, and mapped land kind. A bounded 16-sample policy can shrink and shift branch/crown organs through one custom instance attribute without moving source-owned anchors or creating geometry/collision proxies.
 - A versioned continuous vegetation profile now blends tropical, subtropical, arid, upland, riparian, and urban influences from latitude, interpolated absolute-coordinate macro fields, terrain, mapped land/water, and bounded road/building proximity. Each aligned plant record retains quantized dominant-three IDs/weights plus bounded aspect, variant, palette, age, and stiffness controls; geometry stays in one fixed two-variant-per-family cache, including bamboo, and focus-ground colour transitions are smoothed.
 - A versioned shared whole-plant wind field now deforms those resident pools in the vertex shader. World-aligned direction, low-frequency smoothed gust/turbulence, per-vertex height/bend/root roles, and per-instance stable phase/stiffness produce bounded coherent sway without touching placement, collision, support, ownership, clearances, or instance matrices. Reduced motion removes gust/turbulence and caps the remaining calm sway; one clock uniform write, zero wind matrix updates, and zero steady-frame wind allocations are low-profile gates.
+- Elevated transport grades now receive `gdo:bridgeGrammar:v1` detail compiled from the canonical physical-level deck rather than from provider feature order. Rail lines, rail posts, deck fascia, end/joint bands, terrain-reaching piers, and sparse non-solid lamps/signs render from seven fixed family geometries in one owner-scoped pool. Rails are only emitted when the resulting walkable corridor still fits the authoritative player profile, piers exist only where a real measured opening under the deck can hold them, and bridge detail exposes empty solid, interaction, and camera proxy lists.
 - Coordinate birds and bees now render as pooled flat sprites whose entire motion runs in one shared vertex program. Ten-triangle flat silhouettes of coplanar quads replace the former 144-triangle 3D bodies; position, elongated non-looping travel, bounded lateral weave, climb/hover, wing flap, appearance envelope, and camera-distance fade come from per-instance attributes, so a steady frame writes one clock uniform and zero matrices. Agents fade in and out of a deterministic per-cycle window with a dormant gap instead of orbiting forever, stay visual-only with no collision surface, and release their cloned geometry on eviction under fixed per-family and owner caps.
 - Curated streaming/quality/draw-call improvements and shared engine ownership.
 
@@ -268,7 +269,7 @@ Why this order:
 | 094 | DET-05 | P1 | Street-furniture grammar | ADDED | DET-02,TER-02 | Seven visual-only DET-02 families use canonical ground-road frames, bounded crossing/entrance/water/spawn/ambience reservations, source ownership, global fixed-geometry pools, deterministic transfer/remount, collision isolation, and explicit entry/test/triangle/GPU/draw/byte gates |
 | 095 | DET-06 | P1 | Rocks/geology grammar | QUEUED | DET-02,TER-06 | Major-mass proxies only; small chips visual |
 | 096 | DET-07 | P1 | Vehicle grammar and tight proxy | QUEUED | DET-02,COL-09,TER-02 | Wheels/mirrors/lights cannot expand body collision |
-| 097 | DET-08 | P1 | Bridge grammar and compounds | QUEUED | DET-02,LAY-02,COL-07 | Traversable deck/rails/openings agree with visuals |
+| 097 | DET-08 | P1 | Bridge grammar and compounds | ADDED | DET-02,LAY-02,COL-07 | Seven fixed deck/rail/pier families compile from the physical-level deck; rails leave the player corridor clear, piers reach measured terrain support, and moving visual validation still needs capture tooling |
 | 098 | DET-09 | P2 | Landmark grammar and openings | QUEUED | DET-02,DET-04,QLT-05 | Repeated modules batched; arches never use one enclosing AABB |
 | 099 | DET-10 | P2 | Prop/food grammar and triggers | QUEUED | DET-02,COL-01,GME-05 | Interaction range remains separate from solid proxy |
 
@@ -349,7 +350,7 @@ To prevent half-built systems from accumulating:
 - If blocked, mark it `PARTIAL` with a concrete open gate; do not call it done.
 - New ideas enter this matrix with an ID and dependencies before implementation.
 
-Current WIP: moving visual completion gates for `COL-05`, `COL-06`, `LAY-03`, and `MAT-03` remain blocked on capture tooling. The deterministic `VEG-03` → `VEG-09` vegetation stack, `TER-07` → `TER-08` hydrology field, and `DET-01` → `DET-05` mapped-building/street-furniture detail stack are implemented. `MAT-05` remains ordered after the blocked `MAT-03` visual gate; `DET-06` and `DET-07` still wait on `TER-06` and `COL-09`, respectively. The next dependency-complete object build available without capture tooling is therefore `DET-08`: bridge deck/rail/pier modules and tight structural compounds. `VEG-10` detail/branch-group wind remains intentionally deferred.
+Current WIP: moving visual completion gates for `COL-05`, `COL-06`, `LAY-03`, and `MAT-03` remain blocked on capture tooling. The deterministic `VEG-03` → `VEG-09` vegetation stack, `TER-07` → `TER-08` hydrology field, and `DET-01` → `DET-05` mapped-building/street-furniture detail stack are implemented. `MAT-05` remains ordered after the blocked `MAT-03` visual gate; `DET-06` and `DET-07` still wait on `TER-06` and `COL-09`, respectively. `DET-08` bridge deck/rail/pier modules and tight structural compounds are now implemented. The next dependency-complete object build available without capture tooling is `DET-09`: repeated landmark modules and exact opening compounds that never enclose an arch in one AABB. `VEG-10` detail/branch-group wind remains intentionally deferred.
 
 ## 11. Definition of done
 
@@ -367,8 +368,8 @@ Every completed feature must prove:
 
 1. Complete moving visual gates for `COL-05`, `COL-06`, and `LAY-03` when capture tooling is available.
 2. Complete `MAT-03` with moving low-pixel-ratio road/ground/facade/water shimmer captures; its automated shader policy is already present.
-3. Add `DET-08`: compile bridge deck/rail/pier modules and tight structural compounds while preserving traversable openings and physical levels; this is the next dependency-complete object slice available without capture tooling.
-4. Add `MAT-05`: extend the shared style library with bounded generated regional surface-detail recipes after `MAT-03` closes.
-5. Add `DET-09`: compile repeated landmark modules and exact opening compounds without enclosing arches in one AABB.
+3. Add `MAT-05`: extend the shared style library with bounded generated regional surface-detail recipes after `MAT-03` closes.
+4. Add `DET-09`: compile repeated landmark modules and exact opening compounds without enclosing arches in one AABB; this is now the next dependency-complete object slice available without capture tooling.
+5. Complete the moving FPP/TPP capture for `DET-08` bridge composition and pier/deck pop alongside the pending obstruction, transparent-water, and shimmer gates.
 
 The completed fixture and budget gates must run against every later material, vegetation, object, and environment batch.

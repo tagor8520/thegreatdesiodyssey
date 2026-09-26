@@ -4,6 +4,7 @@ import { roadStyle } from './GeoTileBuilder.js';
 import { GEO_SURFACE_Y, landSurfaceY } from './GeoLayers.js';
 import { terrainHeightAt } from './GeoTerrain.js';
 import { compileStreetFurniture } from './GeoStreetFurnitureGrammar.js';
+import { compileBridges } from './GeoBridgeGrammar.js';
 import {
   GEO_WATER_CLASS,
   GEO_WATER_DOMAIN_LIMITS,
@@ -713,6 +714,8 @@ export function buildContextData(vectorTile, request) {
     waterDomain,
     decorations: new Float32Array(decorations),
   });
+  // DET-08 owns the elevated transport grades that DET-05 deliberately skips.
+  const bridges = compileBridges(vectorTile, request);
 
   const decorationClearances = [];
   const decorationMorphologies = [];
@@ -745,6 +748,7 @@ export function buildContextData(vectorTile, request) {
     roadSegments: obstacles.capEvents.roadSegments,
     buildings: obstacles.capEvents.buildings,
     waterDomain: Object.values(waterDomain.meta.capEvents).some(Boolean),
+    bridges: Object.values(bridges.meta.capEvents).some(Boolean),
   };
   const diagnostics = finalizePlantClearanceDiagnostics(clearanceDiagnostics, capEvents);
   const finalizedMorphologyDiagnostics = finalizeMorphologyDiagnostics(morphologyDiagnostics, capEvents);
@@ -761,6 +765,7 @@ export function buildContextData(vectorTile, request) {
     }),
     waterDomain,
     streetFurniture,
+    bridges,
     decorations: new Float32Array(decorations),
     decorationStride: 6,
     decorationClearances: new Float32Array(decorationClearances),

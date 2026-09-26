@@ -313,6 +313,7 @@ function createMaterialLibrary() {
     deferred: typeof window !== 'undefined' && typeof globalThis.setTimeout === 'function',
     slices: 0,
     maximumSliceMilliseconds: 0,
+    maximumTaskMilliseconds: 0,
     finishedAt: 0,
     startupMilliseconds: 0,
     timer: null,
@@ -324,6 +325,8 @@ function createMaterialLibrary() {
     get deferred() { return state.deferred; },
     get generationSlices() { return state.slices; },
     get maximumSliceMilliseconds() { return state.maximumSliceMilliseconds; },
+    get maximumTaskMilliseconds() { return state.maximumTaskMilliseconds; },
+    sliceMilliseconds: MATERIAL_GENERATION_SLICE_MS,
     get startupMilliseconds() { return state.startupMilliseconds; },
     get generationMilliseconds() { return (state.finishedAt || performance.now()) - started; },
     estimatedBytes: records.reduce((total, record) => total + record.estimatedBytes, 0),
@@ -347,11 +350,21 @@ function createMaterialLibrary() {
     for (const texture of Object.values(textures)) texture.needsUpdate = true;
     resolveReady(true);
   };
+  const runTask = () => {
+    const task = tasks.shift();
+    if (!task) return;
+    const taskStarted = performance.now();
+    task();
+    state.maximumTaskMilliseconds = Math.max(state.maximumTaskMilliseconds, performance.now() - taskStarted);
+  };
   const runSlice = () => {
     if (state.cancelled) return;
     const sliceStarted = performance.now();
-    do tasks.shift()?.();
-    while (tasks.length && performance.now() - sliceStarted < MATERIAL_GENERATION_SLICE_MS);
+    // One task always runs even when it alone exceeds the budget, so a slice is
+    // bounded by the budget plus the longest indivisible task, never by the
+    // budget alone.
+    runTask();
+    while (tasks.length && performance.now() - sliceStarted < MATERIAL_GENERATION_SLICE_MS) runTask();
     const elapsed = performance.now() - sliceStarted;
     state.slices++;
     state.maximumSliceMilliseconds = Math.max(state.maximumSliceMilliseconds, elapsed);

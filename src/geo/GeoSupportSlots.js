@@ -5,6 +5,9 @@ export const GEO_SUPPORT_ROLE = Object.freeze({
   FACADE_DETAIL: 1 << 3,
   BUILDING_DETAIL: 1 << 4,
   STREET_FURNITURE: 1 << 5,
+  // Bridge detail hangs from the authoritative elevated road deck rather than
+  // from ground terrain, so it uses its own declared support role.
+  BRIDGE_DECK: 1 << 6,
 });
 
 export const GEO_SUPPORT_SLOT_STRIDE = 8;

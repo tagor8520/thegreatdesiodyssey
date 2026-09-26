@@ -244,6 +244,7 @@ test('dense canonical vegetation and furniture uploads preserve collision isolat
     world._flushPlantMounts(0);
     const render = world.plantRenderPools.diagnostics;
     const furniture = world.streetFurniturePools.diagnostics;
+    const bridge = world.bridgePools.diagnostics;
     assert.equal(render.entries, 1_044);
     assert.equal(render.activeDrawPools, 11);
     assert.equal(render.sourceGeometries, 36);
@@ -256,6 +257,13 @@ test('dense canonical vegetation and furniture uploads preserve collision isolat
     assert.equal(furniture.activeDrawPools, 3);
     assert.equal(furniture.addedDrawCalls, 3);
     assert.equal(furniture.steadyFrameMatrixUpdates, 0);
+    assert.equal(bridge.entries, compilation.context.bridges.meta.placements);
+    assert.equal(bridge.entries > 0, true, 'the canonical fixture carries a mapped bridge span');
+    assert.equal(bridge.sourceGeometries, 7);
+    assert.equal(bridge.addedDrawCalls, compilation.context.bridges.meta.familyCounts.filter(Boolean).length);
+    assert.equal(bridge.steadyFrameMatrixUpdates, 0);
+    assert.ok(bridge.compounds >= 3);
+    assert.equal(bridge.structuralCompounds, bridge.compounds);
 
     // Pool replacement is visual-only: no generated box or aggregate visual
     // bound may become solid, camera, interaction, or clearance authority.
@@ -263,11 +271,17 @@ test('dense canonical vegetation and furniture uploads preserve collision isolat
       'collisionPolygonOffsets', 'collisionSpans', 'collisionMasks', 'collisionGrid'];
     const collisionAuthority = collisionFields.map(field => tile[field]);
     const furnitureFingerprint = world.streetFurniturePools.fingerprint();
+    const bridgeFingerprint = world.bridgePools.fingerprint();
     assert.equal(world.streetFurniturePools.removeOwner(tile.key), true);
     assert.equal(world.streetFurniturePools.addOwner(
       tile.key, compilation.context.streetFurniture.placements, compilation.context.streetFurniture.stride,
     ), compilation.context.streetFurniture.meta.placements);
     assert.equal(world.streetFurniturePools.fingerprint(), furnitureFingerprint);
+    assert.equal(world.bridgePools.removeOwner(tile.key), true);
+    assert.equal(world.bridgePools.addOwner(
+      tile.key, compilation.context.bridges.placements, compilation.context.bridges.stride,
+    ), compilation.context.bridges.meta.placements);
+    assert.equal(world.bridgePools.fingerprint(), bridgeFingerprint);
     collisionFields.forEach((field, index) => assert.equal(tile[field], collisionAuthority[index], field));
 
     assert.equal(assertLowProfileBudget({
@@ -290,7 +304,28 @@ test('dense canonical vegetation and furniture uploads preserve collision isolat
         compilation.context.streetFurniture.meta.buildingTests + compilation.context.streetFurniture.meta.decorationTests +
         compilation.context.streetFurniture.meta.conflictTests,
       streetFurnitureSteadyFrameMatrixUpdates: furniture.steadyFrameMatrixUpdates,
+      bridgeSpansPerTile: compilation.context.bridges.meta.spans,
+      bridgePlacementsPerTile: compilation.context.bridges.meta.placements,
+      bridgeBytesPerTile: compilation.context.bridges.meta.bytes,
+      bridgeVisibleTriangles: bridge.visibleTriangles,
+      bridgeAddedDrawCalls: bridge.addedDrawCalls,
+      bridgeGpuBytes: bridge.gpuBytes,
+      bridgeSteadyFrameMatrixUpdates: bridge.steadyFrameMatrixUpdates,
     }).ok, true);
+    // Every bridge ceiling must be actually exercised, not silently skipped.
+    const bridgeChecks = assertLowProfileBudget({
+      bridgeSpansPerTile: compilation.context.bridges.meta.spans,
+      bridgePlacementsPerTile: compilation.context.bridges.meta.placements,
+      bridgeBytesPerTile: compilation.context.bridges.meta.bytes,
+      bridgeVisibleTriangles: bridge.visibleTriangles,
+      bridgeAddedDrawCalls: bridge.addedDrawCalls,
+      bridgeGpuBytes: bridge.gpuBytes,
+      bridgeSteadyFrameMatrixUpdates: bridge.steadyFrameMatrixUpdates,
+    }).checked.map(item => item.metric);
+    for (const metric of ['bridgeSpansPerTile', 'bridgePlacementsPerTile', 'bridgeBytesPerTile',
+      'bridgeVisibleTriangles', 'bridgeAddedDrawCalls', 'bridgeGpuBytes', 'bridgeSteadyFrameMatrixUpdates']) {
+      assert.ok(bridgeChecks.includes(metric), `${metric} must be a live budget check`);
+    }
   } finally { world.dispose(); globalThis.Worker = previousWorker; }
 });
 

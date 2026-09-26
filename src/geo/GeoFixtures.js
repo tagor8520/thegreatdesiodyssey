@@ -2,6 +2,8 @@ import { GDO_FEATURE_VERSIONS, featureNamespace } from '../engine/FeatureVersion
 import { buildBuildingGeometry, buildRoadGeometry } from './GeoTileBuilder.js';
 import { buildContextData } from './GeoTileContext.js';
 import { streetFurnitureRecipes } from './GeoStreetFurnitureGrammar.js';
+import { bridgeRecipes, GEO_BRIDGE_FAMILY_NAMES, GEO_BRIDGE_STRIDE } from './GeoBridgeGrammar.js';
+import { GEO_BRIDGE_POOL_LIMITS } from './GeoBridgePools.js';
 import {
   GDO_AMBIENT_LIFE_SOURCE_TYPES,
   GDO_AMBIENT_LIFE_LIMITS,
@@ -239,6 +241,7 @@ export function geoFixtureTypedViews(compilation) {
       'wetlandVertices', 'wetlandRingOffsets', 'wetlandPolygonOffsets', 'wetlandBounds', 'waterways',
     ]],
     ['streetFurniture', compilation.context.streetFurniture, ['placements']],
+    ['bridges', compilation.context.bridges, ['placements']],
     ['context', compilation.context, ['decorations', 'decorationClearances', 'decorationMorphologies']],
     ['environment', compilation.context.environment, ['fields', 'topBiomeIds', 'topBiomeWeights', 'ground']],
     ['buildings', compilation.buildings, [
@@ -308,6 +311,11 @@ export function geoFixtureFingerprint(compilation) {
 const DECORATION_TRIANGLES = Object.freeze([36, 72, 24, 36, 36, 48, 48, 84, 144, 72, 144, 144]);
 const STREET_FURNITURE_TRIANGLES = Object.freeze(streetFurnitureRecipes().map(record =>
   record.compiled.visualBoxes.length * 12));
+const BRIDGE_TRIANGLES = Object.freeze(bridgeRecipes().map(record => record.compiled.visualBoxes.length * 12));
+// Fixed pool capacity: merged family geometry plus the resident instance matrices.
+const BRIDGE_FIXED_GPU_BYTES = BRIDGE_TRIANGLES.reduce((total, triangles) => total + triangles * 9 * (3 + 3) +
+  triangles * 3 * 4, 0) +
+  GEO_BRIDGE_FAMILY_NAMES.length * GEO_BRIDGE_POOL_LIMITS.maxEntries * 16 * Float32Array.BYTES_PER_ELEMENT;
 function rawTriangles(geometry) { return geometry?.indices?.length ? geometry.indices.length / 3 : 0; }
 function typedBytes(value) { return ArrayBuffer.isView(value) && !(value instanceof DataView) ? value.byteLength : 0; }
 
@@ -343,6 +351,15 @@ export function collectGeoFixtureBudgetMetrics(compilation) {
     furnitureCounts[family]++;
   }
   const streetFurnitureAddedDrawCalls = furnitureCounts.reduce((count, value) => count + Number(value > 0), 0);
+  const bridgeCounts = Array(BRIDGE_TRIANGLES.length).fill(0);
+  const bridgeValues = compilation.context.bridges.placements;
+  for (let offset = 0; offset + GEO_BRIDGE_STRIDE - 1 < bridgeValues.length; offset += GEO_BRIDGE_STRIDE) {
+    const family = Math.max(0, Math.min(bridgeCounts.length - 1, Math.round(bridgeValues[offset + 8])));
+    bridgeCounts[family]++;
+  }
+  const bridgeAddedDrawCalls = bridgeCounts.reduce((count, value) => count + Number(value > 0), 0);
+  const bridgeVisibleTriangles = bridgeCounts.reduce((total, count, family) =>
+    total + count * BRIDGE_TRIANGLES[family], 0);
   const streetFurnitureVisibleTriangles = furnitureCounts.reduce((total, count, family) =>
     total + count * STREET_FURNITURE_TRIANGLES[family], 0);
   const typedOutputBytes = geoFixtureTypedViews(compilation).reduce((total, item) => total + item.view.byteLength, 0);
@@ -356,11 +373,13 @@ export function collectGeoFixtureBudgetMetrics(compilation) {
   return Object.freeze({
     residentTiles: 1,
     activeRequests: 0,
-    drawCalls: presentDraws + decorationDraws + streetFurnitureAddedDrawCalls + ambientLifeAddedDrawCalls,
+    drawCalls: presentDraws + decorationDraws + streetFurnitureAddedDrawCalls + ambientLifeAddedDrawCalls +
+      bridgeAddedDrawCalls,
     triangles: rawTriangles(compilation.terrain) + rawTriangles(compilation.roads) +
       rawTriangles(compilation.context.land) + rawTriangles(compilation.context.water) +
       rawTriangles(compilation.buildings) + compilation.buildings.detailIndices.length / 3 +
-      decorationTriangles + streetFurnitureVisibleTriangles + ambientLifeVisibleTriangles,
+      decorationTriangles + streetFurnitureVisibleTriangles + ambientLifeVisibleTriangles +
+      bridgeVisibleTriangles,
     buildingDetailBuildings: compilation.buildings.meta.buildingGrammar?.selectedBuildings ?? 0,
     buildingDetailBoxes: compilation.buildings.meta.buildingGrammar?.boxes ?? 0,
     buildingDetailTriangles: compilation.buildings.meta.buildingGrammar?.triangles ?? 0,
@@ -376,6 +395,16 @@ export function collectGeoFixtureBudgetMetrics(compilation) {
       compilation.context.streetFurniture.meta.buildingTests + compilation.context.streetFurniture.meta.decorationTests +
       compilation.context.streetFurniture.meta.conflictTests,
     streetFurnitureSteadyFrameMatrixUpdates: 0,
+    bridgeSpansPerTile: compilation.context.bridges.meta.spans,
+    bridgeSegmentsPerTile: compilation.context.bridges.meta.segments,
+    bridgePlacementsPerTile: compilation.context.bridges.meta.placements,
+    bridgeRailedSpansPerTile: compilation.context.bridges.meta.railedSpans,
+    bridgePiersPerTile: compilation.context.bridges.meta.piers,
+    bridgeAddedDrawCalls,
+    bridgeVisibleTriangles,
+    bridgeBytesPerTile: compilation.context.bridges.meta.bytes,
+    bridgeGpuBytes: BRIDGE_FIXED_GPU_BYTES,
+    bridgeSteadyFrameMatrixUpdates: 0,
     ambientLifeInstancesPerFamily: ambientKept.reduce((largest, value) => Math.max(largest, value), 0),
     ambientLifeAddedDrawCalls,
     ambientLifeVisibleTriangles,
