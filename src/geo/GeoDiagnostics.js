@@ -91,6 +91,7 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
   const plantLodSelectorDiagnostics = world?.plantLodSelector?.diagnostics;
   const plantRenderDiagnostics = world?.plantRenderPools?.diagnostics;
   const streetFurnitureDiagnostics = world?.streetFurniturePools?.diagnostics;
+  const ambientLifeDiagnostics = world?.ambientLifePools?.diagnostics;
   estimatedGpuBytes += materialTextureBytes;
   return Object.freeze({
     view,
@@ -140,6 +141,15 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
     streetFurnitureBytesPerTile,
     streetFurniturePlacementTests,
     streetFurnitureSteadyFrameMatrixUpdates: streetFurnitureDiagnostics?.steadyFrameMatrixUpdates ?? 0,
+    ambientLifeEntries: ambientLifeDiagnostics?.entries ?? 0,
+    ambientLifeFamilies: ambientLifeDiagnostics?.activeDrawPools ?? 0,
+    ambientLifeSpriteTriangles: ambientLifeDiagnostics?.spriteTriangles ?? 0,
+    ambientLifeVisibleTriangles: ambientLifeDiagnostics?.visibleTriangles ?? 0,
+    ambientLifeAddedDrawCalls: ambientLifeDiagnostics?.addedDrawCalls ?? 0,
+    ambientLifeInstanceBytes: ambientLifeDiagnostics?.instanceBytes ?? 0,
+    ambientLifeUniformWritesPerFrame: ambientLifeDiagnostics?.uniformWrites ?? 0,
+    ambientLifeCpuMatrixUpdatesPerFrame: ambientLifeDiagnostics?.cpuMatrixUpdates ?? 0,
+    ambientLifeSteadyFrameAllocations: ambientLifeDiagnostics?.steadyFrameAllocations ?? 0,
     waterDomainBytesPerTile,
     collisionBytesPerTile,
     workerContextMilliseconds: world?.timings?.contextMilliseconds,
@@ -236,9 +246,9 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
     if (tile.water) layerCounts.set('water', (layerCounts.get('water') ?? 0) + 1);
     if (tile.buildings || tile.colliders?.length) layerCounts.set('building', (layerCounts.get('building') ?? 0) + 1);
     for (const decoration of tile.decorations ?? []) {
-      const name = decoration.userData?.ambientType == null ? 'decoration' : 'ambience';
-      layerCounts.set(name, (layerCounts.get(name) ?? 0) + 1);
+      layerCounts.set('decoration', (layerCounts.get('decoration') ?? 0) + 1);
     }
+    if (tile.ambientLifeCount) layerCounts.set('ambience', (layerCounts.get('ambience') ?? 0) + 1);
     const vertices = tile.collisionVertices, ringOffsets = tile.collisionRingOffsets;
     const polygonOffsets = tile.collisionPolygonOffsets, spans = tile.collisionSpans;
     const masks = tile.collisionMasks;
@@ -340,6 +350,7 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
       plantLodSelector: world?.plantLodSelector?.diagnostics ?? null,
       plantRender: world?.plantRenderPools?.diagnostics ?? null,
       streetFurniture: world?.streetFurniturePools?.diagnostics ?? null,
+      ambientLife: world?.ambientLifePools?.diagnostics ?? null,
       environmentProfiles: Object.freeze(environmentProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       morphologyProfiles: Object.freeze(morphologyProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       waterDomainProfiles: Object.freeze(waterDomainProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),

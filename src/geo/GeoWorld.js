@@ -4,6 +4,10 @@ import { GDO_FEATURE_VERSIONS, GDO_GENERATOR_VERSION } from '../engine/FeatureVe
 import { PlantRenderPools } from '../engine/PlantRenderPools.js';
 import { StreetFurniturePools } from './GeoStreetFurniturePools.js';
 import {
+  AmbientLifePools,
+  GDO_AMBIENT_LIFE_SOURCE_TYPES,
+} from '../engine/AmbientLifeMotion.js';
+import {
   acquireProceduralMaterialLibrary,
   configureSemanticMaterial,
 } from '../engine/ProceduralMaterials.js';
@@ -260,22 +264,10 @@ function createDecorationGeometry(type) {
       const color = index % 3 === 0 ? [.45, .37, .075] : [.18, .43, .05];
       pieces.push(coloredBox([.048, height, .048], [x, height / 2, z], color, index * .8, index % 2 ? .07 : -.07));
     }
-  } else if (type === 10) {
-    for (const [offsetX, offsetY, offsetZ, size] of [[0,0,0,1], [-.38,.09,.24,.78], [.34,-.06,.31,.68]]) {
-      pieces.push(coloredBox([.18 * size, .065 * size, .12 * size], [offsetX, offsetY, offsetZ], [.10, .075, .055]));
-      pieces.push(coloredBox([.22 * size, .035 * size, .10 * size], [offsetX - .16 * size, offsetY + .015, offsetZ], [.16, .12, .075], 0, .20));
-      pieces.push(coloredBox([.22 * size, .035 * size, .10 * size], [offsetX + .16 * size, offsetY + .015, offsetZ], [.16, .12, .075], 0, -.20));
-      pieces.push(coloredBox([.07 * size, .07 * size, .07 * size], [offsetX, offsetY + .035, offsetZ - .085 * size], [.20, .14, .07]));
-    }
-  } else {
-    for (const [offsetX, offsetY, offsetZ, size] of [[0,0,0,1], [-.16,.09,.12,.72], [.17,.04,-.13,.78]]) {
-      pieces.push(coloredBox([.12 * size, .075 * size, .075 * size], [offsetX, offsetY, offsetZ], [.88, .50, .025]));
-      pieces.push(coloredBox([.025 * size, .083 * size, .083 * size], [offsetX - .025 * size, offsetY, offsetZ], [.025, .018, .012]));
-      pieces.push(coloredBox([.025 * size, .083 * size, .083 * size], [offsetX + .035 * size, offsetY, offsetZ], [.025, .018, .012]));
-      pieces.push(coloredBox([.085 * size, .022 * size, .10 * size], [offsetX - .035 * size, offsetY + .055 * size, offsetZ], [.55, .72, .78], 0, .24));
-      pieces.push(coloredBox([.085 * size, .022 * size, .10 * size], [offsetX + .035 * size, offsetY + .055 * size, offsetZ], [.55, .72, .78], 0, -.24));
-    }
   }
+  // Ambient-life decoration types 10/11 are deliberately absent: birds and
+  // bees render from the flat 2D sprite pools in `gdo:ambientLifeMotion:v1`
+  // instead of per-tile 3D box clusters.
   const merged = mergeGeometries(pieces, false);
   for (const piece of pieces) piece.dispose();
   merged.computeBoundingSphere();
@@ -449,7 +441,6 @@ export class GeoWorld {
     };
     this.pendingPlantOwners = new Map();
     this.plantMountTimer = null;
-    this.ambientDummy = new THREE.Object3D();
     // Reused by continuous movement queries to avoid allocating one hit record
     // per simulation substep. Query candidate Sets are still bounded by the
     // local collision-grid cells touched by the sweep.
@@ -500,11 +491,21 @@ export class GeoWorld {
       'decoration', this.materialLibrary, 'low',
     );
     this.decorationGeometries = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-      .map(type => GEO_PLANT_TYPES.has(type) ? null : createDecorationGeometry(type));
+      .map(type => GEO_PLANT_TYPES.has(type) || GDO_AMBIENT_LIFE_SOURCE_TYPES[type]
+        ? null : createDecorationGeometry(type));
     this.streetFurniturePools = new StreetFurniturePools(this.root, {
       material: this.decorationMaterial,
       terrainSeed: this.terrainSeed,
       renderOrder: GEO_LAYER.decoration.renderBand,
+    });
+    // VEG-09 already owns reduced motion for plants; ambient life reads the
+    // same flag so one preference change covers every animated family.
+    this.ambientLifePools = new AmbientLifePools(this.root, {
+      terrainSeed: this.terrainSeed,
+      renderOrder: GEO_LAYER.ambience.renderBand,
+      layer: GEO_LAYER.ambience,
+      reducedMotion,
+      resolveGroundHeight: terrainHeightAt,
     });
     this.plantRenderPools = new PlantRenderPools(this.root, {
       profile: 'low',
@@ -584,7 +585,8 @@ export class GeoWorld {
       collisionSpans: null, collisionMasks: null,
       supportSlots: null, supportSlotStates: null, supportSlotStride: 0,
       lastUsed: performance.now(), bytes: 0,
-      roadFeatures: 0, landFeatures: 0, waterFeatures: 0, decorationCount: 0, plantPoolCount: 0, buildingFeatures: 0, truncated: false,
+      roadFeatures: 0, landFeatures: 0, waterFeatures: 0, decorationCount: 0, plantPoolCount: 0,
+      ambientLifeCount: 0, buildingFeatures: 0, truncated: false,
       retryCount: 0, retryAt: 0,
     };
     this.tiles.set(key, tile);
@@ -644,20 +646,25 @@ export class GeoWorld {
       Number.isFinite(values[index]) && Number.isFinite(values[index + 1]) && Number.isFinite(values[index + 2]) &&
       Number.isFinite(values[index + 3]) && Number.isFinite(values[index + 4]) && Number.isFinite(values[index + 5]) && values[index + 2] > 0 &&
       Math.hypot(values[index], values[index + 1]) >= 2.8;
+    let ambientRecords = 0;
     for (let index = 0; index < values.length; index += stride) {
-      if (keep(index)) counts[typeAt(index)]++;
+      if (!keep(index)) continue;
+      const type = typeAt(index);
+      // Birds and bees keep their source decoration record but render from the
+      // global 2D sprite pools instead of a tile-local instanced mesh.
+      if (GDO_AMBIENT_LIFE_SOURCE_TYPES[type]) { ambientRecords++; continue; }
+      counts[type]++;
     }
     const meshes = counts.map((count, type) => count && !GEO_PLANT_TYPES.has(type) ? new THREE.InstancedMesh(
       this.decorationGeometries[type], this.decorationMaterial, count,
     ) : null);
     const cursors = counts.map(() => 0);
-    const ambientBases = counts.map((count, type) => type >= 10 && count ? new Float32Array(count * 5) : null);
     const plantPlacements = [];
     const dummy = new THREE.Object3D();
     for (let index = 0; index < values.length; index += stride) {
       if (!keep(index)) continue;
       const type = typeAt(index);
-      const scale = values[index + 2];
+      if (GDO_AMBIENT_LIFE_SOURCE_TYPES[type]) continue;
       const phase = values[index + 4];
       const groundHeight = terrainHeightAt(values[index], values[index + 1], this.terrainSeed);
       if (GEO_PLANT_TYPES.has(type)) {
@@ -667,37 +674,28 @@ export class GeoWorld {
         continue;
       }
       const mesh = meshes[type];
+      if (!mesh) continue;
       const cursor = cursors[type]++;
-      const height = type === 10 ? 2.25 + values[index + 5] * .34 : type === 11 ? .46 + values[index + 5] * .045 : 0;
-      dummy.position.set(values[index], groundHeight + height, values[index + 1]);
+      dummy.position.set(values[index], groundHeight, values[index + 1]);
       dummy.rotation.set(0, phase, 0);
-      dummy.scale.setScalar(scale);
+      dummy.scale.setScalar(values[index + 2]);
       dummy.updateMatrix();
       mesh.setMatrixAt(cursor, dummy.matrix);
-      if (ambientBases[type]) ambientBases[type].set(
-        [values[index], values[index + 1], phase, scale, groundHeight], cursor * 5,
-      );
     }
     const names = ['trees', 'palms', 'shrubs', 'street-lamps', 'rocks', 'flowers', 'benches', 'parked-cars', 'herbs', 'tall-grass', 'birds', 'bees', 'bamboo'];
     for (let type = 0; type < meshes.length; type++) {
       const mesh = meshes[type];
       if (!mesh) continue;
       mesh.name = `${names[type]}:${tile.key}`;
-      const geoLayer = type >= 10 ? GEO_LAYER.ambience : GEO_LAYER.decoration;
-      mesh.renderOrder = geoLayer.renderBand;
-      mesh.userData.geoLayer = geoLayer;
-      if (ambientBases[type]) {
-        mesh.userData.ambientType = type;
-        mesh.userData.ambientBases = ambientBases[type];
-        mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      }
+      mesh.renderOrder = GEO_LAYER.decoration.renderBand;
+      mesh.userData.geoLayer = GEO_LAYER.decoration;
       mesh.instanceMatrix.needsUpdate = true;
       mesh.computeBoundingSphere();
       tile.root.add(mesh);
       tile.decorations.push(mesh);
     }
     if (plantPlacements.length) this._queuePlantOwner(tile.key, plantPlacements);
-    return counts.reduce((sum, count) => sum + count, 0);
+    return counts.reduce((sum, count) => sum + count, 0) + ambientRecords;
   }
 
   _plantView(nowMilliseconds = performance.now()) {
@@ -837,8 +835,10 @@ export class GeoWorld {
       this.pendingPlantOwners.delete(tile.key);
       this.plantRenderPools.removeOwner(tile.key);
       this.streetFurniturePools.removeOwner(tile.key);
+      this.ambientLifePools.removeOwner(tile.key);
       tile.land = null; tile.water = null; tile.decorations.length = 0;
       tile.decorationCount = 0; tile.plantPoolCount = 0; tile.streetFurnitureCount = 0;
+      tile.ambientLifeCount = 0;
       try {
         const landGeometry = createBufferGeometry(context.land);
         if (landGeometry) {
@@ -874,6 +874,12 @@ export class GeoWorld {
           tile, decorationValues, context.decorationStride || 6, clearanceValues, morphologyValues,
         );
       } catch (error) { warnings.push(`details: ${error.message || error}`); }
+      try {
+        // Ambient life is a separate bounded pool: a malformed or over-capped
+        // sprite stream must never suppress the other decoration families.
+        const decorationValues = context.decorations instanceof Float32Array ? context.decorations : new Float32Array();
+        tile.ambientLifeCount = this.ambientLifePools.addOwner(tile.key, decorationValues, context.decorationStride || 6);
+      } catch (error) { warnings.push(`ambient life: ${error.message || error}`); }
       tile.contextWarning = warnings.join('; ');
       if (tile.key === this.initialKey || tile.key === this.lastFocusKey) this._applyBiome(tile.biome);
       this._recordMountTiming('context', mountStarted);
@@ -984,6 +990,7 @@ export class GeoWorld {
       truncated ||= tile.truncated;
     }
     const streetFurnitureDiagnostics = this.streetFurniturePools.diagnostics;
+    const ambientLifeDiagnostics = this.ambientLifePools.diagnostics;
     return Object.freeze({
       provider: this.provider,
       generatorVersion: GDO_GENERATOR_VERSION,
@@ -1001,6 +1008,13 @@ export class GeoWorld {
       streetFurniture,
       streetFurnitureFamilies: streetFurnitureDiagnostics.activeDrawPools,
       streetFurnitureTriangles: streetFurnitureDiagnostics.visibleTriangles,
+      ambientLifeEntries: ambientLifeDiagnostics.entries,
+      ambientLifeFamilies: ambientLifeDiagnostics.activeDrawPools,
+      ambientLifeTriangles: ambientLifeDiagnostics.visibleTriangles,
+      ambientLifeCapPruned: ambientLifeDiagnostics.capEvents.pruned,
+      ambientLifeUniformWrites: ambientLifeDiagnostics.uniformWrites,
+      ambientLifeCpuMatrixUpdates: ambientLifeDiagnostics.cpuMatrixUpdates,
+      ambientLifeReducedMotion: ambientLifeDiagnostics.reducedMotion,
       labels,
       supportSlots,
       occupiedSupportSlots,
@@ -1035,7 +1049,9 @@ export class GeoWorld {
   }
 
   setReducedMotion(value) {
-    return this.plantRenderPools.setReducedMotion(value);
+    const plants = this.plantRenderPools.setReducedMotion(value);
+    const ambience = this.ambientLifePools.setReducedMotion(value);
+    return plants || ambience;
   }
 
   configurePlantWind(options = {}) {
@@ -1054,38 +1070,8 @@ export class GeoWorld {
     return labels.sort((a, b) => b.priority - a.priority).slice(0, 14);
   }
 
-  _animateAmbientLife(time) {
-    const dummy = this.ambientDummy;
-    for (const tile of this.tiles.values()) for (const mesh of tile.decorations) {
-      const type = mesh.userData.ambientType;
-      const bases = mesh.userData.ambientBases;
-      if (!bases || (type !== 10 && type !== 11)) continue;
-      for (let index = 0; index < mesh.count; index++) {
-        const base = index * 5;
-        const x = bases[base], z = bases[base + 1], phase = bases[base + 2], scale = bases[base + 3];
-        const groundHeight = bases[base + 4];
-        if (type === 10) {
-          const angle = phase + time * (.30 + (index % 3) * .045);
-          const radius = .72 + (index % 4) * .16;
-          dummy.position.set(x + Math.cos(angle) * radius,
-            groundHeight + 2.55 + (index % 5) * .28 + Math.sin(time * 1.35 + phase) * .18,
-            z + Math.sin(angle) * radius);
-          dummy.rotation.set(0, -angle, Math.sin(time * 3.2 + phase) * .08);
-        } else {
-          const angle = phase + time * (1.45 + (index % 4) * .13);
-          const radius = .13 + (index % 3) * .045;
-          dummy.position.set(x + Math.cos(angle) * radius,
-            groundHeight + .48 + (index % 4) * .055 + Math.sin(time * 4.4 + phase) * .075,
-            z + Math.sin(angle * 1.17) * radius);
-          dummy.rotation.set(0, -angle, Math.sin(time * 8 + phase) * .12);
-        }
-        dummy.scale.setScalar(scale);
-        dummy.updateMatrix();
-        mesh.setMatrixAt(index, dummy.matrix);
-      }
-      mesh.instanceMatrix.needsUpdate = true;
-    }
-  }
+  // Ambient life motion now lives entirely in the shared vertex program; the
+  // world only forwards the frame clock (one uniform write, zero matrices).
 
   update(position, camera = this.viewCamera, viewportHeight = this.viewportHeight, nowMilliseconds = performance.now()) {
     if (this.disposed) return;
@@ -1100,7 +1086,7 @@ export class GeoWorld {
     this._blendEnvironmentGround(nowMilliseconds);
     const time = nowMilliseconds * .001;
     this.waterMaterial.uniforms.uTime.value = time;
-    this._animateAmbientLife(time);
+    this.ambientLifePools.update(nowMilliseconds);
     const fractionalX = this.reference.originX + position.x / this.reference.tileSize;
     const fractionalY = this.reference.originY + position.z / this.reference.tileSize;
     const x = Math.floor(fractionalX), y = Math.floor(fractionalY);
@@ -1156,8 +1142,10 @@ export class GeoWorld {
     this.pendingPlantOwners.delete(tile.key);
     this.plantRenderPools.removeOwner(tile.key);
     this.streetFurniturePools.removeOwner(tile.key);
+    this.ambientLifePools.removeOwner(tile.key);
     tile.plantPoolCount = 0;
     tile.streetFurnitureCount = 0;
+    tile.ambientLifeCount = 0;
     tile.root.removeFromParent();
     tile.ground?.geometry.dispose();
     tile.roads?.geometry.dispose();
@@ -1695,6 +1683,7 @@ export class GeoWorld {
     this.tiles.clear(); this.queue.length = 0;
     this.plantRenderPools.dispose();
     this.streetFurniturePools.dispose();
+    this.ambientLifePools.dispose();
     this.root.removeFromParent(); this.root.clear();
     this.groundMaterial.dispose();
     this.roadMaterial.dispose(); this.landMaterial.dispose(); this.buildingMaterial.dispose();

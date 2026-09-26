@@ -106,7 +106,7 @@ Requesting z15/z16 URLs does not create more detailed source data when the provi
 
 Minecraft world generation combines seeded randomness with continuous, multi-octave noise so adjacent chunks remain coherent, then adds biome-specific features in later generation steps. The coordinate world applies that architecture to ambience rather than copying game code: a source-tile-stable three-octave value-noise field controls vegetation patches; a jittered global lattice supplies reproducible candidate points; mapped roads, water, and exact building polygons reject invalid candidates; and biome rules choose voxel herbs, grasses, flowers, shrubs, and trees. A separate lightweight feature step anchors small bird and bee populations to those plant patches.
 
-The dense ground cover remains one instanced draw per visual family. Only a bounded set of bird/bee instance matrices is animated, avoiding one scene object or draw call per creature.
+The dense ground cover remains one instanced draw per visual family. Only a bounded set of bird/bee instances exists at all, and since `gdo:ambientLifeMotion:v1` their motion is evaluated entirely in the shared sprite vertex program from packed instance attributes rather than by rewriting matrices on the CPU, so a steady frame still adds no per-creature scene object, draw call, or matrix upload.
 
 Sources:
 

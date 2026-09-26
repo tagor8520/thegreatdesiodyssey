@@ -371,6 +371,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   const contextRestored = () => {
     world.plantRenderPools.handleContextRestored();
     world.streetFurniturePools.handleContextRestored();
+    world.ambientLifePools.handleContextRestored();
     lost = false; resize(); lastFrame = performance.now(); animationFrame = requestAnimationFrame(frame);
   };
   document.addEventListener('visibilitychange', visibility);

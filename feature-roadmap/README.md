@@ -100,6 +100,7 @@ Every stage must preserve these requirements:
 - Plant placement now uses family/role-specific declared base, root, and crown extents against exact building rings, route reservations, terrain support, water/shore domains, and mapped land kind. A bounded 16-sample policy can shrink and shift branch/crown organs through one custom instance attribute without moving source-owned anchors or creating geometry/collision proxies.
 - A versioned continuous vegetation profile now blends tropical, subtropical, arid, upland, riparian, and urban influences from latitude, interpolated absolute-coordinate macro fields, terrain, mapped land/water, and bounded road/building proximity. Each aligned plant record retains quantized dominant-three IDs/weights plus bounded aspect, variant, palette, age, and stiffness controls; geometry stays in one fixed two-variant-per-family cache, including bamboo, and focus-ground colour transitions are smoothed.
 - A versioned shared whole-plant wind field now deforms those resident pools in the vertex shader. World-aligned direction, low-frequency smoothed gust/turbulence, per-vertex height/bend/root roles, and per-instance stable phase/stiffness produce bounded coherent sway without touching placement, collision, support, ownership, clearances, or instance matrices. Reduced motion removes gust/turbulence and caps the remaining calm sway; one clock uniform write, zero wind matrix updates, and zero steady-frame wind allocations are low-profile gates.
+- Coordinate birds and bees now render as pooled flat sprites whose entire motion runs in one shared vertex program. Ten-triangle flat silhouettes of coplanar quads replace the former 144-triangle 3D bodies; position, elongated non-looping travel, bounded lateral weave, climb/hover, wing flap, appearance envelope, and camera-distance fade come from per-instance attributes, so a steady frame writes one clock uniform and zero matrices. Agents fade in and out of a deterministic per-cycle window with a dormant gap instead of orbiting forever, stay visual-only with no collision surface, and release their cloned geometry on eviction under fixed per-family and owner caps.
 - Curated streaming/quality/draw-call improvements and shared engine ownership.
 
 ### Partial
@@ -110,12 +111,13 @@ Every stage must preserve these requirements:
 - Water, terrain, roads, and labels use central semantic descriptors; provider bridge/tunnel/numeric levels resolve to distinct physical grades, and same-grade road joins/crossings receive bounded deterministic merge patches. Transparent-water moving validation remains open.
 - Coordinate terrain now uses a seam-free 33×33 deterministic fallback grid per resident tile. The same height/normal query grounds terrain, roads, buildings, land cover, details, labels, player steps, and camera clearance; optional public DEM enrichment remains deferred.
 - Material mips, derivative-filtered facade/style edges, uniform-controlled distance/profile fades, and normal-first fading are implemented in both modes; moving low-pixel-ratio shimmer capture remains open.
-- Ambient life is deterministic and bounded but still updates bird/bee instance matrices on the CPU and has no agent scheduler.
+- Ambient life is now deterministic, GPU-driven, flat, and pooled, but it has no explicit screen-space or activity scheduler beyond per-cycle appearance windows, camera-distance fade, and per-family/owner caps; the `COL-09` capped dynamic hash it would consume is still queued.
 
 ### Active now
 
 - `COL-05`: moving visual validation of the new coordinate TPP obstruction sweep.
 - `LAY-03`: transparent-water order and low-profile moving visual validation.
+- `LIF-02`: explicit screen-space/activity scheduler budgets on top of the landed ambient pools; its `COL-09` capped dynamic hash is still queued, and moving bird/bee composition still needs capture tooling.
 
 ## 7. Canonical dependency chain
 
@@ -281,9 +283,9 @@ Why this order:
 | 114 | ENV-05 | P1 | Bounded weather/shore effects | QUEUED | ENV-03,ENV-04,MAT-03 | Alpha-test/dither, strict screen/overdraw counts |
 | 115 | ENV-06 | P2 | Procedural ambient audio zones | QUEUED | TER-07,ENV-04 | Browser-generated/packaged legal audio with distance/activity caps |
 | 116 | ENV-07 | P2 | Optional AO/contact-depth benchmark | DEFERRED | QLT-05,MAT-04 | Only if low/balanced GPU budget proves value |
-| 120 | LIF-01 | P1 | Existing deterministic birds and bees | PARTIAL | VEG-01 | Bounded instances exist; CPU transforms remain |
-| 121 | LIF-02 | P1 | Ambient-life scheduler and pools | QUEUED | COL-09,VEG-07,QLT-05 | Screen/distance/activity budgets; no per-agent object graphs |
-| 122 | LIF-03 | P1 | GPU bird/insect group motion | QUEUED | LIF-02,MAT-04 | Zero CPU matrix rewrite for far ambience |
+| 120 | LIF-01 | P1 | Existing deterministic birds and bees | ADDED | VEG-01 | Bounded flat sprites appear/disappear on deterministic per-cycle windows; no CPU transforms |
+| 121 | LIF-02 | P1 | Ambient-life scheduler and pools | PARTIAL | COL-09,VEG-07,QLT-05 | Owner-scoped bounded pools, distance fade, and per-cycle activity windows exist; explicit screen-space scheduling and the `COL-09` hash remain |
+| 122 | LIF-03 | P1 | GPU bird/insect group motion | ADDED | LIF-02,MAT-04 | Zero CPU matrix rewrite for far ambience; one clock uniform per steady frame |
 | 123 | LIF-04 | P2 | Bounded pedestrians | QUEUED | LIF-02,TER-05,GME-03 | Route graph, despawn/reuse, no dense global simulation |
 | 124 | LIF-05 | P2 | Bounded traffic/boats | QUEUED | LIF-02,DET-07,TER-08 | Coarse path movement and capped dynamic proxies |
 

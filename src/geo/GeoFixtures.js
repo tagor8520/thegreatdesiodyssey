@@ -2,6 +2,11 @@ import { GDO_FEATURE_VERSIONS, featureNamespace } from '../engine/FeatureVersion
 import { buildBuildingGeometry, buildRoadGeometry } from './GeoTileBuilder.js';
 import { buildContextData } from './GeoTileContext.js';
 import { streetFurnitureRecipes } from './GeoStreetFurnitureGrammar.js';
+import {
+  GDO_AMBIENT_LIFE_SOURCE_TYPES,
+  GDO_AMBIENT_LIFE_LIMITS,
+  GDO_AMBIENT_LIFE_FAMILIES,
+} from '../engine/AmbientLifeMotion.js';
 import { buildTerrainGrid, terrainSeedForCoordinate } from './GeoTerrain.js';
 
 export const GEO_FIXTURE_EXTENT = 4096;
@@ -314,13 +319,23 @@ export function collectGeoFixtureBudgetMetrics(compilation) {
     .reduce((count, geometry) => count + Number(Boolean(geometry?.indices?.length)), 0) +
     Number(Boolean(compilation.buildings?.detailIndices?.length));
   const decorationCounts = Array(DECORATION_TRIANGLES.length).fill(0);
+  const ambientCounts = [0, 0];
   const decorations = compilation.context.decorations;
   for (let offset = 0; offset + 5 < decorations.length; offset += compilation.context.decorationStride || 6) {
     const type = Math.max(0, Math.min(decorationCounts.length - 1, Math.round(decorations[offset + 3])));
+    const family = GDO_AMBIENT_LIFE_SOURCE_TYPES[type];
+    if (family) { ambientCounts[GDO_AMBIENT_LIFE_FAMILIES[family].index]++; continue; }
     decorationCounts[type]++;
   }
   const decorationDraws = decorationCounts.reduce((count, value) => count + Number(value > 0), 0);
   const decorationTriangles = decorationCounts.reduce((total, count, type) => total + count * DECORATION_TRIANGLES[type], 0);
+  // Ambient sprites are one global 2D draw per family, pruned to the profile cap.
+  const ambientKept = ambientCounts.map(count => Math.min(count, GDO_AMBIENT_LIFE_LIMITS.maxInstancesPerFamily));
+  const ambientLifeAddedDrawCalls = ambientKept.reduce((count, value) => count + Number(value > 0), 0);
+  const ambientLifeVisibleTriangles = ambientKept.reduce((total, count, familyIndex) =>
+    total + count * GDO_AMBIENT_LIFE_FAMILIES[familyIndex === 0 ? 'bird' : 'bee'].triangles, 0);
+  const ambientLifeInstanceBytes = ambientLifeAddedDrawCalls > 0
+    ? GDO_AMBIENT_LIFE_LIMITS.maxInstanceBytes : 0;
   const furnitureCounts = Array(STREET_FURNITURE_TRIANGLES.length).fill(0);
   const furnitureValues = compilation.context.streetFurniture.placements;
   for (let offset = 0; offset + 5 < furnitureValues.length; offset += compilation.context.streetFurniture.stride) {
@@ -341,11 +356,11 @@ export function collectGeoFixtureBudgetMetrics(compilation) {
   return Object.freeze({
     residentTiles: 1,
     activeRequests: 0,
-    drawCalls: presentDraws + decorationDraws + streetFurnitureAddedDrawCalls,
+    drawCalls: presentDraws + decorationDraws + streetFurnitureAddedDrawCalls + ambientLifeAddedDrawCalls,
     triangles: rawTriangles(compilation.terrain) + rawTriangles(compilation.roads) +
       rawTriangles(compilation.context.land) + rawTriangles(compilation.context.water) +
       rawTriangles(compilation.buildings) + compilation.buildings.detailIndices.length / 3 +
-      decorationTriangles + streetFurnitureVisibleTriangles,
+      decorationTriangles + streetFurnitureVisibleTriangles + ambientLifeVisibleTriangles,
     buildingDetailBuildings: compilation.buildings.meta.buildingGrammar?.selectedBuildings ?? 0,
     buildingDetailBoxes: compilation.buildings.meta.buildingGrammar?.boxes ?? 0,
     buildingDetailTriangles: compilation.buildings.meta.buildingGrammar?.triangles ?? 0,
@@ -361,10 +376,18 @@ export function collectGeoFixtureBudgetMetrics(compilation) {
       compilation.context.streetFurniture.meta.buildingTests + compilation.context.streetFurniture.meta.decorationTests +
       compilation.context.streetFurniture.meta.conflictTests,
     streetFurnitureSteadyFrameMatrixUpdates: 0,
+    ambientLifeInstancesPerFamily: ambientKept.reduce((largest, value) => Math.max(largest, value), 0),
+    ambientLifeAddedDrawCalls,
+    ambientLifeVisibleTriangles,
+    ambientLifeInstanceBytes,
+    ambientLifeUniformWritesPerFrame: 0,
+    ambientLifeCpuMatrixUpdatesPerFrame: 0,
+    ambientLifeSteadyFrameAllocations: 0,
     // Includes all generated typed output plus the uploaded instance matrices.
     estimatedGpuBytes: typedOutputBytes +
-      (decorations.length / (compilation.context.decorationStride || 6) +
-        compilation.context.streetFurniture.meta.placements) * 64,
+      ((decorations.length / (compilation.context.decorationStride || 6) -
+        ambientKept.reduce((total, value) => total + value, 0)) +
+        compilation.context.streetFurniture.meta.placements) * 64 + ambientLifeInstanceBytes,
     collisionBytesPerTile,
     waterDomainBytesPerTile,
   });

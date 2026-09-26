@@ -640,7 +640,7 @@ test('OpenMapTiles context layers select mapped arid biome without random drift'
   assert.equal(result.labels[0].name, 'Jaisalmer Fringe');
 });
 
-test('context phase mounts fallback ambience even when map surfaces are empty', () => {
+test('context phase mounts fallback ambience as shared 2D sprite pools without CPU matrices', () => {
   const originalWorker = globalThis.Worker;
   globalThis.Worker = class { addEventListener() {} postMessage() {} terminate() {} };
   const world = new GeoWorld(new THREE.Scene(), { latitude: 28.99, longitude: 77.71 });
@@ -664,13 +664,31 @@ test('context phase mounts fallback ambience even when map surfaces are empty', 
     });
     assert.equal(tile.decorationCount, 3);
     assert.ok(tile.decorations.some(mesh => mesh.name === `benches:${tile.key}`));
-    const bird = tile.decorations.find(mesh => mesh.name === `birds:${tile.key}`);
-    assert.ok(bird && tile.decorations.some(mesh => mesh.name === `bees:${tile.key}`));
-    const before = new THREE.Matrix4(), after = new THREE.Matrix4();
-    bird.getMatrixAt(0, before);
-    world._animateAmbientLife(3);
-    bird.getMatrixAt(0, after);
-    assert.notDeepEqual(before.elements, after.elements, 'ambient fauna should animate as bounded instances');
+    assert.equal(tile.decorations.some(mesh => /^(birds|bees):/.test(mesh.name)), false,
+      'birds and bees render from the shared flat sprite pools, not tile-local meshes');
+    assert.equal(tile.ambientLifeCount, 2);
+    const pool = world.ambientLifePools;
+    assert.equal(pool.diagnostics.namespace, 'gdo:ambientLifeMotion:v1');
+    assert.equal(pool.diagnostics.entries, 2);
+    assert.equal(pool.diagnostics.addedDrawCalls, 2);
+    assert.equal(pool.diagnostics.planar, true, 'sprites are flat 2D silhouettes');
+    assert.equal(pool.meshes.every(mesh => mesh.geometry.userData.gdoAmbientSprite.flat), true);
+    const sprites = pool.spriteSnapshot();
+    assert.equal(sprites.length, 2);
+    assert.equal(sprites.reduce((total, family) => total + family.count, 0), 2);
+    assert.equal(world.stats.ambientLifeEntries, 2);
+    // Motion is one clock uniform per changed frame: instance data never moves.
+    world.update({ x: 0, z: 0 }, null, 720, 4_000);
+    assert.equal(pool.diagnostics.uniformWrites, 1);
+    world.update({ x: 0, z: 0 }, null, 720, 4_000);
+    assert.equal(pool.diagnostics.uniformWrites, 0, 'an unchanged clock writes nothing');
+    assert.equal(pool.diagnostics.cpuMatrixUpdates, 0);
+    assert.equal(pool.diagnostics.steadyFrameAllocations, 0);
+    assert.deepEqual(pool.spriteSnapshot(), sprites, 'a steady frame never rewrites sprite instances');
+    assert.equal(world.stats.ambientLifeCpuMatrixUpdates, 0);
+    assert.equal(pool.setReducedMotion(true), true);
+    assert.equal(world.stats.ambientLifeReducedMotion, true);
+    assert.equal(world.setReducedMotion(false), true);
     assert.equal(world.stats.biome, 'Indo-Gangetic');
     assert.equal(world.visibleLabels[0].name, 'Baghpat Road');
   } finally {
