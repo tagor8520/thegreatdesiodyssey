@@ -7,7 +7,7 @@ import {
   assertLowProfileBudget,
   evaluateLowProfileBudget,
 } from '../engine/PerformanceBudget.js';
-import { GEO_QUERY_MASK } from './GeoCollision.js';
+import { GEO_PLAYER_COLLISION_PROFILE, GEO_QUERY_MASK } from './GeoCollision.js';
 import { GeoDebugOverlay } from './GeoDebugOverlay.js';
 import {
   buildGeoDebugSnapshot,
@@ -183,12 +183,18 @@ test('fixture tile eviction and remount reproduce bytes and release owned resour
     assert.equal(world.plantRenderPools.diagnostics.entries, firstTile.plantPoolCount);
     assert.equal(world.streetFurniturePools.diagnostics.entries, firstTile.streetFurnitureCount);
     let disposals = 0;
-    for (const name of ['ground', 'roads', 'land', 'water', 'buildings', 'buildingDetails']) {
-      firstTile[name]?.geometry.addEventListener('dispose', () => disposals++);
+    const watched = ['ground', 'roads', 'land', 'water', 'buildings', 'buildingDetails']
+      .filter(name => firstTile[name]?.geometry);
+    for (const name of watched) firstTile[name].geometry.addEventListener('dispose', () => disposals++);
+    // The hero mesh belongs to the resident pool, so its release is counted here.
+    let landmarkDisposals = 0;
+    for (const entry of world.landmarkPools.owners.values()) {
+      entry.mesh.geometry.addEventListener('dispose', () => landmarkDisposals++);
     }
     const tileX = firstTile.x, tileY = firstTile.y;
     world._evictTile(firstTile);
-    assert.equal(disposals, 6);
+    assert.equal(disposals, watched.length);
+    assert.equal(landmarkDisposals, 1, 'eviction releases the hero geometry with its owner');
     assert.equal(firstTile.root.children.length, 0);
     assert.equal(firstTile.waterDomain, null);
     assert.equal(firstTile.clearanceDiagnostics, null);
@@ -221,12 +227,119 @@ test('only the focused source tile exposes its bounded near building-detail batc
     world._requestTile(first.x + 1, first.y, 1);
     const second = world.tiles.get(`${first.x + 1}:${first.y}`);
     applyCompilation(world, second, compileGeoFixture('provider-equivalence', 'openmaptiles'));
-    assert.equal(first.buildingDetails.visible, true);
-    assert.equal(second.buildingDetails.visible, false);
+    // This fixture carries one mapped building, which DET-09 promotes to a hero,
+    // so the bounded focus batch is the resident hero mesh rather than a shell.
+    const owners = [...world.landmarkPools.owners.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]));
+    assert.equal(owners.length, 2);
+    assert.equal(world.stats.landmarkHeroes, 2);
+    assert.equal(first.landmarkGrammar.selected, 1);
+    assert.equal(owners[0][1].mesh.visible, true);
+    assert.equal(owners[1][1].mesh.visible, false);
+    assert.equal(world.stats.landmarkAddedDrawCalls, 1, 'exactly one hero draw is visible');
+    assert.equal(world.stats.landmarkTriangles, second.landmarkGrammar.triangles);
     world.update({ x: world.reference.tileSize + .1, z: 0 }, null, 720, 1_000);
-    assert.equal(first.buildingDetails.visible, false);
-    assert.equal(second.buildingDetails.visible, true);
-    assert.equal(world.stats.buildingDetailBuildings, second.buildingMeta.buildingGrammar.selectedBuildings);
+    assert.equal(owners[0][1].mesh.visible, false);
+    assert.equal(owners[1][1].mesh.visible, true);
+    assert.equal(world.stats.landmarkTriangles, second.landmarkGrammar.triangles);
+    assert.equal(world.stats.landmarkBoxes,
+      first.landmarkGrammar.boxes + second.landmarkGrammar.boxes,
+      'resident hero boxes are counted across owners');
+  } finally {
+    world.dispose();
+    globalThis.Worker = previousWorker;
+  }
+});
+
+function landmarkColliderBlocked(tile, x, y, z, radius) {
+  for (let ordinal = 0; ordinal * 4 < tile.colliders.length; ordinal++) {
+    if (((tile.collisionMasks?.[ordinal] ?? 0) & GEO_QUERY_MASK.SOLID_PLAYER) === 0) continue;
+    const base = tile.collisionSpans?.[ordinal * 2], top = tile.collisionSpans?.[ordinal * 2 + 1];
+    if (Number.isFinite(base) && (y < base || y > top)) continue;
+    const index = ordinal * 4;
+    if (x + radius < tile.colliders[index] || x - radius > tile.colliders[index + 2] ||
+        z + radius < tile.colliders[index + 1] || z - radius > tile.colliders[index + 3]) continue;
+    if (circleIntersectsFootprint(x, z, radius, ordinal, tile.collisionVertices,
+      tile.collisionRingOffsets, tile.collisionPolygonOffsets)) return true;
+  }
+  return false;
+}
+
+test('DET-09 hero landmarks swap their mapped shell for tight compounds and keep true openings walkable', () => {
+  const previousWorker = globalThis.Worker;
+  globalThis.Worker = class { addEventListener() {} postMessage() {} terminate() {} };
+  const world = new GeoWorld(new THREE.Scene(), { latitude: 28.9845, longitude: 77.7064 });
+  try {
+    const tile = [...world.tiles.values()][0];
+    applyCompilation(world, tile, compileGeoFixture('provider-equivalence', 'openmaptiles'));
+    const meta = tile.landmarkGrammar;
+    assert.equal(meta.selected, 1);
+    assert.equal(meta.heroes.length, 1);
+    const hero = meta.heroes[0];
+    // The hero replaces the plain extruded shell it was chosen from.
+    assert.ok(meta.suppressedVertices > 0, 'the mapped shell is suppressed, not duplicated');
+    assert.equal(meta.detailDeferrals, 1, 'facade detail defers to the hero that replaced it');
+    assert.equal(tile.buildingMeta.buildingGrammar.boxes, 0);
+    // Batching: one merged, hidden-face-compiled batch per hero.
+    assert.equal(hero.hiddenFaces > 0, true);
+    assert.ok(hero.triangles < hero.boxes * 12, 'hidden faces are compiled away');
+    assert.ok(hero.boxes >= 80 && hero.boxes <= 220, 'a hero stays inside the canonical box band');
+    // Openings: reserved, never sealed, and never one enclosing AABB.
+    assert.equal(hero.sealedOpenings, 0);
+    assert.equal(hero.enclosingCompounds, 0);
+    assert.ok(hero.passableOpenings >= 1, 'the hero carries a true walkable opening');
+    assert.ok(hero.passages.length >= 1);
+    // Compounds, not the shell: the mapped collider is disabled and one tight box
+    // per load-bearing module replaces it.
+    assert.equal(tile.collisionMasks[0], 0, 'the mapped shell collider is disabled in place');
+    const compoundColliders = [...tile.collisionMasks]
+      .filter(mask => (mask & GEO_QUERY_MASK.SOLID_PLAYER) !== 0).length;
+    assert.equal(compoundColliders, hero.structuralCompounds);
+    assert.ok(hero.boxes - hero.structuralCompounds > hero.structuralCompounds,
+      'most hero boxes are ornament and never earn collision');
+    const extent = item => Math.hypot(item[3] - item[0], item[4] - item[1], item[5] - item[2]);
+    const heroDiagonal = Math.hypot(hero.bounds[2] - hero.bounds[0], hero.bounds[3] - hero.bounds[1]);
+    assert.ok(Math.max(...hero.compounds.map(extent)) < heroDiagonal,
+      'every structural compound is tighter than the hero it belongs to');
+    // Walk the real collision set: the opening is clear at every sampled height
+    // along its approach axis, and the flanking masonry still blocks.
+    const radius = GEO_PLAYER_COLLISION_PROFILE.radius + GEO_PLAYER_COLLISION_PROFILE.skin;
+    const [minimumX, minimumY, minimumZ, maximumX, maximumY, maximumZ] = hero.passages[0];
+    const alongIsX = Math.abs(hero.axis[0]) >= Math.abs(hero.axis[1]);
+    const alongMinimum = alongIsX ? minimumX : minimumZ;
+    const alongMaximum = alongIsX ? maximumX : maximumZ;
+    const acrossMinimum = alongIsX ? minimumZ : minimumX;
+    const acrossMaximum = alongIsX ? maximumZ : maximumX;
+    const acrossCentre = (acrossMinimum + acrossMaximum) / 2;
+    const passageHeight = maximumY - minimumY;
+    assert.ok(acrossMaximum - acrossMinimum > radius * 2, 'the opening clears the player profile');
+    assert.ok(passageHeight > GEO_PLAYER_COLLISION_PROFILE.radius * 2);
+    for (const fraction of [.25, .5, .8]) {
+      const y = minimumY + passageHeight * fraction;
+      for (let sample = 0; sample <= 40; sample++) {
+        const along = alongMinimum - .5 + (alongMaximum - alongMinimum + 1) * (sample / 40);
+        const x = alongIsX ? along : acrossCentre;
+        const z = alongIsX ? acrossCentre : along;
+        assert.equal(landmarkColliderBlocked(tile, x, y, z, radius), false,
+          `opening must stay walkable at height ${fraction}`);
+      }
+    }
+    let flankBlocked = false;
+    for (let sample = 0; sample <= 40 && !flankBlocked; sample++) {
+      const across = acrossMinimum - 1 + (acrossMaximum - acrossMinimum + 2) * (sample / 40);
+      const along = (alongMinimum + alongMaximum) / 2;
+      const x = alongIsX ? along : across;
+      const z = alongIsX ? across : along;
+      flankBlocked = landmarkColliderBlocked(tile, x, minimumY + passageHeight * .5, z, radius);
+    }
+    assert.equal(flankBlocked, true, 'the flanking masses still block the cross axis');
+    // Outside the reserved opening the hero is solid: a walker cannot cross the
+    // hero anywhere at mid height without meeting a compound.
+    const midY = minimumY + passageHeight * .5;
+    const crossX = alongIsX ? (alongMinimum + alongMaximum) / 2 : acrossCentre + (acrossMaximum - acrossMinimum);
+    const crossZ = alongIsX ? acrossCentre + (acrossMaximum - acrossMinimum) : (alongMinimum + alongMaximum) / 2;
+    assert.equal(landmarkColliderBlocked(tile, crossX, midY, crossZ, radius), true,
+      'no landmark-wide AABB is needed: the modules themselves block');
   } finally {
     world.dispose();
     globalThis.Worker = previousWorker;
@@ -363,7 +476,9 @@ test('debug snapshot exposes bounded query roles, owners, supports, LOD, and tim
   assert.ok(snapshot.lineSegments <= 2000);
   assert.deepEqual(snapshot.summary.owners, ['fixture:dense']);
   assert.deepEqual(snapshot.summary.layers, [['building', 1], ['ground', 1], ['road', 1]]);
-  assert.equal(snapshot.summary.collisionPolygons, 90);
+  // Dense fixture colliders are the mapped footprints plus the hero's tight compounds.
+  assert.equal(snapshot.summary.collisionPolygons, fixture.buildings.colliders.length / 4);
+  assert.ok(snapshot.summary.collisionPolygons > 90, 'the hero contributes tight compound colliders');
   assert.ok(snapshot.summary.roadSupports > 0);
   assert.equal(snapshot.summary.supportSlots, fixture.buildings.supportSlotStates.length);
   assert.equal(snapshot.summary.occupiedSlots, fixture.buildings.meta.occupiedSupportSlots);
@@ -381,7 +496,10 @@ test('debug snapshot exposes bounded query roles, owners, supports, LOD, and tim
   assert.equal(snapshot.summary.streetFurnitureProfiles[0].namespace, 'gdo:streetFurniture:v1');
   assert.equal(snapshot.summary.streetFurnitureProfiles[0].placements, fixture.context.streetFurniture.meta.placements);
   assert.equal(snapshot.summary.focusSupport.kind, 'road');
-  assert.match(snapshot.summary.masks[0][0], /player|camera/);
+  assert.ok(snapshot.summary.masks.some(([role]) => /player|camera/.test(role)),
+    'mapped shells keep their player/camera query roles');
+  assert.ok(snapshot.summary.masks.some(([role]) => role === 'none'),
+    'the replaced hero shell is disabled in place while its tight compounds carry the roles');
   assert.match(describeGeoQueryMask(GEO_QUERY_MASK.SOLID_PLAYER | GEO_QUERY_MASK.CAMERA_BLOCKER), /player\+camera/);
   const limited = buildGeoDebugSnapshot(world, { x: 50, z: 50 }, { maxLineSegments: 100 });
   assert.equal(limited.truncated, true);

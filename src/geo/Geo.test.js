@@ -333,9 +333,11 @@ test('same-grade roads receive one bounded deterministic junction patch while se
 });
 
 test('building builder preserves mapped X/Z footprint, emits upward roofs, and creates colliders', () => {
-  const openMapTiles = buildBuildingGeometry({ layers: { building: layer(buildingFeature({ render_height: 30 })) } }, request);
-  const repeated = buildBuildingGeometry({ layers: { building: layer(buildingFeature({ render_height: 30 })) } }, request);
-  const shortbread = buildBuildingGeometry({ layers: { buildings: layer(buildingFeature()) } }, request);
+  // DET-09 hero landmarks are exercised separately; this pins the plain shell.
+  const plainRequest = Object.freeze({ ...request, landmarks: false });
+  const openMapTiles = buildBuildingGeometry({ layers: { building: layer(buildingFeature({ render_height: 30 })) } }, plainRequest);
+  const repeated = buildBuildingGeometry({ layers: { building: layer(buildingFeature({ render_height: 30 })) } }, plainRequest);
+  const shortbread = buildBuildingGeometry({ layers: { buildings: layer(buildingFeature()) } }, plainRequest);
   assert.equal(openMapTiles.meta.features, 1);
   assert.equal(shortbread.meta.features, 1);
   assert.deepEqual([...openMapTiles.colliders], [0, 0, 100, 100]);
@@ -382,9 +384,12 @@ test('DET-04 building integration emits one bounded detail batch without changin
       building: layer(buildingFeature({ render_height: 20 })),
     },
   };
-  const detailed = buildBuildingGeometry(tile, request);
-  const repeated = buildBuildingGeometry(tile, request);
-  const plain = buildBuildingGeometry(tile, { ...request, buildingDetails: false });
+  // Facade detail and hero landmarks are independent opt-outs; pin landmarks off
+  // so this test isolates the detail batch from the hero grammar.
+  const detailRequest = Object.freeze({ ...request, landmarks: false });
+  const detailed = buildBuildingGeometry(tile, detailRequest);
+  const repeated = buildBuildingGeometry(tile, detailRequest);
+  const plain = buildBuildingGeometry(tile, { ...detailRequest, buildingDetails: false });
   assert.equal(detailed.meta.buildingGrammar.namespace, 'gdo:objectGrammar:v2');
   assert.equal(detailed.meta.buildingGrammar.selectedBuildings, 1);
   assert.equal(detailed.meta.buildingGrammar.roadFacingBuildings, 1);
@@ -415,11 +420,11 @@ test('DET-04 building integration emits one bounded detail batch without changin
   const ordered = buildBuildingGeometry({ layers: {
     transportation: layer(lineFeature({ class: 'residential' })),
     building: layer(firstBuilding, secondBuilding),
-  } }, request);
+  } }, detailRequest);
   const reordered = buildBuildingGeometry({ layers: {
     transportation: layer(lineFeature({ class: 'residential' })),
     building: layer(secondBuilding, firstBuilding),
-  } }, request);
+  } }, detailRequest);
   assert.deepEqual(ordered.detailPositions, reordered.detailPositions,
     'unrelated provider feature order must not move or restyle footprint-hashed detail');
   assert.deepEqual(ordered.detailColors, reordered.detailColors);

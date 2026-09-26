@@ -4,6 +4,7 @@ import { buildContextData } from './GeoTileContext.js';
 import { streetFurnitureRecipes } from './GeoStreetFurnitureGrammar.js';
 import { bridgeRecipes, GEO_BRIDGE_FAMILY_NAMES, GEO_BRIDGE_STRIDE } from './GeoBridgeGrammar.js';
 import { GEO_BRIDGE_POOL_LIMITS } from './GeoBridgePools.js';
+import { GEO_LANDMARK_POOL_LIMITS } from './GeoLandmarkPools.js';
 import {
   GDO_AMBIENT_LIFE_SOURCE_TYPES,
   GDO_AMBIENT_LIFE_LIMITS,
@@ -248,6 +249,8 @@ export function geoFixtureTypedViews(compilation) {
       'positions', 'normals', 'colors', 'indices', 'detailPositions', 'detailNormals', 'detailColors', 'detailIndices',
       'colliders', 'collisionVertices', 'collisionRingOffsets', 'collisionPolygonOffsets',
       'collisionSpans', 'collisionMasks', 'supportSlots', 'supportSlotStates',
+      // DET-09 hero geometry travels in the same buildings phase.
+      'landmarkPositions', 'landmarkNormals', 'landmarkColors', 'landmarkIndices',
     ]],
   ];
   const views = [];
@@ -325,7 +328,9 @@ export function collectGeoFixtureBudgetMetrics(compilation) {
   const presentDraws = [compilation.terrain, compilation.roads, compilation.context.land,
     compilation.context.water, compilation.buildings]
     .reduce((count, geometry) => count + Number(Boolean(geometry?.indices?.length)), 0) +
-    Number(Boolean(compilation.buildings?.detailIndices?.length));
+    Number(Boolean(compilation.buildings?.detailIndices?.length)) +
+    // A hero is one merged, hidden-face-reduced draw for the focused tile.
+    Number(Boolean(compilation.buildings?.landmarkIndices?.length));
   const decorationCounts = Array(DECORATION_TRIANGLES.length).fill(0);
   const ambientCounts = [0, 0];
   const decorations = compilation.context.decorations;
@@ -378,6 +383,7 @@ export function collectGeoFixtureBudgetMetrics(compilation) {
     triangles: rawTriangles(compilation.terrain) + rawTriangles(compilation.roads) +
       rawTriangles(compilation.context.land) + rawTriangles(compilation.context.water) +
       rawTriangles(compilation.buildings) + compilation.buildings.detailIndices.length / 3 +
+      compilation.buildings.landmarkIndices.length / 3 +
       decorationTriangles + streetFurnitureVisibleTriangles + ambientLifeVisibleTriangles +
       bridgeVisibleTriangles,
     buildingDetailBuildings: compilation.buildings.meta.buildingGrammar?.selectedBuildings ?? 0,
@@ -395,6 +401,21 @@ export function collectGeoFixtureBudgetMetrics(compilation) {
       compilation.context.streetFurniture.meta.buildingTests + compilation.context.streetFurniture.meta.decorationTests +
       compilation.context.streetFurniture.meta.conflictTests,
     streetFurnitureSteadyFrameMatrixUpdates: 0,
+    landmarkCandidatesPerTile: compilation.buildings.meta.landmarkGrammar?.candidates ?? 0,
+    landmarkHeroesPerTile: compilation.buildings.meta.landmarkGrammar?.selected ?? 0,
+    landmarkBoxesPerTile: compilation.buildings.meta.landmarkGrammar?.boxes ?? 0,
+    landmarkTrianglesPerTile: compilation.buildings.meta.landmarkGrammar?.triangles ?? 0,
+    landmarkBytesPerTile: compilation.buildings.meta.landmarkGrammar?.bytes ?? 0,
+    landmarkVisibleTriangles: compilation.buildings.meta.landmarkGrammar?.triangles ?? 0,
+    landmarkAddedDrawCalls: Number(Boolean(compilation.buildings.landmarkIndices.length)),
+    landmarkGpuBytes: GEO_LANDMARK_POOL_LIMITS.maxGpuBytes,
+    landmarkOpeningsPerTile: compilation.buildings.meta.landmarkGrammar?.openings ?? 0,
+    landmarkPassableOpeningsPerTile: compilation.buildings.meta.landmarkGrammar?.passableOpenings ?? 0,
+    landmarkStructuralCompounds: compilation.buildings.meta.landmarkGrammar?.structuralCompounds ?? 0,
+    landmarkEnclosingCompounds: compilation.buildings.meta.landmarkGrammar?.enclosingCompounds ?? 0,
+    landmarkHiddenFaces: compilation.buildings.meta.landmarkGrammar?.hiddenFaces ?? 0,
+    landmarkSuppressedVertices: compilation.buildings.meta.landmarkGrammar?.suppressedVertices ?? 0,
+    landmarkSteadyFrameMatrixUpdates: 0,
     bridgeSpansPerTile: compilation.context.bridges.meta.spans,
     bridgeSegmentsPerTile: compilation.context.bridges.meta.segments,
     bridgePlacementsPerTile: compilation.context.bridges.meta.placements,

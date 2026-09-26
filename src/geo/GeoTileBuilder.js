@@ -9,6 +9,13 @@ import {
 } from './GeoSupportSlots.js';
 import { compileObjectRecipe, createRoofTankRecipe } from './GeoObjectRecipe.js';
 import {
+  GDO_LANDMARK_NAMESPACE,
+  GEO_LANDMARK_LIMITS,
+  compileLandmarks,
+  landmarkEligibility,
+  landmarkSignalFromProperties,
+} from './GeoLandmarkGrammar.js';
+import {
   GDO_BUILDING_GRAMMAR_NAMESPACE,
   GEO_BUILDING_DETAIL_LIMITS,
   createBuildingDetailRecipe,
@@ -483,13 +490,72 @@ function buildingHeight(properties, footprintArea, hash) {
   return Math.max(.55, Math.min(8, realMetres * .1));
 }
 
+/**
+ * Remove one contiguous vertex/index range and re-point every later index at its
+ * new base. A landmark hero replaces the plain extruded footprint it was chosen
+ * from, so its mapped shell is dropped instead of being left to seal the hero's
+ * arches and doors. Bounded: at most one hero range is removed per tile.
+ */
+export function suppressGeometryRange(positions, normals, colors, indices, range) {
+  const vertexStart = range.vertexStart * 3;
+  const vertexCount = (range.vertexEnd - range.vertexStart) * 3;
+  const indexStart = range.indexStart;
+  const indexCount = range.indexEnd - range.indexStart;
+  if (![vertexStart, vertexCount, indexStart, indexCount].every(Number.isInteger) ||
+      vertexStart < 0 || vertexCount < 0 || indexStart < 0 || indexCount < 0 ||
+      vertexStart + vertexCount > positions.length ||
+      vertexStart + vertexCount > normals.length ||
+      vertexStart + vertexCount > colors.length ||
+      indexStart + indexCount > indices.length) {
+    throw new RangeError('Landmark suppression range is malformed');
+  }
+  positions.splice(vertexStart, vertexCount);
+  normals.splice(vertexStart, vertexCount);
+  colors.splice(vertexStart, vertexCount);
+  indices.splice(indexStart, indexCount);
+  const shift = range.vertexEnd - range.vertexStart;
+  for (let index = 0; index < indices.length; index++) {
+    if (indices[index] >= range.vertexEnd) indices[index] -= shift;
+  }
+  return Object.freeze({
+    vertices: range.vertexEnd - range.vertexStart,
+    indices: indexCount,
+  });
+}
+
+/**
+ * Append one tight compound as an AABB collider with its own exact rectangle
+ * footprint, a true vertical span, and the mapped building query mask. This is
+ * why a hero never needs one enclosing AABB: every load-bearing module carries
+ * its own box, and reserved openings carry none.
+ */
+export function appendCompoundCollider(
+  colliderValues, collisionVertices, collisionRingOffsets, collisionPolygonOffsets,
+  collisionSpans, collisionMasks, compound, mask,
+) {
+  colliderValues.push(compound.minimumX, compound.minimumZ, compound.maximumX, compound.maximumZ);
+  collisionVertices.push(
+    compound.minimumX, compound.minimumZ,
+    compound.maximumX, compound.minimumZ,
+    compound.maximumX, compound.maximumZ,
+    compound.minimumX, compound.maximumZ,
+  );
+  collisionRingOffsets.push(collisionVertices.length / 2);
+  collisionPolygonOffsets.push(collisionRingOffsets.length - 1);
+  collisionSpans.push(compound.minimumY, compound.maximumY);
+  collisionMasks.push(mask);
+}
+
 export function buildBuildingGeometry(vectorTile, request) {
   const layer = vectorTile.layers.building ?? vectorTile.layers.buildings;
   const positions = [], normals = [], colors = [], indices = [], colliderValues = [];
   const detailPositions = [], detailNormals = [], detailColors = [], detailIndices = [];
   const supportSlotValues = [], supportSlotStates = [];
   const buildingDetailEnabled = request?.buildingDetails !== false;
-  const sourceRoads = layer && buildingDetailEnabled
+  // Landmark heroes are always on (bounded to one hero per tile) and reuse the
+  // same bounded road query that facade detail uses.
+  const landmarkEnabled = request?.landmarks !== false;
+  const sourceRoads = layer && (buildingDetailEnabled || landmarkEnabled)
     ? collectBuildingRoadSegments(vectorTile, request) : { segments: [], truncated: false };
   const buildingRoadIndex = createBuildingRoadIndex(sourceRoads.segments);
   // AABBs remain as the broad-phase index. Packed source-footprint rings provide
@@ -498,6 +564,8 @@ export function buildBuildingGeometry(vectorTile, request) {
   // one-to-one with those polygon records.
   const collisionVertices = [], collisionRingOffsets = [0], collisionPolygonOffsets = [0];
   const collisionSpans = [], collisionMasks = [];
+  const landmarkPositions = [], landmarkNormals = [], landmarkColors = [], landmarkIndices = [];
+  const landmarkCandidates = [], landmarkRanges = new Map();
   if (!layer) {
     return {
       ...geometryResult(positions, normals, colors, indices, {
@@ -572,6 +640,12 @@ export function buildBuildingGeometry(vectorTile, request) {
       const wallColor = BUILDING_PALETTE[detailHash % BUILDING_PALETTE.length];
       const roofColor = wallColor.map(value => Math.min(1, value * 1.13));
       const height = buildingHeight(feature.properties, footprintArea, detailHash);
+      // A hero replaces its mapped shell, so the exact vertex/index range is
+      // recorded here and removed only if this polygon actually wins selection.
+      const landmarkEligible = landmarkEnabled && landmarkEligibility(worldRings, height).eligible;
+      const landmarkRange = landmarkEligible
+        ? { vertexStart: positions.length / 3, indexStart: indices.length } : null;
+      let supportDetailSlotIndex = -1;
       let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
       let terrainTotal = 0;
       for (const [x, z] of outer) {
@@ -673,17 +747,23 @@ export function buildBuildingGeometry(vectorTile, request) {
           objectBoxes += compiled.diagnostics.emittedBoxes;
           objectBudgetSkips += compiled.diagnostics.skippedModules;
           supportSlotStates[firstSupportSlot + localSlotIndex] = 1;
+          supportDetailSlotIndex = firstSupportSlot + localSlotIndex;
         } else supportDetailSkips++;
       }
 
-      if (buildingDetailEnabled) {
-        const remainingRoadTests = Math.max(0,
-          GEO_BUILDING_DETAIL_LIMITS.maxRoadTestsPerTile - buildingDetailRoadTests);
-        const roadFacing = findRoadFacingEdge(outer, buildingRoadIndex, {
+      const wantsRoadFacing = buildingDetailEnabled || Boolean(landmarkRange);
+      const remainingRoadTests = Math.max(0,
+        GEO_BUILDING_DETAIL_LIMITS.maxRoadTestsPerTile - buildingDetailRoadTests);
+      const roadFacing = wantsRoadFacing
+        ? findRoadFacingEdge(outer, buildingRoadIndex, {
           maxTests: Math.min(GEO_BUILDING_DETAIL_LIMITS.maxRoadTestsPerBuilding, remainingRoadTests),
-        });
+        })
+        : Object.freeze({ found: false, source: 'none', tests: 0, candidates: 0, truncated: false });
+      if (wantsRoadFacing) {
         buildingDetailRoadTests += roadFacing.tests;
         buildingDetailQueryCapReached ||= roadFacing.truncated || remainingRoadTests === 0;
+      }
+      if (buildingDetailEnabled) {
         buildingDetailRoadFacing += Number(roadFacing.found);
         const availableRoofSlots = packedRoofSlots.filter((slot, index) =>
           supportSlotStates[firstSupportSlot + index] === 0);
@@ -715,11 +795,39 @@ export function buildBuildingGeometry(vectorTile, request) {
           }
         }
       }
+      if (landmarkRange) {
+        const formSignal = landmarkSignalFromProperties(feature.properties);
+        landmarkRange.vertexEnd = positions.length / 3;
+        landmarkRange.indexEnd = indices.length;
+        landmarkRange.tankSlotIndex = supportDetailSlotIndex;
+        // Keyed by the mapped building owner so facade detail can defer to the
+        // hero that replaced that shell.
+        landmarkRanges.set(owner, landmarkRange);
+        landmarkCandidates.push(Object.freeze({
+          id: `${owner}:landmark`,
+          owner,
+          formSignal,
+          input: Object.freeze({
+            id: `${owner}:landmark`,
+            owner,
+            rings: worldRings,
+            foundationY,
+            roofY,
+            height,
+            hash: detailHash,
+            wallColor,
+            roofColor,
+            formSignal,
+            roadFacing,
+          }),
+        }));
+      }
       for (const ring of worldRings) {
         for (const [x, z] of ring) collisionVertices.push(x, z);
         collisionRingOffsets.push(collisionVertices.length / 2);
       }
       collisionPolygonOffsets.push(collisionRingOffsets.length - 1);
+      if (landmarkRange) landmarkRange.colliderIndex = colliderValues.length / 4;
       colliderValues.push(minX, minZ, maxX, maxZ);
       collisionSpans.push(foundationY, collisionTop);
       collisionMasks.push(GEO_LAYER.building.queryMask);
@@ -728,9 +836,28 @@ export function buildBuildingGeometry(vectorTile, request) {
     if (featureUsed) features++;
   }
 
+  // DET-09: at most one hero per tile. Ranking happens before the detail pass so
+  // a hero can own its openings instead of inheriting the shell's facade detail.
+  const landmarkSelection = landmarkCandidates.length
+    ? compileLandmarks(landmarkCandidates.map(candidate => candidate.input))
+    : Object.freeze({
+      namespace: GDO_LANDMARK_NAMESPACE,
+      heroes: Object.freeze([]), considered: 0, eligible: 0, selected: 0, boxes: 0, bytes: 0,
+      rejected: Object.freeze({ boxes: 0, bytes: 0, malformed: 0 }),
+      truncated: false,
+      capEvents: Object.freeze({ heroes: false, boxes: false, bytes: false, malformed: false }),
+    });
+  const landmarkOwnerSet = new Set(landmarkSelection.heroes.map(hero => hero.owner));
   const selectedBuildingDetails = selectBuildingDetailCandidates(buildingDetailCandidates);
   let selectedDetailBuildings = 0, selectedDetailBoxes = 0, detailBoxCapReached = false;
+  let detailLandmarkSkips = 0;
   for (const candidate of selectedBuildingDetails) {
+    // A hero already owns its walls and openings, so the facade/roof detail of
+    // the shell it replaced is skipped instead of floating inside its arch.
+    if (landmarkOwnerSet.has(candidate.input.owner)) {
+      detailLandmarkSkips++;
+      continue;
+    }
     const detail = createBuildingDetailRecipe(candidate.input);
     const boxes = detail.compiled.visualBoxes;
     if (selectedDetailBoxes + boxes.length > GEO_BUILDING_DETAIL_LIMITS.boxesPerTile) {
@@ -760,6 +887,109 @@ export function buildBuildingGeometry(vectorTile, request) {
     throw new Error('Building detail exceeded its fixed geometry budget');
   }
 
+  // A hero replaces the plain extruded shell it was chosen from and swaps that
+  // footprint's single enclosing collider for one tight box per load-bearing
+  // module, so its reserved arches and doors stay genuinely open. Ornament never
+  // becomes collision.
+  let landmarkSuppressedVertices = 0, landmarkCompoundColliders = 0;
+  let landmarkHiddenFaces = 0, landmarkContainedBoxes = 0;
+  const landmarkForms = [];
+  for (const hero of landmarkSelection.heroes) {
+    const range = landmarkRanges.get(hero.owner);
+    if (!range) continue;
+    const removed = suppressGeometryRange(positions, normals, colors, indices, range);
+    landmarkSuppressedVertices += removed.vertices;
+    // The mapped polygon's collider is disabled in place and replaced by tight
+    // module compounds, so no landmark keeps one enclosing AABB.
+    collisionMasks[range.colliderIndex] = 0;
+    if (range.tankSlotIndex >= 0 && supportSlotStates[range.tankSlotIndex] === 1) {
+      supportSlotStates[range.tankSlotIndex] = 0;
+      supportDetailSkips++;
+    }
+    for (const compound of hero.compounds) {
+      if (!compound.structural) continue;
+      appendCompoundCollider(colliderValues, collisionVertices, collisionRingOffsets,
+        collisionPolygonOffsets, collisionSpans, collisionMasks, compound,
+        GEO_LAYER.building.queryMask);
+      landmarkCompoundColliders++;
+    }
+    // The hero's hidden-face-compiled shell is appended as-is: re-expanding its
+    // boxes would throw the hidden-face reduction away.
+    const base = landmarkPositions.length / 3;
+    for (const value of hero.geometry.positions) landmarkPositions.push(value);
+    for (const value of hero.geometry.normals) landmarkNormals.push(value);
+    for (const value of hero.geometry.colors) landmarkColors.push(value);
+    for (const index of hero.geometry.indices) landmarkIndices.push(base + index);
+    landmarkForms.push(hero.form);
+    landmarkHiddenFaces += hero.diagnostics.hiddenFaces;
+    landmarkContainedBoxes += hero.diagnostics.containedBoxes;
+  }
+  const landmarkTriangles = landmarkIndices.length / 3;
+  const landmarkBytes = (landmarkPositions.length + landmarkNormals.length +
+    landmarkColors.length + landmarkIndices.length) * 4;
+  if (landmarkTriangles > GEO_LANDMARK_LIMITS.maxTrianglesPerHero * GEO_LANDMARK_LIMITS.heroesPerTile ||
+      landmarkBytes > GEO_LANDMARK_LIMITS.bytesPerTile * GEO_LANDMARK_LIMITS.heroesPerTile) {
+    throw new Error('Landmark hero exceeded its fixed geometry budget');
+  }
+  const landmarkDiagnostics = Object.freeze({
+    namespace: GDO_LANDMARK_NAMESPACE,
+    candidates: landmarkCandidates.length,
+    eligible: landmarkSelection.eligible,
+    considered: landmarkSelection.considered,
+    selected: landmarkSelection.heroes.length,
+    forms: Object.freeze(landmarkForms),
+    boxes: landmarkSelection.heroes.reduce((total, hero) => total + hero.boxes.length, 0),
+    triangles: landmarkTriangles,
+    bytes: landmarkBytes,
+    suppressedVertices: landmarkSuppressedVertices,
+    compoundColliders: landmarkCompoundColliders,
+    detailDeferrals: detailLandmarkSkips,
+    openings: landmarkSelection.heroes.reduce((total, hero) => total + hero.diagnostics.openings, 0),
+    passableOpenings: landmarkSelection.heroes.reduce((total, hero) => total + hero.diagnostics.passableOpenings, 0),
+    structuralCompounds: landmarkSelection.heroes.reduce((total, hero) => total + hero.diagnostics.structuralCompounds, 0),
+    enclosingCompounds: landmarkSelection.heroes.reduce((total, hero) => total + hero.diagnostics.enclosingCompounds, 0),
+    hiddenFaces: landmarkHiddenFaces,
+    containedBoxes: landmarkContainedBoxes,
+    // Bounded per-hero descriptors for the resident pool: counts plus the tight
+    // structural compounds, never a hero-wide box.
+    heroes: Object.freeze(landmarkSelection.heroes.map(hero => Object.freeze({
+      namespace: GDO_LANDMARK_NAMESPACE,
+      id: hero.id,
+      form: hero.form,
+      formSource: hero.formSource,
+      boxes: hero.boxes.length,
+      triangles: hero.geometry.triangles,
+      bytes: hero.geometry.bytes,
+      hiddenFaces: hero.diagnostics.hiddenFaces,
+      containedBoxes: hero.diagnostics.containedBoxes,
+      openings: hero.diagnostics.openings,
+      passableOpenings: hero.diagnostics.passableOpenings,
+      structuralCompounds: hero.diagnostics.structuralCompounds,
+      enclosingCompounds: hero.diagnostics.enclosingCompounds,
+      sealedOpenings: hero.diagnostics.sealedOpenings,
+      // Approach axis plus the walkable voids, small enough to audit: a passage
+      // must stay clear of every compound at every sampled height.
+      axis: Object.freeze([hero.axis[0], hero.axis[1]]),
+      bounds: Object.freeze([hero.bounds.minimumX, hero.bounds.minimumZ,
+        hero.bounds.maximumX, hero.bounds.maximumZ]),
+      passages: Object.freeze(hero.openings.filter(opening => opening.passable && opening.kind !== 'corridor')
+        .map(opening => Object.freeze([
+          opening.minimumX, opening.minimumY, opening.minimumZ,
+          opening.maximumX, opening.maximumY, opening.maximumZ,
+        ]))),
+      compounds: Object.freeze(hero.compounds.filter(compound => compound.structural)
+        .map(compound => Object.freeze([
+          compound.minimumX, compound.minimumY, compound.minimumZ,
+          compound.maximumX, compound.maximumY, compound.maximumZ,
+        ]))),
+    }))),
+    capEvents: Object.freeze({
+      ...landmarkSelection.capEvents,
+      compounds: landmarkSelection.heroes.some(hero => hero.diagnostics.capEvents.compounds),
+      structuralCompounds: landmarkSelection.heroes.some(hero => hero.diagnostics.capEvents.structuralCompounds),
+    }),
+  });
+
   return {
     ...geometryResult(positions, normals, colors, indices, {
       features,
@@ -773,6 +1003,7 @@ export function buildBuildingGeometry(vectorTile, request) {
       objectModules,
       objectBoxes,
       objectBudgetSkips,
+      landmarkGrammar: landmarkDiagnostics,
       buildingGrammar: Object.freeze({
         namespace: GDO_BUILDING_GRAMMAR_NAMESPACE,
         candidates: buildingDetailCandidateCount,
@@ -793,6 +1024,10 @@ export function buildBuildingGeometry(vectorTile, request) {
         }),
       }),
     }),
+    landmarkPositions: new Float32Array(landmarkPositions),
+    landmarkNormals: new Float32Array(landmarkNormals),
+    landmarkColors: new Float32Array(landmarkColors),
+    landmarkIndices: new Uint32Array(landmarkIndices),
     detailPositions: new Float32Array(detailPositions),
     detailNormals: new Float32Array(detailNormals),
     detailColors: new Float32Array(detailColors),

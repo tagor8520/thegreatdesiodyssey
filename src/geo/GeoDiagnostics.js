@@ -55,6 +55,7 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
   let buildingDetailBytesPerTile = 0, buildingDetailAddedDrawCalls = 0, buildingDetailRoadTestsPerTile = 0;
   let streetFurnitureBytesPerTile = 0, streetFurniturePlacementTests = 0;
   let bridgeBytesPerTile = 0, bridgeSpansPerTile = 0, bridgePiersPerTile = 0;
+  let landmarkBytesPerTile = 0, landmarkBoxesPerTile = 0, landmarkOpeningTiles = 0;
   world?.root?.traverse?.(object => {
     estimatedGpuBytes += geometryBytes(object.geometry, seenBuffers);
     if (object.instanceMatrix?.array) {
@@ -74,6 +75,10 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
     streetFurniturePlacementTests = Math.max(streetFurniturePlacementTests,
       (furniture?.roadTests ?? 0) + (furniture?.buildingTests ?? 0) +
       (furniture?.decorationTests ?? 0) + (furniture?.conflictTests ?? 0));
+    const landmark = tile.landmarkGrammar;
+    landmarkBytesPerTile = Math.max(landmarkBytesPerTile, landmark?.bytes ?? 0);
+    landmarkBoxesPerTile = Math.max(landmarkBoxesPerTile, landmark?.boxes ?? 0);
+    landmarkOpeningTiles += Number((landmark?.passableOpenings ?? 0) > 0);
     const bridge = tile.bridgeMeta;
     bridgeBytesPerTile = Math.max(bridgeBytesPerTile, bridge?.bytes ?? 0);
     bridgeSpansPerTile = Math.max(bridgeSpansPerTile, bridge?.spans ?? 0);
@@ -98,6 +103,7 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
   const streetFurnitureDiagnostics = world?.streetFurniturePools?.diagnostics;
   const ambientLifeDiagnostics = world?.ambientLifePools?.diagnostics;
   const bridgeDiagnostics = world?.bridgePools?.diagnostics;
+  const landmarkDiagnostics = world?.landmarkPools?.diagnostics;
   estimatedGpuBytes += materialTextureBytes;
   return Object.freeze({
     view,
@@ -157,6 +163,20 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
     bridgeStructuralCompounds: bridgeDiagnostics?.structuralCompounds ?? 0,
     bridgeGpuBytes: bridgeDiagnostics?.gpuBytes ?? 0,
     bridgeSteadyFrameMatrixUpdates: bridgeDiagnostics?.steadyFrameMatrixUpdates ?? 0,
+    landmarkBoxesPerTile,
+    landmarkBytesPerTile,
+    landmarkOpeningTiles,
+    landmarkHeroes: landmarkDiagnostics?.heroes ?? 0,
+    landmarkBoxes: landmarkDiagnostics?.boxes ?? 0,
+    landmarkVisibleTriangles: landmarkDiagnostics?.visibleTriangles ?? 0,
+    landmarkAddedDrawCalls: landmarkDiagnostics?.addedDrawCalls ?? 0,
+    landmarkOpenings: landmarkDiagnostics?.openings ?? 0,
+    landmarkPassableOpenings: landmarkDiagnostics?.passableOpenings ?? 0,
+    landmarkCompounds: landmarkDiagnostics?.compounds ?? 0,
+    landmarkStructuralCompounds: landmarkDiagnostics?.structuralCompounds ?? 0,
+    landmarkEnclosingCompounds: landmarkDiagnostics?.enclosingCompounds ?? 0,
+    landmarkGpuBytes: landmarkDiagnostics?.gpuBytes ?? 0,
+    landmarkSteadyFrameMatrixUpdates: landmarkDiagnostics?.steadyFrameMatrixUpdates ?? 0,
     streetFurnitureSteadyFrameMatrixUpdates: streetFurnitureDiagnostics?.steadyFrameMatrixUpdates ?? 0,
     ambientLifeEntries: ambientLifeDiagnostics?.entries ?? 0,
     ambientLifeFamilies: ambientLifeDiagnostics?.activeDrawPools ?? 0,
@@ -206,6 +226,7 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
   }
   const positions = [], colors = [], owners = [], environmentProfiles = [], morphologyProfiles = [];
   const waterDomainProfiles = [], buildingGrammarProfiles = [], streetFurnitureProfiles = [], bridgeProfiles = [];
+  const landmarkProfiles = [];
   const maskCounts = new Map(), layerCounts = new Map();
   let lineSegments = 0, collisionPolygons = 0, roadSupports = 0, supportSlots = 0, occupiedSlots = 0, truncated = false;
   const pushLine = (first, second, color) => {
@@ -256,6 +277,10 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
     if (tile.streetFurnitureMeta) streetFurnitureProfiles.push(Object.freeze({
       owner: tile.key,
       ...tile.streetFurnitureMeta,
+    }));
+    if (tile.landmarkGrammar?.selected) landmarkProfiles.push(Object.freeze({
+      owner: tile.key,
+      ...tile.landmarkGrammar,
     }));
     if (tile.bridgeMeta) bridgeProfiles.push(Object.freeze({
       owner: tile.key,
@@ -373,12 +398,14 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
       streetFurniture: world?.streetFurniturePools?.diagnostics ?? null,
       ambientLife: world?.ambientLifePools?.diagnostics ?? null,
       bridges: world?.bridgePools?.diagnostics ?? null,
+      landmarks: world?.landmarkPools?.diagnostics ?? null,
       environmentProfiles: Object.freeze(environmentProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       morphologyProfiles: Object.freeze(morphologyProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       waterDomainProfiles: Object.freeze(waterDomainProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       buildingGrammarProfiles: Object.freeze(buildingGrammarProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       streetFurnitureProfiles: Object.freeze(streetFurnitureProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       bridgeProfiles: Object.freeze(bridgeProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
+      landmarkProfiles: Object.freeze(landmarkProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       focusSupport: focusSupport ? Object.freeze({
         kind: focusSupport.kind,
         physicalLevel: focusSupport.physicalLevel,

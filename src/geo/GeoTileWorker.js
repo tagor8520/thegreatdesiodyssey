@@ -67,6 +67,12 @@ function geometryTransfers(geometry, includeColliders = false) {
     geometry.detailColors.buffer,
     geometry.detailIndices.buffer,
   );
+  if (geometry.landmarkPositions instanceof Float32Array) transfers.push(
+    geometry.landmarkPositions.buffer,
+    geometry.landmarkNormals.buffer,
+    geometry.landmarkColors.buffer,
+    geometry.landmarkIndices.buffer,
+  );
   if (includeColliders) transfers.push(
     geometry.colliders.buffer,
     geometry.collisionVertices.buffer,

@@ -4,6 +4,7 @@ import { GDO_FEATURE_VERSIONS, GDO_GENERATOR_VERSION } from '../engine/FeatureVe
 import { PlantRenderPools } from '../engine/PlantRenderPools.js';
 import { StreetFurniturePools } from './GeoStreetFurniturePools.js';
 import { BridgePools } from './GeoBridgePools.js';
+import { LandmarkPools } from './GeoLandmarkPools.js';
 import {
   AmbientLifePools,
   GDO_AMBIENT_LIFE_SOURCE_TYPES,
@@ -505,6 +506,12 @@ export class GeoWorld {
       material: this.decorationMaterial,
       renderOrder: GEO_LAYER.decoration.renderBand,
     });
+    // DET-09 hero landmarks are one compiled, hidden-face-reduced mesh per tile.
+    // Only the focused tile's hero is visible, so a landmark costs one draw.
+    this.landmarkPools = new LandmarkPools(this.root, {
+      material: this.decorationMaterial,
+      renderOrder: GEO_LAYER.building.renderBand + 2,
+    });
     // VEG-09 already owns reduced motion for plants; ambient life reads the
     // same flag so one preference change covers every animated family.
     this.ambientLifePools = new AmbientLifePools(this.root, {
@@ -586,6 +593,7 @@ export class GeoWorld {
       labels: [], biome: null, environment: null, roadMeta: null, buildingMeta: null, timings: null,
       waterDomain: null, waterDomainMeta: null, streetFurnitureMeta: null, streetFurnitureCount: 0,
       bridgeMeta: null, bridgeCount: 0,
+      landmarkMeta: null, landmarkGrammar: null, landmarkCount: 0,
       clearanceDiagnostics: null, morphologyDiagnostics: null,
       roadSupportSegments: null, roadSupportStride: 0, roadSupportGrid: null,
       colliders: null, collisionGrid: null,
@@ -845,6 +853,7 @@ export class GeoWorld {
       this.plantRenderPools.removeOwner(tile.key);
       this.streetFurniturePools.removeOwner(tile.key);
       this.bridgePools.removeOwner(tile.key);
+      this.landmarkPools.removeOwner(tile.key);
       this.ambientLifePools.removeOwner(tile.key);
       tile.land = null; tile.water = null; tile.decorations.length = 0;
       tile.decorationCount = 0; tile.plantPoolCount = 0; tile.streetFurnitureCount = 0;
@@ -907,6 +916,7 @@ export class GeoWorld {
     }
 
     if (message.phase === 'buildings') {
+      const warnings = [];
       if (tile.buildings) {
         tile.buildings.removeFromParent();
         tile.buildings.geometry.dispose();
@@ -952,6 +962,31 @@ export class GeoWorld {
       tile.supportSlotStates = message.geometry.supportSlotStates;
       tile.supportSlotStride = message.geometry.supportSlotStride ?? 0;
       tile.collisionGrid = buildCollisionGrid(tile.colliders);
+      try {
+        // A hero is already compiled and hidden-face reduced, so the pool only
+        // merges, mounts, and releases it. A malformed hero stream must never
+        // suppress the plain building geometry.
+        const landmarkMeta = message.geometry.meta?.landmarkGrammar;
+        tile.landmarkCount = this.landmarkPools.addOwner(tile.key, {
+          geometry: {
+            positions: message.geometry.landmarkPositions,
+            normals: message.geometry.landmarkNormals,
+            colors: message.geometry.landmarkColors,
+            indices: message.geometry.landmarkIndices,
+            bytes: landmarkMeta?.bytes ?? 0,
+          },
+          heroes: landmarkMeta?.heroes ?? [],
+          compounds: (landmarkMeta?.heroes ?? []).flatMap(hero => hero.compounds ?? []),
+        });
+      } catch (error) { warnings.push(`landmarks: ${error.message || error}`); }
+      tile.landmarkGrammar = message.geometry.meta?.landmarkGrammar ?? null;
+      // Mirror the mapped-detail focus rule so the first hero is visible before
+      // the first focus change arrives.
+      this.landmarkPools.setFocus(this.lastFocusKey ?? this.initialKey);
+      if (warnings.length) {
+        tile.contextWarning = [tile.contextWarning, warnings.join('; ')].filter(Boolean).join('; ');
+        this._emitStatus(`Some map ambience was skipped: ${tile.contextWarning}`, false);
+      }
       tile.state = 'ready';
       this.activeRequests = Math.max(0, this.activeRequests - 1);
 
@@ -973,6 +1008,7 @@ export class GeoWorld {
 
   get stats() {
     let roads = 0, buildings = 0, land = 0, water = 0, decorations = 0, streetFurniture = 0, bridges = 0, labels = 0;
+    let landmarks = 0;
     let plantClearanceRejected = 0, plantClearanceAdapted = 0, plantObstacleSamples = 0, waterDomainSegments = 0;
     let morphologySamples = 0, morphologyPlants = 0, waterDomainBytes = 0;
     let buildingDetailBuildings = 0, buildingDetailBoxes = 0, buildingDetailTriangles = 0, buildingDetailBytes = 0;
@@ -986,6 +1022,7 @@ export class GeoWorld {
       decorations += tile.decorationCount;
       streetFurniture += tile.streetFurnitureCount;
       bridges += tile.bridgeCount;
+      landmarks += tile.landmarkCount ?? 0;
       labels += tile.labels.length;
       plantClearanceRejected += tile.clearanceDiagnostics?.rejected ?? 0;
       plantClearanceAdapted += tile.clearanceDiagnostics?.adapted ?? 0;
@@ -1012,6 +1049,7 @@ export class GeoWorld {
     const streetFurnitureDiagnostics = this.streetFurniturePools.diagnostics;
     const ambientLifeDiagnostics = this.ambientLifePools.diagnostics;
     const bridgeDiagnostics = this.bridgePools.diagnostics;
+    const landmarkDiagnostics = this.landmarkPools.diagnostics;
     return Object.freeze({
       provider: this.provider,
       generatorVersion: GDO_GENERATOR_VERSION,
@@ -1034,6 +1072,16 @@ export class GeoWorld {
       bridgeTriangles: bridgeDiagnostics.visibleTriangles,
       bridgeCompounds: bridgeDiagnostics.compounds,
       bridgeStructuralCompounds: bridgeDiagnostics.structuralCompounds,
+      landmarkBoxes: landmarks,
+      landmarkHeroes: landmarkDiagnostics.heroes,
+      landmarkTriangles: landmarkDiagnostics.visibleTriangles,
+      landmarkAddedDrawCalls: landmarkDiagnostics.addedDrawCalls,
+      landmarkOpenings: landmarkDiagnostics.openings,
+      landmarkPassableOpenings: landmarkDiagnostics.passableOpenings,
+      landmarkCompounds: landmarkDiagnostics.compounds,
+      landmarkStructuralCompounds: landmarkDiagnostics.structuralCompounds,
+      // Must stay zero: a hero never keeps one enclosing AABB.
+      landmarkEnclosingCompounds: landmarkDiagnostics.enclosingCompounds,
       ambientLifeEntries: ambientLifeDiagnostics.entries,
       ambientLifeFamilies: ambientLifeDiagnostics.activeDrawPools,
       ambientLifeTriangles: ambientLifeDiagnostics.visibleTriangles,
@@ -1122,6 +1170,7 @@ export class GeoWorld {
       for (const tile of this.tiles.values()) {
         if (tile.buildingDetails) tile.buildingDetails.visible = tile.key === focusKey;
       }
+      this.landmarkPools.setFocus(focusKey);
     }
     this.lastFocusKey = focusKey;
     const localX = fractionalX - x, localY = fractionalY - y;
@@ -1169,9 +1218,12 @@ export class GeoWorld {
     this.plantRenderPools.removeOwner(tile.key);
     this.streetFurniturePools.removeOwner(tile.key);
     this.bridgePools.removeOwner(tile.key);
+    this.landmarkPools.removeOwner(tile.key);
     this.ambientLifePools.removeOwner(tile.key);
     tile.plantPoolCount = 0;
     tile.streetFurnitureCount = 0;
+    tile.landmarkCount = 0;
+    tile.landmarkGrammar = null;
     tile.bridgeCount = 0;
     tile.ambientLifeCount = 0;
     tile.root.removeFromParent();
@@ -1713,6 +1765,7 @@ export class GeoWorld {
     this.plantRenderPools.dispose();
     this.streetFurniturePools.dispose();
     this.bridgePools.dispose();
+    this.landmarkPools.dispose();
     this.ambientLifePools.dispose();
     this.root.removeFromParent(); this.root.clear();
     this.groundMaterial.dispose();
