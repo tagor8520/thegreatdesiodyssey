@@ -120,6 +120,7 @@ Every stage must preserve these requirements:
 - `COL-05`: moving visual validation of the new coordinate TPP obstruction sweep.
 - `LAY-03`: transparent-water order and low-profile moving visual validation.
 - `LIF-02`: explicit screen-space/activity scheduler budgets on top of the landed ambient pools; its `COL-09` capped dynamic hash is still queued, and moving bird/bee composition still needs capture tooling.
+- `DET-09`: moving landmark/arch/colonnade composition capture; its grammar, opening, compound, pool, and collision gates are landed.
 
 ## 7. Canonical dependency chain
 
@@ -371,6 +372,6 @@ Every completed feature must prove:
 2. Complete `MAT-03` with moving low-pixel-ratio road/ground/facade/water shimmer captures; its automated shader policy is already present.
 3. Add `MAT-05`: extend the shared style library with bounded generated regional surface-detail recipes after `MAT-03` closes.
 4. Add `DET-10` prop/food modules and their separate interaction triggers; `DET-09` landmark/opening compounds landed with the automated opening, compound, and walkability gates and join the pending moving landmark-composition capture.
-5. Complete the moving FPP/TPP capture for `DET-08` bridge composition and pier/deck pop alongside the pending obstruction, transparent-water, and shimmer gates.
+5. Complete the moving FPP/TPP captures for `DET-08` bridge composition plus pier/deck pop and for `DET-09` landmark/arch/colonnade composition alongside the pending obstruction, transparent-water, and shimmer gates.
 
 The completed fixture and budget gates must run against every later material, vegetation, object, and environment batch.
