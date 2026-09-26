@@ -199,6 +199,9 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
     ambientLifeCpuMatrixUpdatesPerFrame: ambientLifeDiagnostics?.cpuMatrixUpdates ?? 0,
     ambientLifeSteadyFrameAllocations: ambientLifeDiagnostics?.steadyFrameAllocations ?? 0,
     waterDomainBytesPerTile,
+    // `FND-07`: live owned resources at this moment, so a mount that keeps
+    // accumulating listeners/geometries/workers fails the same budget surface.
+    lifecycleOwnedResources: world.lifecycle?.snapshot?.().total ?? 0,
     collisionBytesPerTile,
     workerContextMilliseconds: world?.timings?.contextMilliseconds,
     mainThreadMountMilliseconds: world?.mountDiagnostics?.maximumMilliseconds,
@@ -411,6 +414,10 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
       bridges: world?.bridgePools?.diagnostics ?? null,
       landmarks: world?.landmarkPools?.diagnostics ?? null,
       tileCache: world?.tileCacheDiagnostics ?? null,
+      // `FND-07`: the live ownership ledger and the last movement-audit verdict
+      // are part of the debug surface, not a separate tool.
+      lifecycle: world?.lifecycle?.snapshot?.() ?? null,
+      movementAudit: world?.movementAuditSummary ?? null,
       environmentProfiles: Object.freeze(environmentProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       morphologyProfiles: Object.freeze(morphologyProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       waterDomainProfiles: Object.freeze(waterDomainProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),

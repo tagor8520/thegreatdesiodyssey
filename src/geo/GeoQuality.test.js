@@ -715,7 +715,10 @@ test('canonical fixtures fit low-profile budgets and every ceiling fails clearly
     maxCollisionCandidates: GDO_LOW_PROFILE_BUDGETS.maxCollisionCandidates + 1,
     maxSupportCandidates: GDO_LOW_PROFILE_BUDGETS.maxSupportCandidates + 1,
   };
-  const report = evaluateLowProfileBudget(over);
+  // Every ceiling must still fail clearly. Timing ceilings are only hard when a
+  // caller demands strict timing, so this synthetic sweep asks for exactly that:
+  // synthetic +1 overruns are not machine-dependent.
+  const report = evaluateLowProfileBudget(over, { strictTiming: true });
   assert.equal(report.ok, false);
   assert.deepEqual(report.breaches.map(item => item.metric), [
     'drawCalls', 'residentTiles', 'activeRequests', 'triangles', 'estimatedGpuBytes', 'materialTextureBytes',
@@ -733,8 +736,26 @@ test('canonical fixtures fit low-profile budgets and every ceiling fails clearly
     'workerContextMilliseconds', 'mainThreadMountMilliseconds',
     'maxCollisionCandidates', 'maxSupportCandidates',
   ]);
-  assert.throws(() => assertLowProfileBudget(over), error =>
+  assert.throws(() => assertLowProfileBudget(over, { strictTiming: true }), error =>
     error instanceof PerformanceBudgetError && /drawCalls=36 > 35/.test(error.message) &&
     /workerContextMilliseconds=151 > 150/.test(error.message));
+  // Advisory timing: a slow host reports the overrun without failing the gate,
+  // while every work-unit ceiling stays hard in the same evaluator.
+  const { plantCompileMilliseconds, workerContextMilliseconds, mainThreadMountMilliseconds, ...workUnits } = over;
+  const advisory = evaluateLowProfileBudget({
+    ...workUnits, plantCompileMilliseconds: GDO_LOW_PROFILE_BUDGETS.plantCompileMilliseconds + 1,
+  });
+  assert.equal(advisory.ok, false, 'the remaining work-unit +1 overruns still fail');
+  assert.equal(advisory.breaches.some(item => item.metric === 'plantCompileMilliseconds'), false);
+  assert.deepEqual(advisory.advisories.map(item => item.metric), ['plantCompileMilliseconds']);
+  const clean = evaluateLowProfileBudget({ plantCompileMilliseconds: GDO_LOW_PROFILE_BUDGETS.plantCompileMilliseconds + 1 });
+  assert.equal(clean.ok, true, 'advisory timing alone must not fail the runtime gate');
+  assert.deepEqual(clean.breaches, []);
+  assert.equal(clean.checked.some(item => item.metric === 'plantCompileMilliseconds'), true);
+  assert.equal(evaluateLowProfileBudget(
+    { plantCompileMilliseconds: GDO_LOW_PROFILE_BUDGETS.plantCompileMilliseconds + 1 },
+    { strictTiming: true },
+  ).ok, false, 'strict timing restores the hard failure when a caller asks for it');
+  assert.equal(advisory.checked.some(item => item.metric === 'plantCompileMilliseconds'), true);
   assert.equal(evaluateLowProfileBudget({ drawCalls: 60 }, { view: 'corner' }).ok, true);
 });

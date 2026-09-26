@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { featureNamespace } from './FeatureVersions.js';
+import { adoptPoolResources } from './LifecycleContract.js';
 
 /**
  * `gdo:ambientLifeMotion:v1` replaces the coordinate bird/bee orbit-and-bob
@@ -512,6 +513,7 @@ export class AmbientLifePools {
     limits = GDO_AMBIENT_LIFE_LIMITS,
     resolveGroundHeight = null,
     layer = null,
+    ledger = null,
   } = {}) {
     if (!scene?.add || !Number.isFinite(terrainSeed) || typeof seedSalt !== 'string') {
       throw new TypeError('AmbientLifePools requires a scene, terrain seed, and seed salt');
@@ -576,6 +578,14 @@ export class AmbientLifePools {
       return mesh;
     });
     scene.add(this.group);
+    // `FND-07`: sprites, their fixed instance buffers, and the shared material
+    // join the same ledger every other pool uses.
+    this.lifecycleScope = ledger ? adoptPoolResources(ledger, GDO_AMBIENT_LIFE_NAMESPACE, {
+      geometries: this.geometries,
+      material: this.material,
+      meshes: this.meshes,
+      node: this.group,
+    }) : null;
     this.familyCounts = GDO_AMBIENT_LIFE_FAMILY_ORDER.map(() => 0);
     this.entries = 0;
     this.repacks = 0;
@@ -804,6 +814,7 @@ export class AmbientLifePools {
     this.group.clear();
     for (const geometry of this.geometries) geometry.dispose();
     if (this.material.userData.gdoAmbientLife) this.material.dispose();
+    this.lifecycleScope?.disposeAll();
   }
 }
 

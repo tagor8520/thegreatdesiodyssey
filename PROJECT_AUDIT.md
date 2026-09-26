@@ -477,7 +477,7 @@ Recommended contribution process:
 2. Validate it against a versioned JSON Schema.
 3. Run deterministic overlap, traversal, and spawn checks.
 4. Compile content into chunk-addressed runtime packages.
-5. Generate preview screenshots and a performance report.
+5. Generate a deterministic preview report (geometry/budget/movement audit output) instead of screenshots.
 6. Require cultural review and attribution/provenance review.
 7. Publish a hashed manifest so clients/CDNs can cache unchanged chunks.
 

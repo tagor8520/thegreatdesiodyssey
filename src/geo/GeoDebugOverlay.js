@@ -21,6 +21,8 @@ function snapshotText(snapshot, metrics, report) {
   const layers = summary.layers.map(([name, count]) => `${name}:${count}`).join(' · ') || 'none';
   const masks = summary.masks.map(([name, count]) => `${name}:${count}`).join(' · ') || 'none';
   const breaches = report.breaches.map(item => `${item.metric} ${item.actual}/${item.ceiling}`).join(' · ');
+  const advisories = (report.advisories ?? []).map(item => `${item.metric} ${item.actual}/${item.ceiling}`).join(' · ');
+  const lifecycle = summary.lifecycle;
   const materials = summary.materials?.records?.map(record =>
     `${record.name}:${record.width}x${record.height} ${record.format}/${record.colorSpace} ${record.wrap} ${record.magFilter}/${record.minFilter} ${formatBytes(record.estimatedBytes)} #${record.checksum}`,
   ).join(' · ') ?? 'unavailable';
@@ -57,6 +59,8 @@ function snapshotText(snapshot, metrics, report) {
     `landmarks ${summary.landmarks?.namespace ?? 'none'} heroes:${metrics.landmarkHeroes} boxes:${metrics.landmarkBoxes} boxes/tile:${metrics.landmarkBoxesPerTile} tris:${metrics.landmarkVisibleTriangles} draw:${metrics.landmarkAddedDrawCalls} openings:${metrics.landmarkOpenings} passable:${metrics.landmarkPassableOpenings} compounds:${metrics.landmarkCompounds}/${metrics.landmarkStructuralCompounds} enclosing:${metrics.landmarkEnclosingCompounds} GPU:${formatBytes(metrics.landmarkGpuBytes)} bytes/tile:${formatBytes(metrics.landmarkBytesPerTile)}`,
     `tile cache ${summary.tileCache?.namespace ?? 'none'} profile:${summary.tileCache?.profile ?? 'low'} entries:${metrics.tileCacheEntries}/${summary.tileCache?.maxEntries ?? 0} bytes:${formatBytes(metrics.tileCacheBytes)}/${formatBytes(summary.tileCache?.maxBytes ?? 0)} hits:${metrics.tileCacheHits} misses:${metrics.tileCacheMisses} writes:${metrics.tileCacheWrites} evictions:${metrics.tileCacheEvictions} expirations:${metrics.tileCacheExpirations} storage:${summary.tileCache?.storageKind ?? 'none'}${summary.tileCache?.persistent ? ' (persistent)' : ''} attributionRejections:${metrics.tileCacheAttributionRejections}`,
     `ambient life ${summary.ambientLife?.namespace ?? 'none'} sprites:${metrics.ambientLifeEntries} families:${metrics.ambientLifeFamilies} tris:${metrics.ambientLifeVisibleTriangles}/${metrics.ambientLifeSpriteTriangles} draw:${metrics.ambientLifeAddedDrawCalls} uniform/frame:${metrics.ambientLifeUniformWritesPerFrame} CPU-matrices:${metrics.ambientLifeCpuMatrixUpdatesPerFrame} alloc:${metrics.ambientLifeSteadyFrameAllocations} reduced:${summary.ambientLife?.reducedMotion ?? false} pruned:${summary.ambientLife?.capEvents?.pruned ?? 0}`,
+    `lifecycle ${lifecycle?.namespace ?? 'none'} live:${metrics.lifecycleOwnedResources}${lifecycle?.counts ? ` (${Object.entries(lifecycle.counts).filter(([, count]) => count).map(([kind, count]) => `${kind}:${count}`).join(' ')})` : ''} released:${lifecycle?.released ?? 0}degraded:${lifecycle?.degraded ?? 0}`,
+    `audit movement ${summary.movementAudit ?? 'not run'} · advisory${advisories ? ` ${advisories}` : ' none'}`,
     `query collision:${metrics.maxCollisionCandidates} support:${metrics.maxSupportCandidates}${breaches ? ` · FAIL ${breaches}` : ''}`,
   ].join('\n');
 }

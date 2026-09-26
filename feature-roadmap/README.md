@@ -27,7 +27,7 @@ The source research remains authoritative for detailed algorithms, budgets, and 
 | **DEFERRED** | Intentionally postponed until its dependency/performance gate is met. |
 | **REJECTED** | Researched but not accepted as a default architecture. |
 
-A feature does not become **ADDED** merely because code was written. It must satisfy its listed test/build/lifecycle gate. Visual features additionally require the prescribed screenshot/movement audit when browser tooling is available.
+A feature does not become **ADDED** merely because code was written. It must satisfy its listed test/build/lifecycle gate. A visual or moving feature is proved by the **deterministic programmatic audits** below, never by browser capture: automated Chromium installation, screenshots, and video are **not** project dependencies and must not gate any status.
 
 ## 3. Consolidated research index
 
@@ -57,6 +57,19 @@ Every stage must preserve these requirements:
 10. Low-end/mobile budgets are ceilings shared across features, not independent allowances to stack.
 11. A stable feature/seed version owns every deterministic output. Changes to palette or quality do not move authoritative objects.
 12. When a feature exceeds a cap, it prunes/skips/falls back deterministically; it does not run unbounded work.
+13. Every claim is verified programmatically: deterministic unit/fixture tests, a scripted audit over real state, and readable debug hooks/loggers. Browser capture tooling is retired and is never a blocker.
+
+### 4.1 Programmatic verification policy (retires the capture gate)
+
+Video/screenshot capture was the last gate that could not run in this environment. It is now **deleted as a dependency**, and the evidence it used to provide is produced by three deterministic surfaces instead:
+
+| Surface | Owns | Where |
+|---|---|---|
+| Lifecycle ledger | live/released counts per kind, zero-growth remount proof, leak naming | `src/engine/LifecycleContract.js`, `runLifecycleAudit` |
+| Movement audit | clipping, render-band ordering, LOD churn, subpixel/mip/fade, step stability, resident churn, determinism | `src/engine/MovementAudit.js`, `runMovementAudit` |
+| Debug hooks and logger | `window.__gdo` probe/step/audit entry points plus a bounded `[gdo:*]` log ring | `src/engine/DebugHooks.js` |
+
+A moving feature is accepted when the scripted audit records the numeric state a reviewer used to look for in a video — camera clearance against real blockers, live render orders and transparency flags, per-family LOD selection, a CPU mirror of the derivative fade, and per-step continuity — and the report's verdicts pass on the real runtime. Historical checkpoint notes in the research docs that say "capture unavailable" are kept as history, not as open gates.
 
 ## 5. Task categories
 
@@ -103,25 +116,26 @@ Every stage must preserve these requirements:
 - Elevated transport grades now receive `gdo:bridgeGrammar:v1` detail compiled from the canonical physical-level deck rather than from provider feature order. Rail lines, rail posts, deck fascia, end/joint bands, terrain-reaching piers, and sparse non-solid lamps/signs render from seven fixed family geometries in one owner-scoped pool. Rails are only emitted when the resulting walkable corridor still fits the authoritative player profile, piers exist only where a real measured opening under the deck can hold them, and bridge detail exposes empty solid, interaction, and camera proxy lists.
 - Mapped landmark footprints now compile through a versioned `gdo:landmarkGrammar:v1` grammar over `DET-02`. The largest eligible footprint on a tile is promoted to one hero: plinth/piers/lintel/tier masses are carved around the reserved mapped-hole, arch/door, and viewing-corridor voids, and repeated voussoirs, colonnades, crenellations, dome ribs, and finials come from bounded spacing loops that are admitted or pruned whole. The compiled hero is hidden-face reduced into one visual-only merged mesh per tile, the mapped shell's extruded geometry and single enclosing collider are removed in place, and one tight AABB per load-bearing module replaces them, so arches and doors stay walkable while ornament never earns collision.
 - Coordinate birds and bees now render as pooled flat sprites whose entire motion runs in one shared vertex program. Ten-triangle flat silhouettes of coplanar quads replace the former 144-triangle 3D bodies; position, elongated non-looping travel, bounded lateral weave, climb/hover, wing flap, appearance envelope, and camera-distance fade come from per-instance attributes, so a steady frame writes one clock uniform and zero matrices. Agents fade in and out of a deterministic per-cycle window with a dormant gap instead of orbiting forever, stay visual-only with no collision surface, and release their cloned geometry on eviction under fixed per-family and owner caps.
+- One shared lifecycle contract (`gdo:lifecycle:v1`) now owns every runtime resource. The engine, the coordinate world, all five render pools, the tile geometries, the worker, the DOM listeners, the observers, the timers, and the borrowed material-library handles register in a single owner-scoped ledger that disposes newest-first, contains a throwing disposer, and is capped per profile (384 live resources on low). Three fixture world mount/unmount cycles return to byte-identical idle counters, an injected leak names the exact growing kinds, and the last engine reference disposes without leftovers.
+- Moving behaviour is now audited programmatically instead of captured. `runMovementAudit` drives a fixed-step script over the real player, camera, and world and issues deterministic verdicts for clipping (camera clearance against real blockers), ordering (live render bands and transparency flags), popping (per-family plant LOD churn), shimmer (a CPU mirror of the generated-material derivative fade reporting texels per pixel), stability (per-step travel and non-finite state) and residency (tile enters/leaves), plus a two-pass fingerprint that proves determinism. `window.__gdo` exposes `probe()`, `step()`, `ledger()`, `audits.run('movement')` and a bounded `[gdo:*]` log ring; the debug panel shows the same lifecycle line and audit verdict.
 - A versioned `gdo:tileCache:v1` persistent cache now sits in front of map streaming. Cache Storage is used where the browser allows it and a bounded in-memory LRU everywhere else, keys carry provider identity and schema version, and per-profile ceilings (6 MiB/24 on low) plus a 3 MiB per-entry limit are enforced by least-recently-used trims that never evict the four resident tiles the world pins. Provider lifetime comes from bounded `Cache-Control`/`Expires` semantics, and a payload is only stored once the real decoder accepts it and the serving provider can still be credited; a credit change or a schema bump purges instead of serving stale bytes.
 - Curated streaming/quality/draw-call improvements and shared engine ownership.
 
 ### Partial
 
-- Curated and coordinate modes share a runtime surface and visual primitives but still have separate world-generation/player/content implementations.
+- Curated and coordinate modes share a runtime surface, the lifecycle ledger, the movement audit, and visual primitives, but still have separate world-generation/player/content implementations.
 - Coordinate collision has exact static footprints, tight continuous player sweep/slide, bounded depenetration, semantic masks, packed building spans, and grid-bounded terrain/road/bridge/tunnel support with deterministic step/drop/slope rules.
-- Coordinate and curated TPP use near-plane-aware continuous obstruction with fast inward/slow outward response; curated bridges, landmarks, signs, skyline towers, and railway masses now have tight proxies, while moving visual audits remain open.
-- Water, terrain, roads, and labels use central semantic descriptors; provider bridge/tunnel/numeric levels resolve to distinct physical grades, and same-grade road joins/crossings receive bounded deterministic merge patches. Transparent-water moving validation remains open.
+- Coordinate and curated TPP use near-plane-aware continuous obstruction with fast inward/slow outward response; curated bridges, landmarks, signs, skyline towers, and railway masses have tight proxies. The coordinate sweep is now covered by the movement audit; the curated sweep waits on the `FND-08` shared query interface.
+- Water, terrain, roads, and labels use central semantic descriptors; provider bridge/tunnel/numeric levels resolve to distinct physical grades, and same-grade road joins/crossings receive bounded deterministic merge patches. Transparent-water order is now checked every audit step against the live material flags.
 - Coordinate terrain now uses a seam-free 33×33 deterministic fallback grid per resident tile. The same height/normal query grounds terrain, roads, buildings, land cover, details, labels, player steps, and camera clearance; optional public DEM enrichment remains deferred.
-- Material mips, derivative-filtered facade/style edges, uniform-controlled distance/profile fades, and normal-first fading are implemented in both modes; moving low-pixel-ratio shimmer capture remains open.
+- Material mips, derivative-filtered facade/style edges, uniform-controlled distance/profile fades, and normal-first fading are implemented in both modes. The shimmer gate is now the audit's subpixel verdict over the CPU mirror of the same derivative formula.
 - Ambient life is now deterministic, GPU-driven, flat, and pooled, but it has no explicit screen-space or activity scheduler beyond per-cycle appearance windows, camera-distance fade, and per-family/owner caps; the `COL-09` capped dynamic hash it would consume is still queued.
 
 ### Active now
 
-- `COL-05`: moving visual validation of the new coordinate TPP obstruction sweep.
-- `LAY-03`: transparent-water order and low-profile moving visual validation.
-- `LIF-02`: explicit screen-space/activity scheduler budgets on top of the landed ambient pools; its `COL-09` capped dynamic hash is still queued, and moving bird/bee composition still needs capture tooling.
-- `DET-09`: moving landmark/arch/colonnade composition capture; its grammar, opening, compound, pool, and collision gates are landed.
+- `LIF-02`: explicit screen-space/activity scheduler budgets on top of the landed ambient pools; its `COL-09` capped dynamic hash is still queued.
+
+Nothing else is `ACTIVE`: the retired capture gates for `COL-05`, `LAY-03`, `MAT-03`, `DET-08` and `DET-09` are closed by the movement audit, so their rows are `ADDED`.
 
 ## 7. Canonical dependency chain
 
@@ -174,7 +188,7 @@ Why this order:
 | 004 | FND-04 | P0 | Low/balanced/high quality profiles | ADDED | FND-02 | Deterministic URL override and constrained auto-profile tests |
 | 005 | FND-05 | P0 | Canonical roadmap and changelog | ADDED | FND-01 | Matrix, dependencies, ownership, and dated change entries maintained |
 | 006 | FND-06 | P0 | Feature/schema/seed version registry | ADDED | FND-05 | Versioned namespaces cover tile, collision, materials, grammars, content and saves |
-| 007 | FND-07 | P0 | Shared lifecycle/disposal contract | PARTIAL | FND-02 | All workers, observers, textures, geometries and listeners prove zero-growth remount |
+| 007 | FND-07 | P0 | Shared lifecycle/disposal contract | ADDED | FND-02 | One ledger owns workers, listeners, observers, timers, materials, geometries and nodes; three world mount/unmount cycles return to identical idle counters, leaks are named per kind, per-profile ceilings and the `__gdo` debug hook are tested |
 | 008 | FND-08 | P1 | Curated/coordinate domain interface | PARTIAL | FND-06,FND-07 | Shared world/player/query interfaces without forcing one visual scale |
 
 ### Stage 1 — diagnostics and geographic truth
@@ -186,7 +200,7 @@ Why this order:
 | 012 | QLT-03 | P0 | Canonical fixture tile matrix | ADDED | QLT-02 | Network-free dense/sparse/concave/hole/bridge/coast and equivalent-provider fixtures compile through production builders |
 | 013 | QLT-04 | P0 | Query/layer/LOD debug overlay | ADDED | COL-01,LAY-01 | Debug/F3 toggles one capped line batch plus bounds, masks, owners, support, LOD, timings and budget status |
 | 014 | QLT-05 | P0 | Automated low-profile budget assertions | ADDED | QLT-01,QLT-03 | Fixture output passes applicable ceilings; every named memory/draw/triangle/query/worker/request/residency breach fails descriptively |
-| 015 | QLT-06 | P1 | TPP/FPP visual audit capture matrix | DEFERRED | COL-05,TER-04,MAT-03 | Moving screenshots/video at urban, rural, coast, wetland, mountain, arid locations |
+| 015 | QLT-06 | P1 | Deterministic movement-audit matrix | QUEUED | COL-05,TER-04,MAT-03 | Run the scripted movement audit across urban, rural, coast, wetland, mountain and arid fixtures and record per-fixture verdicts, fingerprints and budgets |
 | 020 | MAP-01 | P0 | Coordinate validation and Web Mercator | ADDED | FND-01 | Round-trip and unsafe-coordinate tests |
 | 021 | MAP-02 | P0 | Approximately 1:10 zoom-14 tile scale | ADDED | MAP-01 | Latitude-adjusted tile-size tests |
 | 022 | MAP-03 | P0 | Free provider list, fallback, attribution | ADDED | MAP-01 | No API key; visible attribution; bounded retry |
@@ -206,18 +220,18 @@ Why this order:
 | 031 | COL-02 | P0 | Exact mapped static footprint query | ADDED | MAP-07 | Packed rings/holes remain authoritative after grid broad phase |
 | 032 | COL-03 | P0 | Tight swept coordinate-player motion | ADDED | COL-02 | `.058` total profile, sweep/slide, bounded depenetration and counters pass tests |
 | 033 | COL-04 | P0 | Packed building vertical spans | ADDED | COL-01,COL-02 | Base/top and mask transfer align 1:1 with footprint polygons |
-| 034 | COL-05 | P0 | Near-plane-derived TPP camera sweep | ACTIVE | COL-03,COL-04 | Algorithm/response tests pass; moving visual audit remains |
-| 035 | COL-06 | P0 | Curated camera structure obstruction | PARTIAL | COL-01,COL-05,FND-08 | All current static bridge/landmark/sign/skyline/rail masses have tight tested compounds; moving audit remains |
+| 034 | COL-05 | P0 | Near-plane-derived TPP camera sweep | ADDED | COL-03,COL-04 | Algorithm/response tests pass, and the scripted movement audit proves every sample stayed clear of blockers with bounded per-step travel |
+| 035 | COL-06 | P0 | Curated camera structure obstruction | PARTIAL | COL-01,COL-05,FND-08 | All current static bridge/landmark/sign/skyline/rail masses have tight tested compounds and the movement audit covers the coordinate sweep; the curated sweep still needs the `FND-08` shared query interface |
 | 036 | COL-07 | P0 | Shared support/ground/step/slope query | ADDED | COL-01,COL-03,TER-03 | Terrain/road/bridge levels, normals, grounding, steps, drops and slope rejection are deterministic and grid-bounded |
 | 037 | COL-08 | P1 | Water/swim/fall support semantics | QUEUED | COL-07,TER-05 | Surface/depth/exit rules in both modes |
 | 038 | COL-09 | P1 | Capped dynamic spatial hash | QUEUED | COL-01,QLT-05 | 64/128/256 profile caps; primitive-only dynamic proxies |
 | 039 | COL-10 | P1 | Placement/support-domain query | ADDED | COL-01,LAY-01 | Exact insets, role/size checks, 2,048-slot tile cap, occupancy and prune/skip fallback tested |
 | 040 | LAY-01 | P0 | Semantic generation/surface/query descriptor | ADDED | COL-01,MAP-08 | Generation stages, surface elevations, render bands, depth policy and masks centralized |
 | 041 | LAY-02 | P0 | Grade/bridge/tunnel level resolution | ADDED | LAY-01 | Provider levels stay physically separate; same-grade joins/crossings get ≤1,200 deterministic merge patches |
-| 042 | LAY-03 | P0 | Opaque/transparent render policy | ACTIVE | LAY-01,QLT-05 | Bounded Three sorting/render bands added; moving water audit remains |
+| 042 | LAY-03 | P0 | Opaque/transparent render policy | ADDED | LAY-01,QLT-05 | Bounded sorting/render bands pass, and the movement audit reads the live bands every step: transparent water sorts above opaque geometry and its order never regresses |
 | 043 | LAY-04 | P0 | Water polygon/waterway overlap removal | ADDED | MAP-08,LAY-03 | Intersecting waterway ribbons are conservatively suppressed against exact mapped water polygons; query domains retain the hidden waterway |
 | 044 | LAY-05 | P1 | DOM label line-of-sight | QUEUED | COL-04,COL-01 | Sparse capped LOS hides labels behind blockers |
-| 045 | LAY-06 | P1 | Camera-fade eligibility/dither | DEFERRED | COL-05,MAT-02 | Opaque/alpha-tested screen-door fade; no broad blended foliage |
+| 045 | LAY-06 | P1 | Camera-fade eligibility/dither | QUEUED | COL-05,MAT-02 | Opaque/alpha-tested screen-door fade; no broad blended foliage. Dependency-complete now that `COL-05` and `MAT-02` are landed |
 
 ### Stage 3 — terrain, hydrology, and core mapped world
 
@@ -240,9 +254,9 @@ Why this order:
 |---:|---|---|---|---|---|---|
 | 060 | MAT-01 | P1 | Existing shader palette/hash/water normal | ADDED | FND-02 | Deterministic generated water normal and bounded material families |
 | 061 | MAT-02 | P0 | Shared tiny generated texture library | ADDED | FND-06,QLT-05 | Deterministic noise/mask/dither/LUT/water library is shared, reference-counted, seam/checksum tested, and 175,852 bytes incl. mips |
-| 062 | MAT-03 | P0 | Mip/distance/derivative anti-alias policy | PARTIAL | MAT-02 | Mip/filter, derivative-edge, distance/profile, and normal-first fade tests pass; moving low-pixel-ratio shimmer capture remains |
+| 062 | MAT-03 | P0 | Mip/distance/derivative anti-alias policy | ADDED | MAT-02 | Mip/filter, derivative-edge, distance/profile and normal-first fade tests pass; the CPU mirror of the derivative fade reports texels-per-pixel per surface and the movement audit requires mip or fade for every subpixel sample |
 | 063 | MAT-04 | P1 | Style/material semantic library | ADDED | MAT-02,LAY-01 | Ground/road/facade/roof/bark/leaf/water recipes share palette/masks without per-tile textures or extra voxel families |
-| 064 | MAT-05 | P1 | Surface detail catalogue rollout | QUEUED | MAT-03,MAT-04,TER-07 | Prioritized generated patterns; no downloaded baseline textures |
+| 064 | MAT-05 | P1 | Surface detail catalogue rollout | QUEUED | MAT-03,MAT-04,TER-07 | Prioritized generated patterns; no downloaded baseline textures. Dependency-complete now that `MAT-03` is landed |
 | 065 | MAT-06 | P2 | Bounded generated sign atlas/LRU | DEFERRED | MAT-02,LAY-05 | Only if 3D signs beat existing DOM labels within memory cap |
 
 ### Stage 5 — vegetation and ecology compiler
@@ -272,8 +286,8 @@ Why this order:
 | 094 | DET-05 | P1 | Street-furniture grammar | ADDED | DET-02,TER-02 | Seven visual-only DET-02 families use canonical ground-road frames, bounded crossing/entrance/water/spawn/ambience reservations, source ownership, global fixed-geometry pools, deterministic transfer/remount, collision isolation, and explicit entry/test/triangle/GPU/draw/byte gates |
 | 095 | DET-06 | P1 | Rocks/geology grammar | QUEUED | DET-02,TER-06 | Major-mass proxies only; small chips visual |
 | 096 | DET-07 | P1 | Vehicle grammar and tight proxy | QUEUED | DET-02,COL-09,TER-02 | Wheels/mirrors/lights cannot expand body collision |
-| 097 | DET-08 | P1 | Bridge grammar and compounds | ADDED | DET-02,LAY-02,COL-07 | Seven fixed deck/rail/pier families compile from the physical-level deck; rails leave the player corridor clear, piers reach measured terrain support, and moving visual validation still needs capture tooling |
-| 098 | DET-09 | P2 | Landmark grammar and openings | ADDED | DET-02,DET-04,QLT-05 | Repeated tiers/columns/voussoirs/crenellations/ribs/finials compile from bounded loops into one merged hidden-face batch replacing the mapped shell; arch/door voids stay genuinely walkable and no compound is one enclosing AABB |
+| 097 | DET-08 | P1 | Bridge grammar and compounds | ADDED | DET-02,LAY-02,COL-07 | Seven fixed deck/rail/pier families compile from the physical-level deck; rails leave the player corridor clear, piers reach measured terrain support, and the movement audit bounds pier/deck pop through the pooled-entry and LOD-churn verdicts |
+| 098 | DET-09 | P2 | Landmark grammar and openings | ADDED | DET-02,DET-04,QLT-05 | Repeated tiers/columns/voussoirs/crenellations/ribs/finials compile from bounded loops into one merged hidden-face batch replacing the mapped shell; arch/door voids stay genuinely walkable, no compound is one enclosing AABB, and the movement audit proves the resident hero set stays clear while swapping |
 | 099 | DET-10 | P2 | Prop/food grammar and triggers | QUEUED | DET-02,COL-01,GME-05 | Interaction range remains separate from solid proxy |
 
 ### Stage 7 — atmosphere, effects, and living world
@@ -288,7 +302,7 @@ Why this order:
 | 115 | ENV-06 | P2 | Procedural ambient audio zones | QUEUED | TER-07,ENV-04 | Browser-generated/packaged legal audio with distance/activity caps |
 | 116 | ENV-07 | P2 | Optional AO/contact-depth benchmark | DEFERRED | QLT-05,MAT-04 | Only if low/balanced GPU budget proves value |
 | 120 | LIF-01 | P1 | Existing deterministic birds and bees | ADDED | VEG-01 | Bounded flat sprites appear/disappear on deterministic per-cycle windows; no CPU transforms |
-| 121 | LIF-02 | P1 | Ambient-life scheduler and pools | PARTIAL | COL-09,VEG-07,QLT-05 | Owner-scoped bounded pools, distance fade, and per-cycle activity windows exist; explicit screen-space scheduling and the `COL-09` hash remain |
+| 121 | LIF-02 | P1 | Ambient-life scheduler and pools | PARTIAL | COL-09,VEG-07,QLT-05 | Owner-scoped bounded pools, distance fade, and per-cycle activity windows exist and the movement audit bounds sprite churn through the pooled-entry verdicts; explicit screen-space scheduling and the `COL-09` hash remain |
 | 122 | LIF-03 | P1 | GPU bird/insect group motion | ADDED | LIF-02,MAT-04 | Zero CPU matrix rewrite for far ambience; one clock uniform per steady frame |
 | 123 | LIF-04 | P2 | Bounded pedestrians | QUEUED | LIF-02,TER-05,GME-03 | Route graph, despawn/reuse, no dense global simulation |
 | 124 | LIF-05 | P2 | Bounded traffic/boats | QUEUED | LIF-02,DET-07,TER-08 | Coarse path movement and capped dynamic proxies |
@@ -353,26 +367,28 @@ To prevent half-built systems from accumulating:
 - If blocked, mark it `PARTIAL` with a concrete open gate; do not call it done.
 - New ideas enter this matrix with an ID and dependencies before implementation.
 
-Current WIP: moving visual completion gates for `COL-05`, `COL-06`, `LAY-03`, and `MAT-03` remain blocked on capture tooling. The deterministic `VEG-03` → `VEG-09` vegetation stack, `TER-07` → `TER-08` hydrology field, and `DET-01` → `DET-05` mapped-building/street-furniture detail stack are implemented. `MAT-05` remains ordered after the blocked `MAT-03` visual gate; `DET-06` and `DET-07` still wait on `TER-06` and `COL-09`, respectively. `DET-08` bridge deck/rail/pier modules and tight structural compounds are implemented, and `DET-09` now compiles repeated landmark modules plus exact opening compounds that never enclose an arch in one AABB; its moving landmark-composition capture stays open with the other capture gates. `MAP-09` adds the bounded persistent tile cache with LRU/TTL and attribution-safe storage. `VEG-10` detail/branch-group wind remains intentionally deferred.
+Current WIP: no gate is blocked on capture tooling any more — that dependency is deleted, and every moving claim is proved by the lifecycle ledger, the scripted movement audit, and the `__gdo` debug hook. `FND-07` landed the shared lifecycle/disposal contract with three-cycle zero-growth remount proofs and per-profile live-resource ceilings, and the retired capture gates for `COL-05`, `LAY-03`, `MAT-03`, `DET-08` and `DET-09` are closed against it. `COL-06` remains partial on the `FND-08` shared query interface rather than on any capture. The deterministic `VEG-03` → `VEG-09` vegetation stack, `TER-07` → `TER-08` hydrology field, and `DET-01` → `DET-05` mapped-building/street-furniture detail stack are implemented. `MAT-05` and `LAY-06` are now dependency-complete and queued; `DET-06` and `DET-07` still wait on `TER-06` and `COL-09`, respectively. `DET-08` bridge deck/rail/pier modules and tight structural compounds are implemented, and `DET-09` compiles repeated landmark modules plus exact opening compounds that never enclose an arch in one AABB; both are bounded by the audit's churn verdicts. `MAP-09` adds the bounded persistent tile cache with LRU/TTL and attribution-safe storage. `VEG-10` detail/branch-group wind remains intentionally deferred.
 
 ## 11. Definition of done
 
 Every completed feature must prove:
 
 1. **Correctness:** deterministic unit/fixture tests and no regression in exact map ownership/traversal.
-2. **Lifecycle:** cancellation, tile eviction, remount, and disposal leave no owned listeners/workers/GPU resources.
+2. **Lifecycle:** cancellation, tile eviction, remount, and disposal leave no owned listeners/workers/GPU resources, proved by the shared ledger and a zero-growth remount audit rather than by inspection.
 3. **Performance:** it fits the relevant low/balanced/high ceilings without borrowing an undocumented budget.
 4. **Fallback:** missing map/provider/device capability produces a bounded deterministic result.
 5. **Controls:** any action is accessible on desktop and eligible touch UI.
-6. **Visual quality:** where applicable, moving FPP/TPP captures show no unacceptable clipping, popping, shimmer, depth-order error, or repetitive failure.
+6. **Moving quality:** where applicable, the scripted movement audit proves no unacceptable clipping (negative camera clearance), popping (LOD/resident churn above threshold), shimmer (subpixel surface without mip or fade), depth-order error (transparent band sorting at or below opaque), or instability, and reports the failure by verdict, path, and sample index.
 7. **Documentation:** matrix status and [`CHANGELOG.md`](./CHANGELOG.md) are updated in the same change.
 
 ## 12. Next five canonical slices
 
-1. Complete moving visual gates for `COL-05`, `COL-06`, and `LAY-03` when capture tooling is available.
-2. Complete `MAT-03` with moving low-pixel-ratio road/ground/facade/water shimmer captures; its automated shader policy is already present.
-3. Add `MAT-05`: extend the shared style library with bounded generated regional surface-detail recipes after `MAT-03` closes.
-4. Add `COL-08` water/swim/fall support semantics: the next dependency-complete slice now that `TER-05`, `TER-07`, and `TER-08` are landed. `DET-10` prop/food modules still wait on the queued `GME-05` interaction registry.
-5. Complete the moving FPP/TPP captures for `DET-08` bridge composition plus pier/deck pop and for `DET-09` landmark/arch/colonnade composition alongside the pending obstruction, transparent-water, and shimmer gates.
+1. Add `FND-08`: the curated/coordinate domain interface. `FND-07` is now landed, so this is the shortest path to the twenty-one rows behind the shared world/player/query contract; it also unblocks `GME-05`, `CNT-01`, and the curated half of `COL-06`.
+2. Add `COL-08` water/swim/fall support semantics over the landed `TER-05`/`TER-07`/`TER-08` hydrology.
+3. Add `QLT-06` as a deterministic movement-audit matrix: run the scripted audit per canonical fixture (urban, rural, coast, wetland, mountain, arid) and record the verdicts, fingerprints, and budgets in one report.
+4. Add `MAP-08` normalized provider feature schema: it still fronts roughly fifty rows of content work.
+5. Add `MAT-05` surface-detail rollout and `LAY-06` camera-fade dither — both are now dependency-complete.
+
+`DET-10` prop/food modules still wait on the queued `GME-05` interaction registry; `DET-06`/`DET-07` wait on `TER-06`/`COL-09`.
 
 The completed fixture and budget gates must run against every later material, vegetation, object, and environment batch.

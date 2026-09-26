@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { adoptPoolResources } from './LifecycleContract.js';
 import { featureNamespace } from './FeatureVersions.js';
 import { GDO_PLANT_GEOMETRY_NAMESPACE, plantGeometryFingerprint } from './PlantGeometryCompiler.js';
 import {
@@ -373,6 +374,7 @@ export class PlantRenderPools {
     maxOwners,
     renderOrder = 30,
     reducedMotion = false,
+    ledger = null,
     windDirection,
     windStrength,
     windGustiness,
@@ -410,6 +412,17 @@ export class PlantRenderPools {
     this.buckets = new Map();
     this.schedule = Array.from({ length: lodPolicy.scheduleSlots }, () => []);
     this.dirtyBuckets = new Set();
+    // `FND-07`: the fixed pool resources (group, material, blade variants) join
+    // the shared ledger so remount growth is measured, not assumed.
+    this.lifecycleScope = ledger ? adoptPoolResources(ledger, GDO_PLANT_RENDER_NAMESPACE, {
+      material: this.material,
+      node: this.group,
+      extra: scope => {
+        for (const [key, geometry] of this.resources.entries()) {
+          scope.own('geometry', `${GDO_PLANT_RENDER_NAMESPACE}:${key}`, geometry, item => item.dispose?.());
+        }
+      },
+    }) : null;
     this.dummy = new THREE.Object3D();
     this.cameraPosition = [0, 2, 0];
     this.evaluationInput = {
@@ -882,6 +895,7 @@ export class PlantRenderPools {
     this.owners.clear();
     this.resources.clear();
     this.buckets.clear();
+    this.lifecycleScope?.disposeAll();
     this.disposed = true;
   }
 }

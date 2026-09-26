@@ -6,6 +6,7 @@ import { StreetFurniturePools } from './GeoStreetFurniturePools.js';
 import { BridgePools } from './GeoBridgePools.js';
 import { LandmarkPools } from './GeoLandmarkPools.js';
 import { GEO_TILE_CACHE_LIMITS } from './GeoTileCache.js';
+import { LifecycleLedger } from '../engine/LifecycleContract.js';
 import {
   AmbientLifePools,
   GDO_AMBIENT_LIFE_SOURCE_TYPES,
@@ -398,6 +399,13 @@ function createWaterMaterial(library) {
   return material;
 }
 
+/** GLSL-style smoothstep, used by the CPU mirror of generated-material fades. */
+function smoothstep(edge0, edge1, value) {
+  if (!(edge1 > edge0)) return value < edge0 ? 0 : 1;
+  const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
 function prefersReducedPlantMotion(environment = globalThis) {
   try { return environment?.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true; }
   catch { return false; }
@@ -415,8 +423,14 @@ export class GeoWorld {
     camera = null,
     viewportHeight = 720,
     reducedMotion = prefersReducedPlantMotion(),
+    ledger = null,
   }) {
     this.scene = scene;
+    // `FND-07`: the world owns one ledger scope. Every worker, listener, timer,
+    // material, tile geometry, and pool resource below registers in it, so
+    // `dispose()` is auditable and a remount provably returns to baseline.
+    this.lifecycle = ledger ? ledger.child('world') : new LifecycleLedger({ label: 'world' });
+    this.tileLifecycle = this.lifecycle.child('tiles');
     this.materialLibraryHandle = materialLibrary ? null : acquireProceduralMaterialLibrary();
     this.materialLibrary = materialLibrary ?? this.materialLibraryHandle.library;
     this.reference = createGeoReference(latitude, longitude, SOURCE_ZOOM);
@@ -504,26 +518,41 @@ export class GeoWorld {
     this.decorationGeometries = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
       .map(type => GEO_PLANT_TYPES.has(type) || GDO_AMBIENT_LIFE_SOURCE_TYPES[type]
         ? null : createDecorationGeometry(type));
+    this.lifecycle.own('material', 'ground', this.groundMaterial, item => item.dispose?.());
+    for (const [name, material] of [['road', this.roadMaterial], ['land', this.landMaterial],
+      ['building', this.buildingMaterial], ['water', this.waterMaterial], ['decoration', this.decorationMaterial]]) {
+      this.lifecycle.own('material', name, material, item => item.dispose?.());
+    }
+    this.decorationGeometries.forEach((geometry, index) => {
+      if (geometry) this.lifecycle.own('geometry', `decoration:${index}`, geometry, item => item.dispose?.());
+    });
+    this.lifecycle.own('node', 'root', this.root, item => item.removeFromParent?.());
+    if (this.materialLibraryHandle) this.lifecycle.handle('material-library',
+      () => this.materialLibraryHandle.release(), this.materialLibraryHandle.library);
     this.streetFurniturePools = new StreetFurniturePools(this.root, {
       material: this.decorationMaterial,
       terrainSeed: this.terrainSeed,
       renderOrder: GEO_LAYER.decoration.renderBand,
+      ledger: this.lifecycle,
     });
     // DET-08 bridge detail is a purely self-describing instanced stream: the
     // pool never samples terrain and never re-derives the authoritative deck.
     this.bridgePools = new BridgePools(this.root, {
       material: this.decorationMaterial,
       renderOrder: GEO_LAYER.decoration.renderBand,
+      ledger: this.lifecycle,
     });
     // DET-09 hero landmarks are one compiled, hidden-face-reduced mesh per tile.
     // Only the focused tile's hero is visible, so a landmark costs one draw.
     this.landmarkPools = new LandmarkPools(this.root, {
       material: this.decorationMaterial,
       renderOrder: GEO_LAYER.building.renderBand + 2,
+      ledger: this.lifecycle,
     });
     // VEG-09 already owns reduced motion for plants; ambient life reads the
     // same flag so one preference change covers every animated family.
     this.ambientLifePools = new AmbientLifePools(this.root, {
+      ledger: this.lifecycle,
       terrainSeed: this.terrainSeed,
       renderOrder: GEO_LAYER.ambience.renderBand,
       layer: GEO_LAYER.ambience,
@@ -539,6 +568,7 @@ export class GeoWorld {
       materialLibrary: this.materialLibrary,
       renderOrder: GEO_LAYER.decoration.renderBand,
       reducedMotion,
+      ledger: this.lifecycle,
     });
     // Preserve the VEG-05 diagnostics surface while the visible VEG-06 owner
     // pool becomes the lifecycle authority.
@@ -547,8 +577,9 @@ export class GeoWorld {
     this.activeBiome = { id: 'temperate', label: 'Reading map landscape…', ground: [.16, .30, .10] };
 
     this.worker = new Worker(new URL('./GeoTileWorker.js', import.meta.url), { type: 'module', name: 'map-tile-generator' });
-    this.worker.addEventListener('message', event => this._handleWorkerMessage(event.data));
-    this.worker.addEventListener('error', event => {
+    this.lifecycle.worker(this.worker, 'tile-generator');
+    this.lifecycle.listener(this.worker, 'message', event => this._handleWorkerMessage(event.data));
+    this.lifecycle.listener(this.worker, 'error', event => {
       this._emitStatus(`Map worker error: ${event.message || 'unknown error'}`, true);
     });
 
@@ -595,8 +626,11 @@ export class GeoWorld {
     root.add(ground);
     this.root.add(root);
 
+    // The ground grid is tile-owned like every other slot, so eviction and
+    // remount account for it through the same ledger path.
     const tile = {
       key, x, y, root, bounds, ground,
+      lifecycleEntries: new Map(),
       state: 'queued', requestId: this.nextRequestId++, priority,
       roads: null, land: null, water: null, decorations: [], buildings: null, buildingDetails: null,
       labels: [], biome: null, environment: null, roadMeta: null, buildingMeta: null, timings: null,
@@ -614,6 +648,7 @@ export class GeoWorld {
       ambientLifeCount: 0, buildingFeatures: 0, truncated: false,
       retryCount: 0, retryAt: 0,
     };
+    this._ownTileGeometry(tile, 'ground', groundGeometry);
     this.tiles.set(key, tile);
     this.queue.push(tile);
     this.queue.sort((a, b) => a.priority - b.priority);
@@ -769,10 +804,14 @@ export class GeoWorld {
 
   _schedulePlantMounts() {
     if (this.plantMountTimer != null || !this.pendingPlantOwners.size) return;
-    this.plantMountTimer = setTimeout(() => {
+    const timer = setTimeout(() => {
       this.plantMountTimer = null;
+      this.plantTimerHandle?.release();
+      this.plantTimerHandle = null;
       this._flushPlantMounts();
     }, 0);
+    this.plantMountTimer = timer;
+    this.plantTimerHandle = this.lifecycle.timer('timer', timer, handle => clearTimeout(handle), 'plant-mount');
   }
 
   _flushPlantMounts(nowMilliseconds = performance.now(), includeUnready = false) {
@@ -838,10 +877,11 @@ export class GeoWorld {
     if (message.phase === 'roads') {
       if (tile.roads) {
         tile.roads.removeFromParent();
-        tile.roads.geometry.dispose();
+        this._releaseTileGeometry(tile, 'roads');
         tile.roads = null;
       }
       if (geometry) {
+        this._ownTileGeometry(tile, 'roads', geometry);
         tile.roads = new THREE.Mesh(geometry, this.roadMaterial);
         tile.roads.name = `roads:${tile.key}`;
         tile.roads.renderOrder = GEO_LAYER.road.renderBand;
@@ -881,8 +921,8 @@ export class GeoWorld {
         Boolean(context.clearanceDiagnostics?.capEvents &&
           Object.values(context.clearanceDiagnostics.capEvents).some(Boolean));
       const warnings = [];
-      tile.land?.geometry.dispose();
-      tile.water?.geometry.dispose();
+      this._releaseTileGeometry(tile, 'land');
+      this._releaseTileGeometry(tile, 'water');
       tile.land?.removeFromParent();
       tile.water?.removeFromParent();
       for (const decoration of tile.decorations) decoration.removeFromParent();
@@ -898,6 +938,7 @@ export class GeoWorld {
       try {
         const landGeometry = createBufferGeometry(context.land);
         if (landGeometry) {
+          this._ownTileGeometry(tile, 'land', landGeometry);
           tile.land = new THREE.Mesh(landGeometry, this.landMaterial);
           tile.land.name = `land-cover:${tile.key}`;
           tile.land.renderOrder = GEO_LAYER.land.renderBand;
@@ -908,6 +949,7 @@ export class GeoWorld {
       try {
         const waterGeometry = createBufferGeometry(context.water);
         if (waterGeometry) {
+          this._ownTileGeometry(tile, 'water', waterGeometry);
           tile.water = new THREE.Mesh(waterGeometry, this.waterMaterial);
           tile.water.name = `water:${tile.key}`;
           tile.water.renderOrder = GEO_LAYER.water.renderBand;
@@ -956,15 +998,16 @@ export class GeoWorld {
       const warnings = [];
       if (tile.buildings) {
         tile.buildings.removeFromParent();
-        tile.buildings.geometry.dispose();
+        this._releaseTileGeometry(tile, 'buildings');
         tile.buildings = null;
       }
       if (tile.buildingDetails) {
         tile.buildingDetails.removeFromParent();
-        tile.buildingDetails.geometry.dispose();
+        this._releaseTileGeometry(tile, 'buildingDetails');
         tile.buildingDetails = null;
       }
       if (geometry) {
+        this._ownTileGeometry(tile, 'buildings', geometry);
         tile.buildings = new THREE.Mesh(geometry, this.buildingMaterial);
         tile.buildings.name = `buildings:${tile.key}`;
         tile.buildings.renderOrder = GEO_LAYER.building.renderBand;
@@ -978,6 +1021,7 @@ export class GeoWorld {
         indices: message.geometry.detailIndices,
       });
       if (detailGeometry) {
+        this._ownTileGeometry(tile, 'buildingDetails', detailGeometry);
         tile.buildingDetails = new THREE.Mesh(detailGeometry, this.decorationMaterial);
         tile.buildingDetails.name = `building-details:${tile.key}`;
         tile.buildingDetails.renderOrder = GEO_LAYER.building.renderBand + 1;
@@ -1282,12 +1326,9 @@ export class GeoWorld {
     tile.bridgeCount = 0;
     tile.ambientLifeCount = 0;
     tile.root.removeFromParent();
-    tile.ground?.geometry.dispose();
-    tile.roads?.geometry.dispose();
-    tile.land?.geometry.dispose();
-    tile.water?.geometry.dispose();
-    tile.buildings?.geometry.dispose();
-    tile.buildingDetails?.geometry.dispose();
+    for (const slot of ['ground', 'roads', 'land', 'water', 'buildings', 'buildingDetails']) {
+      this._releaseTileGeometry(tile, slot);
+    }
     tile.decorations.length = 0;
     tile.waterDomain = null;
     tile.waterDomainMeta = null;
@@ -1808,25 +1849,160 @@ export class GeoWorld {
     return worldToCoordinate(this.reference, x, z);
   }
 
+  /**
+   * `FND-07`/`QLT-06` programmatic movement sample.
+   *
+   * This is the replacement for the retired browser-capture matrix: the exact
+   * numbers a screenshot or video used to be inspected for — camera clearance
+   * against real blockers, live render bands and transparency flags, per-family
+   * plant LOD selection, and a CPU mirror of the `MAT-03` derivative fade — read
+   * straight out of running state so a test, a console, or an unattended audit
+   * can assert on them.
+   */
+  probeCameraClearance(target, position, radius = .03, out = {}) {
+    const dx = position.x - target.x, dy = position.y - target.y, dz = position.z - target.z;
+    const distance = Math.hypot(dx, dy, dz);
+    if (distance < 1e-6) return { clearance: 0, blocked: false, distance: 0, hit: false };
+    const hit = this.sweepSphere(target.x, target.y, target.z, dx, dy, dz, radius, out);
+    out.clearance = hit.hit ? -(1 - hit.time) * distance : 0;
+    out.blocked = Boolean(hit.hit && hit.time < 1);
+    out.distance = distance;
+    return out;
+  }
+
+  /** Per-family dominant plant LOD, used to measure resident churn. */
+  plantLodByFamily() {
+    const counts = new Map();
+    for (const record of this.plantRenderPools.records.values()) {
+      const family = record.placement?.family;
+      const lod = record.lod;
+      if (family == null || typeof lod !== 'number') continue;
+      const key = `${family}:${lod}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const best = new Map();
+    for (const [key, count] of [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const family = key.slice(0, key.indexOf(':'));
+      const current = best.get(family);
+      if (!current || count > current.count) best.set(family, { lod: Number(key.slice(key.indexOf(':') + 1)), count });
+    }
+    const out = {};
+    for (const [family, entry] of [...best.entries()].sort((a, b) => a[0].localeCompare(b[0]))) out[family] = entry.lod;
+    return out;
+  }
+
+  /**
+   * CPU mirror of the generated-material derivative fade. `pixels` counts
+   * style-mask texels per device pixel, so a value below one is exactly the
+   * subpixel case the shader has to fade rather than alias.
+   */
+  surfaceDetailSamples({ camera = this.viewCamera, viewportHeight = this.viewportHeight, pixelRatio = 1, distance = 12 } = {}) {
+    const library = this.materialLibrary;
+    const atlasWidth = library?.textures?.styleMasks?.image?.width ?? 0;
+    const fov = camera?.fov ?? 52;
+    const pixelsPerWorldUnit = (viewportHeight * pixelRatio) /
+      (2 * Math.tan(THREE.MathUtils.degToRad(fov) / 2) * Math.max(.01, distance));
+    const output = [];
+    for (const [key, material] of [
+      ['ground', this.groundMaterial], ['road', this.roadMaterial], ['land', this.landMaterial],
+      ['facade', this.buildingMaterial], ['water', this.waterMaterial], ['decoration', this.decorationMaterial],
+    ]) {
+      const state = material?.userData?.gdoSemanticMaterial;
+      if (!state) continue;
+      const styleScale = state.uniforms.gdoStyleScale?.value ?? 0;
+      const minimumPixels = state.uniforms.gdoMinimumPixels?.value ?? 0;
+      const fadeNear = state.uniforms.gdoDetailFade?.value?.x ?? Infinity;
+      if (!(styleScale > 0) || !atlasWidth) continue;
+      const texelsPerWorldUnit = styleScale * atlasWidth;
+      const pixels = texelsPerWorldUnit * pixelsPerWorldUnit;
+      // Mirrors the shader: fwidth(styleCoord) ≈ 1 texel/pixel in style space.
+      const footprint = pixels > 0 ? (16 * minimumPixels) / pixels : Infinity;
+      const footprintVisibility = 1 - smoothstep(0.42, 1, footprint);
+      const distanceVisibility = 1 - smoothstep(fadeNear, state.uniforms.gdoDetailFade.value.y, distance);
+      const visibility = footprintVisibility * distanceVisibility;
+      output.push({
+        key,
+        pixels,
+        minimumPixels,
+        footprint,
+        visibility,
+        mip: material.map?.generateMipmaps !== false || library?.textures?.styleMasks != null,
+        faded: visibility < 1,
+      });
+    }
+    return output;
+  }
+
+  movementSnapshot({
+    camera = this.viewCamera,
+    renderer = null,
+    cameraMode = 'first-person',
+    clearance = 0,
+    pathId = null,
+    index = -1,
+    phase = 0,
+  } = {}) {
+    const position = camera?.position ?? { x: 0, y: 0, z: 0 };
+    const bands = [];
+    const push = (name, order, material, transparent = false) => bands.push({
+      name, order, transparent, opaqueOrder: GEO_LAYER.building.renderBand, material: material?.type ?? null,
+    });
+    push('ground', GEO_LAYER.ground.renderBand, this.groundMaterial);
+    push('road', GEO_LAYER.road.renderBand, this.roadMaterial);
+    push('land', GEO_LAYER.land.renderBand, this.landMaterial);
+    push('building', GEO_LAYER.building.renderBand, this.buildingMaterial);
+    push('landmark', GEO_LAYER.building.renderBand + 2, this.decorationMaterial);
+    push('plants', this.plantRenderPools.renderOrder, this.plantRenderPools.material);
+    push('ambient', GEO_LAYER.ambience.renderBand, this.ambientLifePools.material);
+    push('water', GEO_LAYER.water.renderBand, this.waterMaterial, Boolean(this.waterMaterial?.transparent));
+    return {
+      pathId, index, phase,
+      camera: { mode: cameraMode, position: { x: position.x, y: position.y, z: position.z }, clearance },
+      bands,
+      lod: this.plantLodByFamily(),
+      subpixel: this.surfaceDetailSamples({ camera, renderer }),
+      residentTiles: [...this.tiles.keys()].sort(),
+      renderCalls: renderer?.info?.render?.calls ?? 0,
+      triangles: renderer?.info?.render?.triangles ?? 0,
+      layers: this.layers?.length ?? 0,
+      lifecycle: this.lifecycle.snapshot(),
+    };
+  }
+
+  /**
+   * `FND-07` tile-geometry ownership. Keyed by slot so a phase that replaces its
+   * own geometry releases the previous ledger entry instead of leaving a live
+   * ghost behind; every slot releases through the ledger on eviction.
+   */
+  _ownTileGeometry(tile, name, geometry) {
+    if (!geometry) return geometry;
+    tile.lifecycleEntries ??= new Map();
+    tile.lifecycleEntries.get(name)?.release();
+    tile.lifecycleEntries.set(name,
+      this.tileLifecycle.own('geometry', `${tile.key}/${name}`, geometry, item => item.dispose?.()));
+    return geometry;
+  }
+
+  _releaseTileGeometry(tile, name) {
+    const handle = tile.lifecycleEntries?.get(name);
+    if (!handle) return false;
+    handle.release();
+    tile.lifecycleEntries.delete(name);
+    return true;
+  }
+
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
     if (this.plantMountTimer != null) clearTimeout(this.plantMountTimer);
     this.plantMountTimer = null;
+    this.plantTimerHandle?.release();
+    this.plantTimerHandle = null;
     this.pendingPlantOwners.clear();
-    this.worker.terminate();
     for (const tile of [...this.tiles.values()]) this._evictTile(tile);
     this.tiles.clear(); this.queue.length = 0;
-    this.plantRenderPools.dispose();
-    this.streetFurniturePools.dispose();
-    this.bridgePools.dispose();
-    this.landmarkPools.dispose();
-    this.ambientLifePools.dispose();
-    this.root.removeFromParent(); this.root.clear();
-    this.groundMaterial.dispose();
-    this.roadMaterial.dispose(); this.landMaterial.dispose(); this.buildingMaterial.dispose();
-    this.waterMaterial.dispose(); this.decorationMaterial.dispose();
-    for (const geometry of this.decorationGeometries) geometry?.dispose();
-    this.materialLibraryHandle?.release();
+    // Pools, materials, geometries, listeners, the worker, and the root node all
+    // release through the same ledger: anything left is a real lifecycle defect.
+    this.lifecycle.disposeAll();
   }
 }

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { acquireProceduralMaterialLibrary, createWaterNormalTexture } from './ProceduralMaterials.js';
+import { LifecycleLedger } from './LifecycleContract.js';
 
 export { createWaterNormalTexture };
 
@@ -91,6 +92,7 @@ export function createProceduralEngine(container, {
   toneMapping = THREE.ACESFilmicToneMapping,
   exposure = 1.05,
   sky = true,
+  ledger = null,
 } = {}) {
   const canvas = document.createElement('canvas');
   canvas.className = canvasClass;
@@ -117,6 +119,21 @@ export function createProceduralEngine(container, {
   const materialLibraryHandle = acquireProceduralMaterialLibrary();
   const skyDome = sky ? createProceduralSky(scene) : null;
 
+  // `FND-07`: the engine owns the canvas, the renderer, the generated sky, and
+  // one borrowed material-library handle. All four register here so a game
+  // remount proves it left nothing behind.
+  const lifecycle = ledger ?? new LifecycleLedger({ label: 'engine' });
+  const scope = ledger ? lifecycle.child('engine') : lifecycle;
+  scope.own('frame', 'renderer', renderer, item => item.dispose?.());
+  scope.own('node', 'canvas', canvas, item => item.remove?.());
+  scope.own('node', 'overlay', overlay, item => item.remove?.());
+  if (skyDome) scope.own('mesh', 'sky-dome', skyDome.mesh, item => {});
+  if (skyDome) {
+    scope.own('geometry', 'sky-geometry', skyDome.mesh.geometry, item => item.dispose?.());
+    scope.own('material', 'sky-material', skyDome.mesh.material, item => item.dispose?.());
+  }
+  scope.handle('material-library', () => materialLibraryHandle.release(), materialLibraryHandle.library);
+
   let disposed = false;
   return {
     canvas,
@@ -125,15 +142,12 @@ export function createProceduralEngine(container, {
     renderer,
     camera,
     sky: skyDome,
+    ledger: scope,
     materialLibrary: materialLibraryHandle.library,
     dispose() {
       if (disposed) return;
       disposed = true;
-      skyDome?.dispose();
-      materialLibraryHandle.release();
-      renderer.dispose();
-      canvas.remove();
-      overlay.remove();
+      scope.disposeAll();
     },
   };
 }

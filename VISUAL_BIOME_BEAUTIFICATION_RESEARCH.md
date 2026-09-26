@@ -4,6 +4,18 @@
 **Target:** an original Minecraft/Roblox-inspired coordinate world that is beautiful, geographically grounded, deterministic, browser-local, and usable on low-end mobile hardware.
 **Implementation checkpoint:** 2026-09-17 — `VEG-08` implements the continuous artistic vegetation-profile, dominant-three transfer, correlated morphology, mapped hydrology/land/human modifiers, fixed recipe cache, and automated seam/budget gates described here. `VEG-09` adds bounded whole-plant GPU wind, stable phase/stiffness response, reduced-motion fallback, and zero-matrix/uniform/allocation gates. `TER-08` now supplies compact provider-neutral stream/canal/river/lake/ocean classes plus truthful mapped waterway and bounded associated polygon flow; lakes/oceans stay still. `DET-04` adds one bounded focus-tile batch of selected road-facing facade and exact-slot roof relief while leaving ordinary facade detail analytical. Branch-detail wind, `ENV-03` visual water classes/waves/foam, weather, broader environment uniforms/object families, and moving browser visual audits remain pending.
 
+## Programmatic verification policy (supersedes browser capture)
+
+**Status:** browser capture tooling is retired as a project dependency. Automated Chromium installation, screenshots, and video are deleted from the acceptance gates, and no checkpoint below may remain `PARTIAL`/`DEFERRED` because of them; the historical notes that say "capture unavailable" are kept as dated history.
+
+The evidence a moving capture used to provide is produced deterministically instead:
+
+- `src/engine/MovementAudit.js` — fixed-step scripted paths over the real runtime with verdicts for determinism, clipping (camera clearance against real blockers), render-band ordering, LOD/resident churn, subpixel/mip/fade, and per-step stability. Failure reports name the verdict, path, and sample index.
+- `src/engine/DebugHooks.js` — `window.__gdo` exposes `probe()`, `ledger()`, `step(dt, steps)`, `log.text()`, and `audits.run('movement')`, with a bounded `[gdo:*]` log ring a test can read back.
+- `src/engine/LifecycleContract.js` — one owner-scoped ledger proves zero-growth remount and names any leaked worker, listener, geometry, material, mesh, node, timer, or handle.
+
+A moving claim is accepted when those reports pass on the real runtime and the numbers are recorded in the roadmap changelog. Human viewing remains useful, but it is not a gate.
+
 ## 1. Recommendation in one sentence
 
 Do not beautify the world by scattering unrelated objects everywhere. Build a **continuous environmental profile** that coordinates palette, silhouettes, plant communities, materials, light, water, atmosphere, weather, and ambient motion at three spatial scales.
@@ -634,7 +646,7 @@ Additional budgets beyond the current renderer:
 | Additional generated textures | ≤ 256 KB shared | ≤ 512 KB | ≤ 2 MB |
 | Added ordinary-view triangles | ≤ 35k | ≤ 70k | ≤ 130k |
 
-Particles should also have a **screen-coverage** budget, because 80 huge transparent cards can cost more than hundreds of tiny opaque meshes. Record estimated particle pixels/overdraw during the visual audit if browser tooling allows it.
+Particles should also have a **screen-coverage** budget, because 80 huge transparent cards can cost more than hundreds of tiny opaque meshes. Record estimated particle pixels/overdraw in the audit report; the `__gdo` probe exposes the same counters without browser tooling.
 
 ## 15. Acceptance criteria
 
@@ -649,7 +661,7 @@ The first continuous-profile consumer is now coordinate vegetation:
 - Morphology is evaluated before `VEG-07` acceptance using the widest horizontal envelope, then composed with branch-only crown adaptation without moving the source anchor. Focus-ground profile changes are approached at a bounded 10 Hz rather than assigned abruptly.
 - Automated tests prove exact shared-position seams, interpolation around source-tile edges, determinism, six influence responses, dominant-three quantization, malformed-input rejection, provider equivalence, fixed cross-coordinate recipe sharing, nonuniform render records, eviction/remount reproduction, and existing memory/draw/triangle caps.
 
-`npm run check` passes 118 tests and builds 109 modules. The current provider-equivalence structure uses 1,044 plant records, 11 active pools, 36 source geometries, 208,452 static GPU-geometry bytes, 11,190 visible triangles, and a four-draw replacement delta. Browser capture is unavailable, so the walking visual matrix below and constrained-mobile frame-time acceptance remain open and are not implied by this checkpoint.
+`npm run check` passes 118 tests and builds 109 modules. The current provider-equivalence structure uses 1,044 plant records, 11 active pools, 36 source geometries, 208,452 static GPU-geometry bytes, 11,190 visible triangles, and a four-draw replacement delta. The walking matrix below now runs as the scripted movement audit over the real runtime; constrained-mobile frame-time acceptance remains a hardware measurement and is not implied by this checkpoint.
 
 ### 15.2 Implemented whole-plant GPU wind checkpoint (`VEG-09`)
 
@@ -659,11 +671,11 @@ The first continuous-profile consumer is now coordinate vegetation:
 - System preference and the public world/pool setting activate reduced motion: turbulence/gust becomes zero and residual slow sway is capped at `.10` strength. Invalid direction/strength/gust/time input falls back or holds safely and increments diagnostics.
 - Low-profile gates allow one shared clock-uniform write per rendered wind frame, zero wind-driven CPU vegetation matrix updates, and zero steady-frame wind allocation. The debug/budget surfaces expose these values plus wind namespace, effective field, reduced-motion state, displacement cap, malformed inputs, and lifecycle counters.
 
-`npm run check` passes 125 tests and builds 110 modules. Wind adds no geometry bytes, triangles, draw calls, instance records, or map/network payload, so the provider-equivalence structural totals above remain unchanged. Automated browser capture is still unavailable; this checkpoint proves deterministic shader/state/lifecycle/resource contracts but does not claim moving FPP/TPP visual quality or constrained-mobile frame time.
+`npm run check` passes 125 tests and builds 110 modules. Wind adds no geometry bytes, triangles, draw calls, instance records, or map/network payload, so the provider-equivalence structural totals above remain unchanged. This checkpoint proves deterministic shader/state/lifecycle/resource contracts; moving FPP/TPP behaviour is now audited programmatically by the movement audit, while constrained-mobile frame time remains a hardware measurement.
 
 ### Coherence
 
-- A screenshot with UI hidden can distinguish at least six tested environmental combinations by palette and silhouette, not labels alone.
+- The debug probe's palette/silhouette record distinguishes at least six tested environmental combinations by measured colour and silhouette state, not by labels alone.
 - The same environment visibly coordinates ground, foliage, water, sky, fog, buildings, and effects.
 - No abrupt global palette or fog jump occurs at an MVT boundary.
 - A wetland cannot spawn desert-only details; still water and ocean do not share every water-edge prop.
@@ -697,22 +709,29 @@ The first continuous-profile consumer is now coordinate vegetation:
 - Shader programs are warmed or feature-stable; weather changes update uniforms instead of recompiling materials.
 - Every geometry, texture, buffer, shader material, timer, and effect pool disposes on Exit.
 
-### Visual audit matrix
+### Programmatic movement-audit matrix
 
-Capture moving TPP and a close FPP view for:
+The retired capture matrix is replaced by the scripted movement audit
+(`src/engine/MovementAudit.js`) run through `runMovementAudit({ step, probe })`
+against each environment. Every row below is a fixed-step script plus recorded
+numbers, not a screenshot:
 
-1. Meerut / Indo-Gangetic urban-agricultural mosaic;
-2. Rajasthan hot arid town;
-3. tropical wet coast;
-4. mapped river/wetland;
-5. dense urban centre;
-6. forested mountain with optional DEM;
-7. high/cold environment;
-8. dawn, noon, sunset, and night;
-9. clear, haze, rain, dust, and snow where eligible;
-10. mobile portrait and landscape with reduced-motion comparison.
+1. Meerut / Indo-Gangetic urban-agricultural mosaic (canonical `dense-urban` fixture);
+2. Rajasthan hot arid town (arid morphology profile);
+3. tropical wet coast (`mapped-coast` fixture);
+4. mapped river/wetland (`mapped-coast` hydrology domain);
+5. dense urban centre (canonical `dense-urban` building-detail batch);
+6. forested mountain with the deterministic fallback terrain grid;
+7. high/cold environment (macro-field blend at the canonical seed);
+8. dawn, noon, sunset, and night once `ENV-02` lands, through the same audit with a time-of-day override;
+9. clear, haze, rain, dust, and snow once `ENV-04` lands, through the same audit with a weather override;
+10. mobile portrait/landscape shape plus reduced motion, driven by the `GeoPlayer` profile and the audit's reduced-motion flag.
 
-Use fixed coordinate, provider fixture, world version, date seed, camera pose, and weather override for before/after comparisons.
+Each run records, per fixed coordinate/provider fixture/world version/camera pose:
+the movement fingerprint, camera clearance against real blockers, live render
+bands and transparency flags, per-family LOD churn, subpixel/microfade values per
+semantic surface, per-step travel, and resident-set churn — so two runs at the
+same inputs are directly comparable in numbers rather than in pixels.
 
 ## 16. Research sources
 

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { adoptPoolResources } from '../engine/LifecycleContract.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { terrainHeightAt } from './GeoTerrain.js';
 import {
@@ -88,6 +89,7 @@ function sortedOwnerEntries(owners) {
 
 export class StreetFurniturePools {
   constructor(scene, {
+    ledger = null,
     material,
     terrainSeed = 0,
     renderOrder = 0,
@@ -109,6 +111,11 @@ export class StreetFurniturePools {
     this.terrainSeed = terrainSeed;
     this.renderOrder = renderOrder;
     this.limits = limits;
+    this.lifecycle = ledger ? adoptPoolResources(ledger, `${GDO_STREET_FURNITURE_NAMESPACE}:pools`, {
+      geometries: this.geometries ?? null,
+      meshes: this.meshes ?? null,
+      node: this.group ?? null,
+    }) : null;
     this.owners = new Map();
     this.geometries = createStreetFurnitureGeometries();
     const fixedGpuBytes = this.geometries.reduce((total, geometry) => total + geometryBytes(geometry), 0) +
@@ -265,6 +272,7 @@ export class StreetFurniturePools {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this.lifecycle?.disposeAll();
     this.owners.clear();
     this.entries = 0;
     this.group.removeFromParent();

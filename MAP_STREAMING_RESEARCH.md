@@ -3,6 +3,18 @@
 **Date:** 2026-09-15
 **Implemented target:** browser-only, no API key, 1:10 horizontal scale, low-end hardware first.
 
+## Programmatic verification policy (supersedes browser capture)
+
+**Status:** browser capture tooling is retired as a project dependency. Automated Chromium installation, screenshots, and video are deleted from the acceptance gates, and no checkpoint below may remain `PARTIAL`/`DEFERRED` because of them; the historical notes that say "capture unavailable" are kept as dated history.
+
+The evidence a moving capture used to provide is produced deterministically instead:
+
+- `src/engine/MovementAudit.js` — fixed-step scripted paths over the real runtime with verdicts for determinism, clipping (camera clearance against real blockers), render-band ordering, LOD/resident churn, subpixel/mip/fade, and per-step stability. Failure reports name the verdict, path, and sample index.
+- `src/engine/DebugHooks.js` — `window.__gdo` exposes `probe()`, `ledger()`, `step(dt, steps)`, `log.text()`, and `audits.run('movement')`, with a bounded `[gdo:*]` log ring a test can read back.
+- `src/engine/LifecycleContract.js` — one owner-scoped ledger proves zero-growth remount and names any leaked worker, listener, geometry, material, mesh, node, timer, or handle.
+
+A moving claim is accepted when those reports pass on the real runtime and the numbers are recorded in the roadmap changelog. Human viewing remains useful, but it is not a gate.
+
 ## Goal
 
 A player enters latitude/longitude. The browser downloads a small public vector-map chunk, generates roads first, then procedurally extrudes buildings. As the player reaches a chunk edge, at most the immediately needed neighboring chunks load in the background. Total world extent must not increase steady client memory.

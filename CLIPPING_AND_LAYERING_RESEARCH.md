@@ -4,6 +4,18 @@
 **Status:** design authority with implementation checkpoints through 2026-09-17. Exact mapped collision rings, role masks, swept player/camera queries, terrain/road support, layer policy, exact support slots, hydrology overlap/domain fields, vegetation role clearances, and `DET-04` visual-only building detail isolation are implemented; later dynamic/fade/label systems and moving browser audits remain pending.
 **Target:** the shared browser-local procedural engine, with Coordinate Explorer as the first proving ground and low-end/mobile hardware as the limiting profile.
 
+## Programmatic verification policy (supersedes browser capture)
+
+**Status:** browser capture tooling is retired as a project dependency. Automated Chromium installation, screenshots, and video are deleted from the acceptance gates, and no checkpoint below may remain `PARTIAL`/`DEFERRED` because of them; the historical notes that say "capture unavailable" are kept as dated history.
+
+The evidence a moving capture used to provide is produced deterministically instead:
+
+- `src/engine/MovementAudit.js` — fixed-step scripted paths over the real runtime with verdicts for determinism, clipping (camera clearance against real blockers), render-band ordering, LOD/resident churn, subpixel/mip/fade, and per-step stability. Failure reports name the verdict, path, and sample index.
+- `src/engine/DebugHooks.js` — `window.__gdo` exposes `probe()`, `ledger()`, `step(dt, steps)`, `log.text()`, and `audits.run('movement')`, with a bounded `[gdo:*]` log ring a test can read back.
+- `src/engine/LifecycleContract.js` — one owner-scoped ledger proves zero-growth remount and names any leaked worker, listener, geometry, material, mesh, node, timer, or handle.
+
+A moving claim is accepted when those reports pass on the real runtime and the numbers are recorded in the roadmap changelog. Human viewing remains useful, but it is not a gate.
+
 ## 1. Recommendation in one sentence
 
 Keep mapped building rings authoritative, replace arbitrary padding and point samples with **role-specific tight proxies plus bounded swept queries**, and drive surface height, render pass, visibility, collision, camera obstruction, and placement from one semantic layer descriptor without ever treating those different kinds of “layer” as interchangeable.
@@ -574,7 +586,7 @@ If a procedural module cannot be placed within candidate/budget limits, skip it.
 7. **Trigger separation:** collectible interaction range may be larger, but never blocks movement and is labelled separately.
 8. **Trunk test:** only an opted-in trunk proxy blocks; crown/twig boxes do not.
 
-**`DET-04` checkpoint:** the focus-tile building-detail batch is marked visual-only and shares no generated proxy path. Automated integration compares enabled/disabled output and proves byte-identical collider AABBs, exact vertices/ring/polygon offsets, vertical spans, and query masks. Roof modules revalidate exact support including courtyard holes; facade modules use one bounded mapped-road edge query, project outward, reserve their entrance zone vertically, and create no solid, interaction, or camera proxy. Tile eviction disposes the separate merged detail geometry and deterministic remount reproduces it. Moving FPP/TPP clipping/composition capture is still unavailable and is not claimed.
+**`DET-04` checkpoint:** the focus-tile building-detail batch is marked visual-only and shares no generated proxy path. Automated integration compares enabled/disabled output and proves byte-identical collider AABBs, exact vertices/ring/polygon offsets, vertical spans, and query masks. Roof modules revalidate exact support including courtyard holes; facade modules use one bounded mapped-road edge query, project outward, reserve their entrance zone vertically, and create no solid, interaction, or camera proxy. Tile eviction disposes the separate merged detail geometry and deterministic remount reproduces it. Moving FPP/TPP clipping and composition are not capture-gated: the shared movement audit reports camera clearance against real blockers for every fixed-step sample, so a negative clearance fails the audit by verdict, path, and sample index.
 
 ### 15.2 Movement
 

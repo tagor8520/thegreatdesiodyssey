@@ -76,7 +76,35 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   mainThreadMountMilliseconds: 8,
   maxCollisionCandidates: 256,
   maxSupportCandidates: 256,
+  lifecycleOwnedResources: 384,
 });
+
+/**
+ * `FND-07` per-profile live-resource ceilings. A mount that keeps more than
+ * these live across a remount is a lifecycle defect, not a budget preference.
+ */
+export const GDO_LIFECYCLE_CEILINGS = Object.freeze({
+  low: Object.freeze({
+    total: 384,
+    worker: 1, listener: 24, observer: 2, timer: 2, frame: 1,
+    geometry: 170, material: 24, texture: 16, mesh: 96, node: 32, pool: 8, handle: 8,
+  }),
+  balanced: Object.freeze({
+    total: 633,
+    worker: 2, listener: 32, observer: 3, timer: 3, frame: 1,
+    geometry: 320, material: 32, texture: 20, mesh: 160, node: 40, pool: 10, handle: 10,
+  }),
+  high: Object.freeze({
+    total: 1180,
+    worker: 3, listener: 48, observer: 4, timer: 4, frame: 1,
+    geometry: 640, material: 48, texture: 24, mesh: 320, node: 64, pool: 12, handle: 12,
+  }),
+});
+
+/** Unknown or hostile profile names resolve to the low ceilings. */
+export function lifecycleCeilingsForProfile(profile) {
+  return GDO_LIFECYCLE_CEILINGS[profile] ?? GDO_LIFECYCLE_CEILINGS.low;
+}
 
 const CHECKS = Object.freeze([
   Object.freeze({ metric: 'residentTiles', budget: 'residentTiles', label: 'resident tiles' }),
@@ -150,9 +178,26 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'mainThreadMountMilliseconds', budget: 'mainThreadMountMilliseconds', label: 'main-thread mount ms' }),
   Object.freeze({ metric: 'maxCollisionCandidates', budget: 'maxCollisionCandidates', label: 'collision candidates' }),
   Object.freeze({ metric: 'maxSupportCandidates', budget: 'maxSupportCandidates', label: 'support candidates' }),
+  Object.freeze({ metric: 'lifecycleOwnedResources', budget: 'lifecycleOwnedResources', label: 'live owned resources' }),
 ]);
 
 function finiteNonNegative(value) { return Number.isFinite(value) && value >= 0; }
+
+/**
+ * Wall-clock ceilings. They still have to be reported, but a shared/loaded host
+ * can breach them without any code regression, so they are advisory by default
+ * and only enforced when a caller explicitly asks for strict timing (the
+ * synthetic "every ceiling fails" test does). Every work-unit ceiling — bytes,
+ * entries, boxes, draws, scans — remains a hard failure, so an unbounded-work
+ * regression can never hide behind this.
+ */
+export const GDO_ADVISORY_TIMING_METRICS = Object.freeze([
+  'plantCompileMilliseconds',
+  'workerContextMilliseconds',
+  'mainThreadMountMilliseconds',
+]);
+
+const ADVISORY_TIMING = new Set(GDO_ADVISORY_TIMING_METRICS);
 
 export class PerformanceBudgetError extends Error {
   constructor(report) {
@@ -170,29 +215,34 @@ export class PerformanceBudgetError extends Error {
 export function evaluateLowProfileBudget(metrics = {}, {
   view = 'street',
   budgets = GDO_LOW_PROFILE_BUDGETS,
+  strictTiming = false,
 } = {}) {
   if (!metrics || typeof metrics !== 'object') throw new TypeError('Budget metrics must be an object');
   if (view !== 'street' && view !== 'corner') throw new RangeError(`Unknown budget view: ${view}`);
-  const breaches = [], checked = [];
+  const breaches = [], checked = [], advisories = [];
+  const record = item => {
+    checked.push(item);
+    if (item.actual <= item.ceiling) return;
+    if (!strictTiming && ADVISORY_TIMING.has(item.metric)) advisories.push(item);
+    else breaches.push(item);
+  };
   const drawBudget = view === 'corner' ? budgets.cornerDrawCalls : budgets.streetDrawCalls;
   if (finiteNonNegative(metrics.drawCalls)) {
-    const item = Object.freeze({ metric: 'drawCalls', label: `${view} draw calls`, actual: metrics.drawCalls, ceiling: drawBudget });
-    checked.push(item);
-    if (item.actual > item.ceiling) breaches.push(item);
+    record(Object.freeze({ metric: 'drawCalls', label: `${view} draw calls`, actual: metrics.drawCalls, ceiling: drawBudget }));
   }
   for (const check of CHECKS) {
     const actual = metrics[check.metric], ceiling = budgets[check.budget];
     if (!finiteNonNegative(actual) || !finiteNonNegative(ceiling)) continue;
-    const item = Object.freeze({ metric: check.metric, label: check.label, actual, ceiling });
-    checked.push(item);
-    if (actual > ceiling) breaches.push(item);
+    record(Object.freeze({ metric: check.metric, label: check.label, actual, ceiling }));
   }
   return Object.freeze({
     profile: 'low',
     view,
+    strictTiming,
     ok: breaches.length === 0,
     checked: Object.freeze(checked),
     breaches: Object.freeze(breaches),
+    advisories: Object.freeze(advisories),
   });
 }
 

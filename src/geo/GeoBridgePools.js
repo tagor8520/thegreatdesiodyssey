@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { adoptPoolResources } from '../engine/LifecycleContract.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
   GDO_BRIDGE_NAMESPACE,
@@ -113,6 +114,7 @@ export class BridgePools {
     material,
     renderOrder = 0,
     limits = GEO_BRIDGE_POOL_LIMITS,
+    ledger = null,
   } = {}) {
     if (!scene?.add || !material?.isMaterial) {
       throw new TypeError('BridgePools requires a scene and a shared material');
@@ -131,6 +133,11 @@ export class BridgePools {
     this.material = material;
     this.renderOrder = renderOrder;
     this.limits = limits;
+    this.lifecycle = ledger ? adoptPoolResources(ledger, `${GDO_BRIDGE_NAMESPACE}:pools`, {
+      geometries: this.geometries ?? null,
+      meshes: this.meshes ?? null,
+      node: this.group ?? null,
+    }) : null;
     this.owners = new Map();
     this.geometries = createBridgeGeometries();
     this.meshTriangles = this.geometries.map(geometry => (geometry.index?.count ?? 0) / 3);
@@ -401,6 +408,7 @@ export class BridgePools {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this.lifecycle?.disposeAll();
     this.owners.clear();
     this.entries = 0;
     this.group.removeFromParent();

@@ -1,9 +1,12 @@
 import * as THREE from 'three';
 import { createProceduralEngine, createProceduralLightRig, GDO_PALETTE } from '../engine/ProceduralEngine.js';
 import { GeoWorld } from './GeoWorld.js';
-import { GeoPlayer } from './GeoPlayer.js';
+import { GeoPlayer, cameraNearPlaneSweepRadius } from './GeoPlayer.js';
 import { FlexibleJoystick, shouldUseTouchControls } from './GeoControls.js';
 import { validateCoordinate } from './GeoMath.js';
+import { LifecycleLedger } from '../engine/LifecycleContract.js';
+import { createDebugLogger, installDebugHooks } from '../engine/DebugHooks.js';
+import { createMovementAuditRunner } from '../engine/MovementAudit.js';
 import './geo.css';
 
 function formatBytes(bytes) {
@@ -52,9 +55,16 @@ function uiMarkup() {
   `;
 }
 
-export function mountGeoGame(container, { latitude, longitude, onExitRequest, providers, profile } = {}) {
+export function mountGeoGame(container, { latitude, longitude, onExitRequest, providers, profile, debugHooks = true } = {}) {
   const coordinate = validateCoordinate(latitude, longitude);
+  // `FND-07`: one ledger owns this mount. The engine, the world, every pool, the
+  // DOM listeners below, and the debug hook all register in it, so `dispose()`
+  // is provable and a remount cannot silently leak.
+  const lifecycle = new LifecycleLedger({ label: 'coordinate-game' });
+  const logger = createDebugLogger({ tag: 'gdo', level: 'debug' });
+  logger.info('lifecycle', 'mount requested', { latitude: coordinate.latitude, longitude: coordinate.longitude, profile: profile ?? 'low' });
   const engine = createProceduralEngine(container, {
+    ledger: lifecycle,
     ariaLabel: `Procedural OpenStreetMap world at ${coordinate.latitude}, ${coordinate.longitude}`,
     canvasClass: 'geo-game-canvas',
     antialias: false,
@@ -113,6 +123,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     materialLibrary: engine.materialLibrary,
     camera,
     viewportHeight: renderer.domElement.height || 720,
+    ledger: lifecycle,
     onStatus: status => {
       if (disposed) return;
       latestStatus = status;
@@ -199,8 +210,8 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
         event.target?.closest?.('input,textarea,select,[contenteditable="true"]')) return;
     toggleDebug(event);
   };
-  debugButton.addEventListener('click', toggleDebug);
-  window.addEventListener('keydown', debugKeydown);
+  lifecycle.listener(debugButton, 'click', toggleDebug);
+  lifecycle.listener(window, 'keydown', debugKeydown);
   let initialDebug = false;
   try { initialDebug = new URLSearchParams(window.location.search).get('debug') === '1'; } catch { /* optional */ }
   setDebugEnabled(initialDebug);
@@ -285,7 +296,8 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   touchCleanups.push(() => cameraButton.removeEventListener('pointerdown', toggleCamera));
 
   const exit = () => onExitRequest?.();
-  exitButton.addEventListener('click', exit);
+  // The exit listener is owned by the lifecycle ledger below, together with the
+  // visibility and context listeners.
 
   const maximumPixelRatio = touchControlsEnabled ? .72 : .85;
   const minimumPixelRatio = touchControlsEnabled ? .5 : .6;
@@ -297,7 +309,10 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     renderer.setSize(width, height, false);
     camera.aspect = width / height; camera.updateProjectionMatrix();
   };
-  const observer = new ResizeObserver(resize); observer.observe(container); resize();
+  const observer = new ResizeObserver(resize);
+  observer.observe(container);
+  lifecycle.observer(observer, 'container-resize');
+  resize();
 
   const targetFrameInterval = 1000 / 30;
   let lastFrame = performance.now(), sampleStart = lastFrame, sampleFrames = 0;
@@ -308,9 +323,12 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     ? new PerformanceObserver(entries => { longTaskCount += entries.getEntries().length; })
     : null;
   longTaskObserver?.observe({ type: 'longtask', buffered: false });
+  if (longTaskObserver) lifecycle.observer(longTaskObserver, 'long-task');
+  let auditClock = 0;
   const frame = now => {
     if (disposed || lost) return;
     animationFrame = requestAnimationFrame(frame);
+    auditClock = now;
     if (document.hidden || now - lastFrame < targetFrameInterval - 1) return;
     const frameGap = now - lastFrame;
     const dt = Math.min(frameGap / 1000, .1);
@@ -381,26 +399,125 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     world.ambientLifePools.handleContextRestored();
     lost = false; resize(); lastFrame = performance.now(); animationFrame = requestAnimationFrame(frame);
   };
-  document.addEventListener('visibilitychange', visibility);
-  canvas.addEventListener('webglcontextlost', contextLost);
-  canvas.addEventListener('webglcontextrestored', contextRestored);
+  lifecycle.listener(document, 'visibilitychange', visibility);
+  lifecycle.listener(canvas, 'webglcontextlost', contextLost);
+  lifecycle.listener(canvas, 'webglcontextrestored', contextRestored);
+  lifecycle.listener(exitButton, 'click', exit);
+  lifecycle.timer('frame', 0, () => cancelAnimationFrame(animationFrame), 'animation-loop');
   animationFrame = requestAnimationFrame(frame);
+  logger.info('lifecycle', 'world mounted', {
+    worker: true, pools: 5, ownedResources: lifecycle.snapshot().total,
+  });
+
+  // `FND-07`/`QLT-06`: the retired capture matrix is replaced by a scripted,
+  // fixed-step movement audit over the real player, camera, and world. Every
+  // verdict below is read from live state, so it runs in a page, in the debug
+  // hook, and unattended.
+  const auditInput = { forward: 0, strafe: 0, yawTurns: 0, zoomTurns: 0 };
+  const auditReset = () => {
+    player.setCameraMode('first-person', true);
+    player.setPosition(player.position.x, player.position.z);
+    player.yaw = 0;
+    player.thirdPersonPitch = .32;
+    player.distance = 2.6;
+    player.setMoveInput(0, 0);
+    player.update(1 / 30);
+    world.update(player.position, camera, renderer.domElement.height, auditClock);
+  };
+  const auditStep = (input, { dt = 1 / 30 } = {}) => {
+    if (player.cameraMode !== input.cameraMode) player.setCameraMode(input.cameraMode, true);
+    player.yaw = (input.yawTurns ?? 0) * Math.PI * 2;
+    if (input.zoomTurns != null) player.distance = 2.6 + input.zoomTurns * 3.4;
+    auditInput.forward = input.forward ?? 0;
+    auditInput.strafe = input.strafe ?? 0;
+    player.setMoveInput(auditInput.strafe, auditInput.forward);
+    player.enabled = true;
+    auditClock += dt * 1000;
+    player.update(dt);
+    world.update(player.position, camera, renderer.domElement.height, auditClock);
+  };
+  const auditProbe = info => {
+    const clearanceProbe = world.probeCameraClearance(
+      player.cameraTarget, camera.position, cameraNearPlaneSweepRadius(camera), {},
+    );
+    return world.movementSnapshot({
+      camera, renderer, cameraMode: player.cameraMode,
+      clearance: clearanceProbe.clearance,
+      pathId: info?.pathId ?? null, index: info?.index ?? -1, phase: info?.phase ?? 0,
+    });
+  };
+  const movementAudit = createMovementAuditRunner({
+    step: auditStep, probe: auditProbe, reset: auditReset, label: 'coordinate-movement',
+  });
+  const runMovementAudit = options => {
+    const report = movementAudit.run(options);
+    // The debug panel and the world snapshot read the same verdict summary.
+    world.movementAuditSummary = movementAudit.summary();
+    logger.info('audit', 'movement audit complete', {
+      ok: report.ok, samples: report.samples, fingerprint: report.fingerprint,
+      failed: report.verdicts.filter(verdict => !verdict.ok).map(verdict => verdict.id),
+    });
+    return report;
+  };
+  const debugSurface = installDebugHooks(window, {
+    enabled: debugHooks,
+    ledger: lifecycle,
+    logger,
+    describe: () => {
+      const snapshot = world.movementSnapshot({ camera, renderer, cameraMode: player.cameraMode });
+      return {
+        coordinate: world.coordinateAt(player.position.x, player.position.z),
+        camera: { mode: player.cameraMode, distance: player.cameraResolvedDistance },
+        bands: snapshot.bands,
+        plantLod: snapshot.lod,
+        residentTiles: snapshot.residentTiles.length,
+        query: world.queryDiagnostics,
+        movementAudit: movementAudit.summary(),
+        profile: world.profile,
+      };
+    },
+    step: (dt, index) => {
+      player.enabled = true;
+      player.update(dt);
+      world.update(player.position, camera, renderer.domElement.height, auditClock + index * dt * 1000);
+    },
+    audits: { movement: options => runMovementAudit(options) },
+    extras: {
+      world, player, camera, renderer,
+      movementAudit,
+      snapshot: () => world.movementSnapshot({ camera, renderer, cameraMode: player.cameraMode }),
+    },
+  });
+  if (debugHooks) logger.info('debug', 'hook installed', { key: '__gdo', audits: ['movement'] });
 
   return {
     scene, camera, renderer, world, player,
+    lifecycle,
+    logger,
+    debugHooks: debugSurface,
+    runMovementAudit,
     get debugOverlay() { return debugOverlay; },
     dispose() {
       if (disposed) return; disposed = true;
-      cancelAnimationFrame(animationFrame); observer.disconnect();
-      document.removeEventListener('visibilitychange', visibility);
-      window.removeEventListener('keydown', debugKeydown);
-      debugButton.removeEventListener('click', toggleDebug);
-      canvas.removeEventListener('webglcontextlost', contextLost); canvas.removeEventListener('webglcontextrestored', contextRestored);
-      exitButton.removeEventListener('click', exit);
+      cancelAnimationFrame(animationFrame);
       touchCleanups.forEach(cleanup => cleanup());
       joystick.dispose();
-      longTaskObserver?.disconnect();
-      debugOverlay?.dispose(); player.dispose(); world.dispose(); lightRig.dispose(); engine.dispose();
+      debugOverlay?.dispose();
+      player.dispose();
+      world.dispose();
+      lightRig.dispose();
+      engine.dispose();
+      debugSurface.dispose();
+      // Everything above released its own resources; the ledger then releases the
+      // remaining listeners, observers, timers, and handles and reports any leak.
+      const released = lifecycle.disposeAll();
+      const leaks = lifecycle.leaks();
+      logger.info('lifecycle', leaks.length ? 'unmount leaked resources' : 'unmount clean', {
+        released, leaks: leaks.map(entry => `${entry.kind}:${entry.name}`),
+      });
+      if (leaks.length && typeof console !== 'undefined') {
+        console.warn('Coordinate mount leaked lifecycle resources', leaks);
+      }
     },
   };
 }

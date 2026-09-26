@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { adoptPoolResources } from '../engine/LifecycleContract.js';
 import { GDO_LANDMARK_NAMESPACE, GEO_LANDMARK_LIMITS } from './GeoLandmarkGrammar.js';
 
 export const GEO_LANDMARK_POOL_LIMITS = Object.freeze({
@@ -104,7 +105,7 @@ function sortedOwnerEntries(owners) {
  * exactly one draw call.
  */
 export class LandmarkPools {
-  constructor(runtime, { material, renderOrder = 0, limits = GEO_LANDMARK_POOL_LIMITS } = {}) {
+  constructor(runtime, { material, renderOrder = 0, limits = GEO_LANDMARK_POOL_LIMITS, ledger = null } = {}) {
     if (!runtime?.add || !material?.isMaterial) {
       throw new TypeError('LandmarkPools requires a scene and a shared material');
     }
@@ -123,6 +124,11 @@ export class LandmarkPools {
     this.renderOrder = renderOrder;
     this.limits = limits;
     this.owners = new Map();
+    this.lifecycle = ledger ? adoptPoolResources(ledger, `${GDO_LANDMARK_NAMESPACE}:pools`, {
+      material,
+      node: null,
+      extra: scope => { this._lifecycleScope = scope; },
+    }) : null;
     this.group = new THREE.Group();
     this.group.name = `${GDO_LANDMARK_NAMESPACE}:pool`;
     runtime.add(this.group);
@@ -183,10 +189,15 @@ export class LandmarkPools {
     mesh.userData.geoLayer = 'landmark';
     mesh.visible = owner === this.focusKey;
     this.group.add(mesh);
-    this.owners.set(owner, {
+    // `FND-07`: the hero geometry releases through its ledger entry, so a
+    // replace, an eviction, and a full remount all account for it identically.
+    const entry = {
       owner, mesh, heroes: Object.freeze([...heroes]), compounds: records,
       measured: Object.freeze({ ...measured, bytes: measured.bytes }), heroCounts,
-    });
+      lifecycle: this._lifecycleScope?.own('geometry', `hero:${owner}`, mesh.geometry,
+        item => item.dispose?.()) ?? null,
+    };
+    this.owners.set(owner, entry);
     this._recount();
     return heroCounts.boxes;
   }
@@ -202,8 +213,9 @@ export class LandmarkPools {
   }
 
   _release(owner, entry) {
+    if (entry.lifecycle) entry.lifecycle.release();
+    else entry.mesh.geometry.dispose();
     entry.mesh.removeFromParent();
-    entry.mesh.geometry.dispose();
     this.group.remove(entry.mesh);
   }
 
@@ -341,5 +353,6 @@ export class LandmarkPools {
     this.group.removeFromParent();
     this.group.clear();
     this._recount();
+    this.lifecycle?.disposeAll();
   }
 }

@@ -4,6 +4,18 @@
 **Implementation checkpoint:** 2026-09-26 — the shared material foundation, `LAY-04`/`TER-07` hydrology prerequisite, `TER-08` provider-neutral water classes/mapped flow inputs, `VEG-03` through `VEG-09` vegetation stack, `DET-01` through `DET-05` object-role/support/building/street-furniture stack, `DET-08` bridge grammar, and the `LIF-01`/`LIF-03` flat GPU ambient life are implemented. `DET-04` keeps analytical ordinary facades and adds one bounded visual-only focus-tile batch for selected road-facing facade and exact-slot roof modules. `ENV-03` water materials/motion, later branch-detail wind, broader object families, and browser visual gates remain governed by this design.
 **Target:** deterministic local-browser generation, a Minecraft/Roblox-inspired voxel language, approximately 1:10 mapped horizontal scale, and low-end/mobile operation.
 
+## Programmatic verification policy (supersedes browser capture)
+
+**Status:** browser capture tooling is retired as a project dependency. Automated Chromium installation, screenshots, and video are deleted from the acceptance gates, and no checkpoint below may remain `PARTIAL`/`DEFERRED` because of them; the historical notes that say "capture unavailable" are kept as dated history.
+
+The evidence a moving capture used to provide is produced deterministically instead:
+
+- `src/engine/MovementAudit.js` — fixed-step scripted paths over the real runtime with verdicts for determinism, clipping (camera clearance against real blockers), render-band ordering, LOD/resident churn, subpixel/mip/fade, and per-step stability. Failure reports name the verdict, path, and sample index.
+- `src/engine/DebugHooks.js` — `window.__gdo` exposes `probe()`, `ledger()`, `step(dt, steps)`, `log.text()`, and `audits.run('movement')`, with a bounded `[gdo:*]` log ring a test can read back.
+- `src/engine/LifecycleContract.js` — one owner-scoped ledger proves zero-growth remount and names any leaked worker, listener, geometry, material, mesh, node, timer, or handle.
+
+A moving claim is accepted when those reports pass on the real runtime and the numbers are recorded in the roadmap changelog. Human viewing remains useful, but it is not a gate.
+
 ## 1. Recommendation in one sentence
 
 Use **shader math for broad variation, one tiny shared mask library for repeated microstructure, and deterministic grammar compilers that turn a bounded hierarchy of small boxes into a few reusable near/mid/far meshes**—never a material, draw call, scene node, or collider per box.
@@ -894,18 +906,19 @@ small visual boxes with any collision proxy (must remain zero unless explicit ro
 7. A failed module exhausts bounded attempts and skips; no infinite loop or floating fallback.
 8. No per-box mesh/material/collider/listener/timer is created.
 
-### 19.6 Performance and visual audit
+### 19.6 Programmatic performance and movement audit
 
-Capture moving TPP and close FPP at the same matrix already defined in the visual research, including Meerut, a dense urban tile, open cropland, wetland/coast, forest/mountain, and arid terrain.
+Run the scripted movement audit (`src/engine/MovementAudit.js`) over the same environment matrix already defined in the visual research, including Meerut, a dense urban tile, open cropland, wetland/coast, forest/mountain, and arid terrain. Capture is retired; the audit and the debug hook replace it.
 
 For each quality profile record:
 
-- FPS, average CPU, worst stable frame gap, long tasks;
+- FPS, average CPU, worst stable frame gap, long tasks (from the runtime counters and the `__gdo` probe);
 - draw calls, triangles, geometries, textures/programs;
-- resident tiles and placement/LOD counts;
-- worker build and archetype compile time;
+- resident tiles, placement counts, and per-family LOD churn against the popping threshold;
+- worker build and archetype compile time (advisory timing metrics, reported separately from work-unit ceilings);
 - texture bytes and generation time;
-- screenshots from stationary and moving cameras to reveal shimmer/popping.
+- the audit's subpixel verdict per semantic surface — `SurfaceDetailSamples` reports texels per pixel and the derivative-fade visibility, so shimmer is a number (subpixel surface without mip or fade) instead of a screenshot review.
+
 
 Low profile must remain at the existing 30 FPS target on constrained software/mobile audits. If the triangle budget passes but frame time fails, degrade measured bottlenecks rather than adding a higher nominal cap.
 
@@ -987,7 +1000,7 @@ The low-profile baseline now follows Section 16.2 without adopting the gated `Ba
 - The low hard limits are four owners, 5,360 records, 18 family/LOD pools, 48 source geometries, 1.5 MiB static uploaded geometry, 75,000 visible plant triangles, and at most eight draw additions over the replaced tile-local plant families. Context restoration marks retained attributes for upload; final disposal releases meshes, geometry tiers, material, selector state, and the reference-counted compiler library.
 - At this `VEG-06` checkpoint, before the later role-clearance filters, the densest canonical provider-equivalence fixture recorded 1,259 plants, 14 active pools, 30 source geometries, 168,780 static GPU-geometry bytes, 11,066 visible plant triangles, and an eight-draw delta. These are deterministic Node/Three structure measurements, not browser/mobile visual-performance proof.
 
-Automated coverage includes deterministic source uploads, paired variants, custom shader composition, one-active-LOD membership, staggered projected-size changes, owner eviction/repack, GPU-record remount reproduction, no per-tile pool multiplication, all low caps, context restoration, and disposal. Browser capture remains unavailable, so this checkpoint does not claim moving visual acceptance or constrained-device frame-time acceptance.
+Automated coverage includes deterministic source uploads, paired variants, custom shader composition, one-active-LOD membership, staggered projected-size changes, owner eviction/repack, GPU-record remount reproduction, no per-tile pool multiplication, all low caps, context restoration, and disposal. Moving claims are proved by the scripted movement audit and the `__gdo` debug hook rather than by browser capture; constrained-device frame-time acceptance remains a hardware measurement, not a capture gate.
 
 ### 21.2 Implemented hydrology and ecological-clearance checkpoint (`LAY-04`, `TER-07`, `VEG-07`)
 
@@ -999,7 +1012,7 @@ Automated coverage includes deterministic source uploads, paired variants, custo
 - Crown and branch policy is intentionally different from anchor/root policy. Crowns may cross source-tile edges, low-priority non-solid ground cover, and road verges without changing the half-open source owner. Building proximity invokes at most 16 deterministic inner/outer envelope samples and a bounded asymmetric scale/shift. One `gdoPlantClearance` `vec4` applies only to branch, frond, blade, leaf, and flower roles; trunk/stem/culm anchors and roots remain fixed. The complete paired low upload uses exactly 16 vertex-attribute locations, creates no per-plant geometry or collision proxy, and does no full per-instance space colonization.
 - Context diagnostics report candidates, accepted/rejected/adapted counts, semantic role, minimum/maximum declared extents, named acceptance/rejection/adaptation reasons, tested/blocked obstacle samples, and nature/ground-cover/road/building/water-domain cap events. World diagnostics aggregate rejection, adaptation, sample, and resident water-domain counters.
 
-The deterministic gates cover exact outer rings and courtyard holes, actual herb/tree extent differences, root route/water support, allowed crown-over-verge behavior, mapped ground-cover land kinds, bounded crown adaptation, transparent overlap suppression, domain caps, OpenMapTiles/Shortbread equivalence, fixture byte equivalence, half-open anchors, owner eviction/remount, context restoration, fallback tiles, and low resource ceilings. At this checkpoint, before `VEG-08` changed family/density response, `npm run check` passed 110 tests and built 108 Vite modules. The dense provider-equivalence upload then contained 1,258 plants in 14 active pools over 30 source geometries, 168,780 static GPU-geometry bytes, 11,072 visible triangles, and an eight-draw delta (5 near, 26 mid, 555 far, 672 beyond). These remain historical Node/Three structural measurements. Browser capture was unavailable, so no moving visual or constrained-mobile frame-time acceptance was claimed.
+The deterministic gates cover exact outer rings and courtyard holes, actual herb/tree extent differences, root route/water support, allowed crown-over-verge behavior, mapped ground-cover land kinds, bounded crown adaptation, transparent overlap suppression, domain caps, OpenMapTiles/Shortbread equivalence, fixture byte equivalence, half-open anchors, owner eviction/remount, context restoration, fallback tiles, and low resource ceilings. At this checkpoint, before `VEG-08` changed family/density response, `npm run check` passed 110 tests and built 108 Vite modules. The dense provider-equivalence upload then contained 1,258 plants in 14 active pools over 30 source geometries, 168,780 static GPU-geometry bytes, 11,072 visible triangles, and an eight-draw delta (5 near, 26 mid, 555 far, 672 beyond). These remain historical Node/Three structural measurements. Moving behaviour is covered by the scripted movement audit; constrained-mobile frame time remains a hardware measurement, not a capture gate.
 
 ### 21.3 Implemented continuous artistic morphology checkpoint (`VEG-08`)
 
@@ -1012,7 +1025,7 @@ The morphology stage now follows Sections 5 and 7 without expanding geometry bey
 - Morphology width is composed into `VEG-07` before acceptance using the widest horizontal axis. Crown adaptation remains branch-organ-only, and local shifts are corrected for the rendered nonuniform axes; anchors, roots, ownership, stable IDs, collision, one-active-LOD membership, and eviction/remount behavior remain unchanged.
 - `GeoWorld` now acquires one fixed versioned morphology recipe/LOD library at all coordinates instead of keying geometry by the session origin. The global ground colour approaches focus-profile changes at a bounded 10 Hz, avoiding abrupt shared-material assignment while leaving mapped vertex colours authoritative.
 
-The automated gates cover finite and malformed input, six-influence response, macro interpolation and exact shared-position seams, dominant-three quantization, correlated family/variant/trait response, bamboo reachability, provider equivalence, compact aligned transfer, nonuniform pool placement, fixed cross-coordinate recipe sharing, exact clearance composition, fixture determinism, owner remount, and all low ceilings. `npm run check` passes 118 tests and builds 109 Vite modules. The provider-equivalence upload contains 1,044 plants in 11 active pools over 36 source geometries, 208,452 static GPU-geometry bytes, 11,190 visible triangles, and a four-draw delta (0 near, 35 mid, 461 far, 548 beyond). These are Node/Three structural measurements. Browser capture remains unavailable, so this checkpoint does not claim the moving FPP/TPP visual audit or constrained-mobile frame-time acceptance.
+The automated gates cover finite and malformed input, six-influence response, macro interpolation and exact shared-position seams, dominant-three quantization, correlated family/variant/trait response, bamboo reachability, provider equivalence, compact aligned transfer, nonuniform pool placement, fixed cross-coordinate recipe sharing, exact clearance composition, fixture determinism, owner remount, and all low ceilings. `npm run check` passes 118 tests and builds 109 Vite modules. The provider-equivalence upload contains 1,044 plants in 11 active pools over 36 source geometries, 208,452 static GPU-geometry bytes, 11,190 visible triangles, and a four-draw delta (0 near, 35 mid, 461 far, 548 beyond). These are Node/Three structural measurements. The moving FPP/TPP audit is now the scripted movement audit over the real runtime; constrained-mobile frame time remains a hardware measurement, not a capture gate.
 
 ### 21.4 Implemented whole-plant GPU wind checkpoint (`VEG-09`)
 
@@ -1024,7 +1037,7 @@ The first wind tier now follows Sections 12 and 16 while keeping detail bending 
 - Reduced motion zeroes gust/turbulence and caps remaining calm strength. Invalid fields fall back to defaults, clock precision wraps continuously after 65,536 seconds, uniform objects survive context restoration, and disposal releases wind state with the one shared plant material.
 - Collision, support, clearances, anchors, source owners, LOD membership, and instance matrices are not deformed. Ordinary wind frames perform one shared scalar uniform write, zero CPU vegetation matrix updates, and zero steady-frame wind allocation. The low budget collector makes all three limits explicit.
 
-Tests mirror the shader field on the CPU to prove determinism, bounds, fixed roots/ground, tip/bend/stiffness response, adjacent stable-phase variation, yaw/world alignment, reduced motion, wrapping, malformed fallback, context/disposal continuity, shader composition, unchanged instance buffers, and culling reserve. The closing `VEG-09` gate passed 125 tests and built 110 Vite modules. Geometry, record, draw, triangle, and byte totals remain those of `VEG-08`. Browser capture remains unavailable, so no moving wind visual or constrained-mobile timing acceptance is claimed.
+Tests mirror the shader field on the CPU to prove determinism, bounds, fixed roots/ground, tip/bend/stiffness response, adjacent stable-phase variation, yaw/world alignment, reduced motion, wrapping, malformed fallback, context/disposal continuity, shader composition, unchanged instance buffers, and culling reserve. The closing `VEG-09` gate passed 125 tests and built 110 Vite modules. Geometry, record, draw, triangle, and byte totals remain those of `VEG-08`. Moving wind behaviour is covered by the scripted movement audit; constrained-mobile timing remains a hardware measurement, not a capture gate.
 
 ### 21.5 Implemented checkpoint: compact water class/flow inputs (`TER-08`)
 
@@ -1038,7 +1051,7 @@ The object contract is now `gdo:objectGrammar:v2`. Ordinary mapped buildings ret
 
 Oriented boxes retain silhouette/surface/accent roles and explicit visual bounds, but every generated solid, interaction, and camera proxy list stays empty. Enabling the batch leaves mapped collider AABBs, exact polygon/ring arrays, spans, and masks byte-identical. Only the focused source tile exposes its detail mesh, so at most eight detailed buildings and one added draw are visible; eviction disposes the tile-owned typed geometry and remount reproduces it. Hard low limits are 4,096 indexed road segments, 32,768 road-facing tests/tile, eight buildings, 96 boxes, 20,000 triangles, 256 KiB typed geometry, and one added draw. The dense canonical fixture uses 2,956 road tests, eight buildings, 88 boxes, 1,056 triangles, and 88,704 bytes; every selected recipe has at least four boxes while remaining below its 20-box ceiling.
 
-Automated tests cover road-order independence, outward orientation, entrance reservation, roof containment, missing-road fallback, malformed/capped roads, stable capped selection, provider equivalence, visual/collision isolation, focus-tile visibility, transfer, eviction/remount, diagnostics, and all budget gates. The integrated gate passes 134 tests and builds 110 Vite modules. Browser capture remains unavailable, so no moving FPP/TPP facade-pop, composition, or constrained-mobile frame-time acceptance is claimed.
+Automated tests cover road-order independence, outward orientation, entrance reservation, roof containment, missing-road fallback, malformed/capped roads, stable capped selection, provider equivalence, visual/collision isolation, focus-tile visibility, transfer, eviction/remount, diagnostics, and all budget gates. The integrated gate passes 134 tests and builds 110 Vite modules. Moving facade-pop and composition are covered by the movement audit's LOD/resident churn verdicts; constrained-mobile frame time remains a hardware measurement, not a capture gate.
 
 ### 21.7 Implemented checkpoint: street-furniture grammar (`DET-05`)
 
@@ -1048,7 +1061,7 @@ Placement comes from canonical physical-level-zero road geometry rather than pro
 
 Rendering uses seven merged fixed geometries and one owner-scoped global `InstancedMesh` per family, not one geometry/material/listener/timer/collider per box. Four source owners and 256 records are the resident maximum. Atomic owner replacement checks entry, active-draw, visible-triangle, and fixed GPU ceilings before repacking; owner keys and 24-bit geometry-derived IDs determine upload order. Worker transfer, cancellation boundaries, tile replacement/eviction, context restoration, disposal, fixture fingerprints, diagnostics, and the lazy debug overlay all retain the dedicated stream. Pool replacement leaves every tile collider/ring/span/mask/grid reference untouched.
 
-Low-profile gates are 256 resident entries, seven fixed source families and at most seven added draws, 25,000 visible triangles, 256 KiB fixed pool GPU storage, 1,536 placement bytes/tile, 32,768 reservation tests/tile, and zero steady-frame matrix updates. The canonical provider-equivalence mount uses four records, three active family draws, 108 triangles, 138,376 bytes of fixed geometry/matrix capacity, 96 transferred bytes, and 22 tests. The dense fixture uses 36 records, five active family draws, 1,224 triangles, 864 transferred bytes, and 1,018 tests. The integrated gate passes 141 tests and builds 119 Vite modules. Browser capture remains unavailable, so this checkpoint makes no moving FPP/TPP furniture-composition, pop, or constrained-mobile frame-time claim.
+Low-profile gates are 256 resident entries, seven fixed source families and at most seven added draws, 25,000 visible triangles, 256 KiB fixed pool GPU storage, 1,536 placement bytes/tile, 32,768 reservation tests/tile, and zero steady-frame matrix updates. The canonical provider-equivalence mount uses four records, three active family draws, 108 triangles, 138,376 bytes of fixed geometry/matrix capacity, 96 transferred bytes, and 22 tests. The dense fixture uses 36 records, five active family draws, 1,224 triangles, 864 transferred bytes, and 1,018 tests. The integrated gate passes 141 tests and builds 119 Vite modules. Moving furniture composition and pop are covered by the movement audit's churn verdicts; constrained-mobile frame time remains a hardware measurement, not a capture gate.
 
 ### 21.8 Implemented checkpoint: bridge grammar (`DET-08`)
 
@@ -1058,7 +1071,7 @@ Span ownership is half-open and keyed on quantized endpoints, width, and level, 
 
 Traversable openings agree with the visuals. Rails are emitted only when the free corridor between the two rail lines still fits the authoritative player profile, so a narrow deck keeps deck structure and piers but receives no rails at all. Piers require a measured deck-underside-to-terrain opening and are skipped with a counter when the gap is too small to hold them; piers below the reachable-clearance threshold stay visual-only. Compounds are tight per module — one pitched AABB per rail line and one per reachable pier — and never one bridge-wide AABB, so the walkable deck corridor is never covered by generated geometry.
 
-Low-profile limits are 1,024 source spans, 384 modules per tile, 384 pooled entries, seven added draws, 32,000 visible triangles, 256 KiB of fixed geometry plus instance capacity, 16,896 transferred bytes per tile, 512 compounds of which 192 may be structural, and zero steady-frame matrix updates. The two canonical fixtures that carry an elevated grade each add one 20-unit span: 30 modules, six added family draws, 816 triangles, 1,320 transferred bytes, and four piers reaching real support. The integrated gate passes 163 tests and builds 122 Vite modules. Browser capture remains unavailable, so this checkpoint makes no moving bridge-composition, pier/deck pop, or constrained-mobile frame-time claim.
+Low-profile limits are 1,024 source spans, 384 modules per tile, 384 pooled entries, seven added draws, 32,000 visible triangles, 256 KiB of fixed geometry plus instance capacity, 16,896 transferred bytes per tile, 512 compounds of which 192 may be structural, and zero steady-frame matrix updates. The two canonical fixtures that carry an elevated grade each add one 20-unit span: 30 modules, six added family draws, 816 triangles, 1,320 transferred bytes, and four piers reaching real support. The integrated gate passes 163 tests and builds 122 Vite modules. Moving bridge composition and pier/deck pop are covered by the movement audit's pooled-entry and churn verdicts; constrained-mobile frame time remains a hardware measurement, not a capture gate.
 
 ### 21.9 Implemented checkpoint: landmark grammar and openings (`DET-09`)
 
