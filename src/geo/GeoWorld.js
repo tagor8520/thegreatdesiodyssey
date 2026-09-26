@@ -5,6 +5,7 @@ import { PlantRenderPools } from '../engine/PlantRenderPools.js';
 import { StreetFurniturePools } from './GeoStreetFurniturePools.js';
 import { BridgePools } from './GeoBridgePools.js';
 import { LandmarkPools } from './GeoLandmarkPools.js';
+import { GEO_TILE_CACHE_LIMITS } from './GeoTileCache.js';
 import {
   AmbientLifePools,
   GDO_AMBIENT_LIFE_SOURCE_TYPES,
@@ -67,6 +68,7 @@ export const GEO_STREAMING_LIMITS = Object.freeze({
 const PREFETCH_EDGE_FRACTION = GEO_STREAMING_LIMITS.prefetchEdgeFraction;
 const MAX_RESIDENT_TILES = GEO_STREAMING_LIMITS.maxResidentTiles;
 const MAX_ACTIVE_REQUESTS = GEO_STREAMING_LIMITS.maxActiveRequests;
+const GEO_TILE_CACHE_PROFILES = GEO_TILE_CACHE_LIMITS.profiles;
 const COLLISION_CELL_SIZE = GEO_STREAMING_LIMITS.collisionCellSize;
 
 const GEO_PLANT_TYPES = new Set(Object.keys(GEO_PLANT_TYPE_FAMILIES).map(Number));
@@ -408,6 +410,7 @@ export class GeoWorld {
     onStatus = () => {},
     onInitialReady = () => {},
     providers,
+    profile = 'low',
     materialLibrary = null,
     camera = null,
     viewportHeight = 720,
@@ -421,6 +424,12 @@ export class GeoWorld {
     this.onStatus = onStatus;
     this.onInitialReady = onInitialReady;
     this.providers = providers;
+    // MAP-09 storage policy follows the active quality profile; the low ceiling
+    // is the default so an unset profile can never widen persistent storage.
+    this.profile = GEO_TILE_CACHE_PROFILES.includes(profile) ? profile : 'low';
+    this.tileCacheDiagnostics = null;
+    this.tileCacheServed = 0;
+    this.tileCacheRetained = '';
     this.tiles = new Map();
     this.queue = [];
     this.activeRequests = 0;
@@ -609,7 +618,29 @@ export class GeoWorld {
     this.queue.push(tile);
     this.queue.sort((a, b) => a.priority - b.priority);
     this._pumpQueue();
+    this._retainTileCacheEntries();
     this._emitStatus();
+  }
+
+  /**
+   * Tell the worker which resident tiles own the cache's pinned slots, so LRU
+   * trims can never remove the tiles the player is actually standing in. Bounded
+   * to the four resident tiles and sent only when that set changes.
+   */
+  _retainTileCacheEntries() {
+    if (this.disposed || !this.worker) return;
+    const descriptors = [...this.tiles.values()]
+      .map(tile => ({
+        zoom: this.reference.zoom,
+        urlX: wrapTileX(tile.x, this.reference.zoom),
+        urlY: clampTileY(tile.y, this.reference.zoom),
+      }))
+      .sort((first, second) => first.zoom - second.zoom || first.urlX - second.urlX || first.urlY - second.urlY);
+    // One message per resident-set change, never per frame.
+    const fingerprint = descriptors.map(entry => `${entry.zoom}/${entry.urlX}/${entry.urlY}`).join(',');
+    if (fingerprint === this.tileCacheRetained) return;
+    this.tileCacheRetained = fingerprint;
+    this.worker.postMessage({ type: 'retain', descriptors, providers: this.providers, profile: this.profile });
   }
 
   _pumpQueue() {
@@ -635,6 +666,7 @@ export class GeoWorld {
           longitude: this.reference.longitude,
           terrainSeed: this.terrainSeed,
           providers: this.providers,
+          profile: this.profile,
           featureVersions: GDO_FEATURE_VERSIONS,
         },
       });
@@ -788,6 +820,11 @@ export class GeoWorld {
       return;
     }
     if (message.type !== 'tile-phase') return;
+    if (message.tileCache) {
+      this.tileCacheDiagnostics = message.tileCache;
+      // A cache hit is a skipped download: the HUD reports it as saved bytes.
+      if (message.servedFromCache) this.tileCacheServed++;
+    }
 
     const mountStarted = performance.now();
     this.provider = message.provider || this.provider;
@@ -1082,6 +1119,23 @@ export class GeoWorld {
       landmarkStructuralCompounds: landmarkDiagnostics.structuralCompounds,
       // Must stay zero: a hero never keeps one enclosing AABB.
       landmarkEnclosingCompounds: landmarkDiagnostics.enclosingCompounds,
+      // MAP-09 persistent tile cache. The ceilings are the active profile's own,
+      // so the debug panel can show how much of the allowance is in use.
+      tileCacheEntries: this.tileCacheDiagnostics?.entries ?? 0,
+      tileCacheBytes: this.tileCacheDiagnostics?.bytes ?? 0,
+      tileCacheMaxEntries: this.tileCacheDiagnostics?.maxEntries ?? GEO_TILE_CACHE_LIMITS.maxEntries[this.profile],
+      tileCacheMaxBytes: this.tileCacheDiagnostics?.maxBytes ?? GEO_TILE_CACHE_LIMITS.maxBytes[this.profile],
+      tileCacheHits: this.tileCacheDiagnostics?.hits ?? 0,
+      tileCacheMisses: this.tileCacheDiagnostics?.misses ?? 0,
+      tileCacheWrites: this.tileCacheDiagnostics?.writes ?? 0,
+      tileCacheEvictions: this.tileCacheDiagnostics?.evictions ?? 0,
+      tileCacheExpirations: this.tileCacheDiagnostics?.expirations ?? 0,
+      tileCacheAttributionRejections: this.tileCacheDiagnostics?.attributionRejections ?? 0,
+      tileCacheStorageErrors: this.tileCacheDiagnostics?.storageErrors ?? 0,
+      tileCacheServed: this.tileCacheServed,
+      tileCachePersistent: this.tileCacheDiagnostics?.persistent ?? false,
+      tileCacheStorageKind: this.tileCacheDiagnostics?.storageKind ?? 'none',
+      tileCachePinned: this.tileCacheDiagnostics?.pinned ?? 0,
       ambientLifeEntries: ambientLifeDiagnostics.entries,
       ambientLifeFamilies: ambientLifeDiagnostics.activeDrawPools,
       ambientLifeTriangles: ambientLifeDiagnostics.visibleTriangles,
@@ -1214,6 +1268,7 @@ export class GeoWorld {
       this.activeRequests = Math.max(0, this.activeRequests - 1);
     }
     this.queue = this.queue.filter(candidate => candidate !== tile);
+    this._retainTileCacheEntries();
     this.pendingPlantOwners.delete(tile.key);
     this.plantRenderPools.removeOwner(tile.key);
     this.streetFurniturePools.removeOwner(tile.key);

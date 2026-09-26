@@ -52,7 +52,7 @@ function uiMarkup() {
   `;
 }
 
-export function mountGeoGame(container, { latitude, longitude, onExitRequest, providers } = {}) {
+export function mountGeoGame(container, { latitude, longitude, onExitRequest, providers, profile } = {}) {
   const coordinate = validateCoordinate(latitude, longitude);
   const engine = createProceduralEngine(container, {
     ariaLabel: `Procedural OpenStreetMap world at ${coordinate.latitude}, ${coordinate.longitude}`,
@@ -107,6 +107,9 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   const world = new GeoWorld(scene, {
     ...coordinate,
     providers,
+    // MAP-09 storage ceilings follow the active quality profile; the world keeps
+    // the low ceiling when no profile is supplied.
+    profile,
     materialLibrary: engine.materialLibrary,
     camera,
     viewportHeight: renderer.domElement.height || 720,
@@ -116,7 +119,9 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       const tileTiming = status.timings?.totalMilliseconds
         ? ` · last tile ${Math.round(status.timings.totalMilliseconds)}ms (${Math.round(status.timings.buildingsMilliseconds)}ms buildings)`
         : '';
-      sourceElement.textContent = `${status.provider} · ${status.biome} · ${status.resident} resident chunk${status.resident === 1 ? '' : 's'} · ${formatBytes(status.bytes)} downloaded${tileTiming}`;
+      const cacheNote = status.tileCacheServed
+        ? ` · ${status.tileCacheServed} chunk${status.tileCacheServed === 1 ? '' : 's'} from cache` : '';
+      sourceElement.textContent = `${status.provider} · ${status.biome} · ${status.resident} resident chunk${status.resident === 1 ? '' : 's'} · ${formatBytes(status.bytes)} downloaded${cacheNote}${tileTiming}`;
       if (status.error && !status.initialReady) {
         loadingElement.hidden = false;
         loadingTitle.textContent = 'Map data could not be loaded';

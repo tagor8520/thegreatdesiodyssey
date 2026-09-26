@@ -1,56 +1,59 @@
 import { decodeVectorTile, buildRoadGeometry, buildBuildingGeometry } from './GeoTileBuilder.js';
+import { acquireTileCache } from './GeoTileCache.js';
 import { buildContextData } from './GeoTileContext.js';
 import { waterDomainTransferables } from './GeoWaterDomains.js';
+import {
+  DEFAULT_MAP_PROVIDERS,
+  TileCacheFetcher,
+  createTileRetainer,
+  mapTileUrl,
+} from './GeoTileCacheFetch.js';
 
 const controllers = new Map();
 const cancelled = new Set();
+const retainer = createTileRetainer();
 
-const DEFAULT_PROVIDERS = Object.freeze([
-  {
-    id: 'openfreemap',
-    label: 'OpenFreeMap / OpenMapTiles',
-    url: 'https://tiles.openfreemap.org/planet/latest/{z}/{x}/{y}.pbf',
-  },
-  {
-    id: 'openstreetmap',
-    label: 'OpenStreetMap Shortbread',
-    url: 'https://vector.openstreetmap.org/shortbread_v1/{z}/{x}/{y}.mvt',
-  },
-]);
-
-function tileUrl(template, request) {
-  return template
-    .replace('{z}', String(request.zoom))
-    .replace('{x}', String(request.urlX))
-    .replace('{y}', String(request.urlY));
+/**
+ * Cache-first fetch. Providers are tried in order and the persistent cache is
+ * consulted before the network, so a revisited tile costs no request; the
+ * decode validation lives in the fetcher, so an HTML error body with HTTP 200
+ * can never reach storage or the tile builder.
+ */
+async function fetchTile(request, signal) {
+  const providers = request.providers?.length ? request.providers : DEFAULT_MAP_PROVIDERS;
+  const fetcher = new TileCacheFetcher({
+    providers,
+    profile: request.profile ?? 'low',
+    decode: decodeVectorTile,
+  });
+  return fetcher.load(request, signal, async (provider, loadRequest, abortSignal) => {
+    const url = mapTileUrl(provider.url, loadRequest);
+    const response = await fetch(url, {
+      signal: abortSignal,
+      mode: 'cors',
+      credentials: 'omit',
+      cache: 'force-cache',
+      referrerPolicy: 'strict-origin-when-cross-origin',
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.arrayBuffer();
+    if (!data.byteLength) throw new Error('empty tile');
+    // Provider cache semantics travel with the payload so MAP-09 can bound the
+    // stored lifetime instead of keeping a stale tile forever.
+    return { data, url, cacheControl: response.headers?.get?.('cache-control') ?? '' };
+  });
 }
 
-async function fetchTile(request, signal) {
-  const providers = request.providers?.length ? request.providers : DEFAULT_PROVIDERS;
-  const failures = [];
-  for (const provider of providers) {
-    const url = tileUrl(provider.url, request);
-    try {
-      const response = await fetch(url, {
-        signal,
-        mode: 'cors',
-        credentials: 'omit',
-        cache: 'force-cache',
-        referrerPolicy: 'strict-origin-when-cross-origin',
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.arrayBuffer();
-      if (!data.byteLength) throw new Error('empty tile');
-      // Validate the payload here so an HTML/error body with HTTP 200 can fall
-      // through to the next provider. The selected MVT is decoded only once.
-      const vectorTile = decodeVectorTile(data);
-      return { data, vectorTile, provider: provider.label ?? provider.id, providerId: provider.id, url };
-    } catch (error) {
-      if (signal.aborted) throw error;
-      failures.push(`${provider.label ?? provider.id}: ${error.message}`);
-    }
+function tileCacheDiagnostics(request) {
+  if (request?.tileCache === false) return null;
+  try {
+    return acquireTileCache({
+      profile: request?.profile ?? 'low',
+      providers: request?.providers?.length ? request.providers : DEFAULT_MAP_PROVIDERS,
+    }).diagnostics;
+  } catch {
+    return null;
   }
-  throw new Error(`No public map source responded (${failures.join('; ')})`);
 }
 
 function geometryTransfers(geometry, includeColliders = false) {
@@ -108,6 +111,8 @@ async function buildTile(request) {
       bytes: fetched.data.byteLength,
       provider: fetched.provider,
       providerId: fetched.providerId,
+      servedFromCache: fetched.servedFromCache,
+      tileCache: tileCacheDiagnostics(request),
       timings: { fetchMilliseconds, roadsMilliseconds },
     }, geometryTransfers(roads));
 
@@ -184,9 +189,21 @@ async function buildTile(request) {
   }
 }
 
+/**
+ * Pin the resident tiles in every provider key space. Pinning is what keeps a
+ * cache trim from evicting the tiles the player is currently standing in; the
+ * set is bounded by the world's four-tile resident cap.
+ */
+function retainTileCacheEntries(descriptors, providers, profile = 'low') {
+  return retainer.retain(descriptors, providers?.length ? providers : DEFAULT_MAP_PROVIDERS, profile);
+}
+
 self.addEventListener('message', event => {
   const message = event.data;
   if (message?.type === 'load') void buildTile(message.request);
+  if (message?.type === 'retain') {
+    retainTileCacheEntries(message.descriptors, message.providers, message.profile);
+  }
   if (message?.type === 'cancel') {
     cancelled.add(message.requestId);
     controllers.get(message.requestId)?.abort();

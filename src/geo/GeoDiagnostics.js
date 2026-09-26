@@ -104,6 +104,7 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
   const ambientLifeDiagnostics = world?.ambientLifePools?.diagnostics;
   const bridgeDiagnostics = world?.bridgePools?.diagnostics;
   const landmarkDiagnostics = world?.landmarkPools?.diagnostics;
+  const tileCache = world?.tileCacheDiagnostics ?? null;
   estimatedGpuBytes += materialTextureBytes;
   return Object.freeze({
     view,
@@ -177,6 +178,16 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
     landmarkEnclosingCompounds: landmarkDiagnostics?.enclosingCompounds ?? 0,
     landmarkGpuBytes: landmarkDiagnostics?.gpuBytes ?? 0,
     landmarkSteadyFrameMatrixUpdates: landmarkDiagnostics?.steadyFrameMatrixUpdates ?? 0,
+    // MAP-09 persistent tile cache: only the ceilings the active profile owns.
+    tileCacheBytes: tileCache?.bytes ?? 0,
+    tileCacheEntries: tileCache?.entries ?? 0,
+    tileCacheHits: tileCache?.hits ?? 0,
+    tileCacheMisses: tileCache?.misses ?? 0,
+    tileCacheWrites: tileCache?.writes ?? 0,
+    tileCacheEvictions: tileCache?.evictions ?? 0,
+    tileCacheExpirations: tileCache?.expirations ?? 0,
+    tileCacheAttributionRejections: tileCache?.attributionRejections ?? 0,
+    tileCacheStorageErrors: tileCache?.storageErrors ?? 0,
     streetFurnitureSteadyFrameMatrixUpdates: streetFurnitureDiagnostics?.steadyFrameMatrixUpdates ?? 0,
     ambientLifeEntries: ambientLifeDiagnostics?.entries ?? 0,
     ambientLifeFamilies: ambientLifeDiagnostics?.activeDrawPools ?? 0,
@@ -399,6 +410,7 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
       ambientLife: world?.ambientLifePools?.diagnostics ?? null,
       bridges: world?.bridgePools?.diagnostics ?? null,
       landmarks: world?.landmarkPools?.diagnostics ?? null,
+      tileCache: world?.tileCacheDiagnostics ?? null,
       environmentProfiles: Object.freeze(environmentProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       morphologyProfiles: Object.freeze(morphologyProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       waterDomainProfiles: Object.freeze(waterDomainProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),

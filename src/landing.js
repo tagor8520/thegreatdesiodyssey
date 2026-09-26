@@ -82,7 +82,13 @@ async function loadMapProviders() {
       typeof provider?.id === 'string' && typeof provider?.label === 'string' &&
       typeof provider?.url === 'string' &&
       (provider.url.startsWith('https://') || (provider.url.startsWith('/') && !provider.url.startsWith('//'))) &&
-      provider.url.includes('{z}') && provider.url.includes('{x}') && provider.url.includes('{y}'));
+      provider.url.includes('{z}') && provider.url.includes('{x}') && provider.url.includes('{y}'))
+      // MAP-09 only persists a payload when the provider declares how it must be
+      // credited, so attribution travels with the operator configuration.
+      .map(provider => typeof provider.attribution === 'string' && provider.attribution.trim() &&
+        provider.attribution.length <= 160
+        ? Object.freeze({ ...provider, attribution: provider.attribution.trim() })
+        : Object.freeze({ id: provider.id, label: provider.label, url: provider.url }));
     return providers?.length ? providers : undefined;
   } catch {
     return undefined;

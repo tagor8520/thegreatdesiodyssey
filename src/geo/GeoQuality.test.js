@@ -11,6 +11,7 @@ import { GEO_PLAYER_COLLISION_PROFILE, GEO_QUERY_MASK } from './GeoCollision.js'
 import { GeoDebugOverlay } from './GeoDebugOverlay.js';
 import {
   buildGeoDebugSnapshot,
+  collectGeoRuntimeBudgetMetrics,
   describeGeoQueryMask,
 } from './GeoDiagnostics.js';
 import {
@@ -249,6 +250,90 @@ test('only the focused source tile exposes its bounded near building-detail batc
     world.dispose();
     globalThis.Worker = previousWorker;
   }
+});
+
+test('MAP-09 the world requests cache retention once per resident set and reports cache truth', () => {
+  const previousWorker = globalThis.Worker;
+  class CacheWorker {
+    static active = 0;
+    constructor() { CacheWorker.active++; this.messages = []; }
+    addEventListener() {}
+    postMessage(message) { this.messages.push(message); }
+    terminate() { if (!this.terminated) { this.terminated = true; CacheWorker.active--; } }
+  }
+  globalThis.Worker = CacheWorker;
+  const world = new GeoWorld(new THREE.Scene(), { latitude: 28.9845, longitude: 77.7064, profile: 'balanced' });
+  try {
+    const worker = world.worker;
+    const retains = () => worker.messages.filter(message => message.type === 'retain');
+    const loads = () => worker.messages.filter(message => message.type === 'load');
+    // The initial tile already asked the worker to retain exactly its own tile.
+    assert.equal(retains().length, 1, 'the resident set is announced once');
+    assert.equal(retains()[0].descriptors.length, 1);
+    assert.equal(retains()[0].profile, 'balanced');
+    assert.equal(retains()[0].providers, undefined);
+    const first = [...world.tiles.values()][0];
+    applyCompilation(world, first, compileGeoFixture('provider-equivalence', 'openmaptiles'));
+    // Four requests and repeated frames must not resend the same retain set.
+    world.update({ x: 0, z: 0 }, null, 16, 1_000);
+    world.update({ x: .1, z: 0 }, null, 16, 1_016);
+    assert.equal(retains().length, 1, 'retention is not a per-frame message');
+    assert.equal(loads()[0].request.profile, 'balanced', 'the load carries the profile for the shared cache');
+    // A newly requested tile changes the resident set, so one more retain is sent.
+    world._requestTile(first.x + 1, first.y, 1);
+    assert.equal(retains().length, 2);
+    assert.deepEqual(retains()[1].descriptors.map(descriptor =>
+      `${descriptor.zoom}/${descriptor.urlX}/${descriptor.urlY}`),
+    [...new Set(retains()[1].descriptors.map(descriptor =>
+      `${descriptor.zoom}/${descriptor.urlX}/${descriptor.urlY}`))].sort());
+    assert.ok(retains()[1].descriptors.length <= 4, 'retention stays inside the resident cap');
+    // Eviction retires its pin and re-announces the smaller set.
+    world._evictTile(first);
+    assert.equal(retains().length, 3, 'eviction retires the pin and re-announces the set');
+    assert.equal(retains()[2].descriptors.length, 1);
+    // Cache diagnostics arriving with a phase become world stats and budget metrics.
+    const cacheDiagnostics = Object.freeze({
+      namespace: 'gdo:tileCache:v1', profile: 'balanced', entries: 3, bytes: 40_960,
+      maxEntries: 64, maxBytes: 16 * 1024 * 1024, pinned: 2, hits: 5, misses: 2, writes: 3,
+      evictions: 1, expirations: 0, attributionRejections: 0, storageErrors: 0,
+      persistent: true, storageKind: 'cache-storage', capEvents: Object.freeze({}),
+    });
+    // The still-resident tile carries the cache diagnostics, exactly as the
+    // worker reports them with every phase message.
+    const resident = world.tiles.get(`${first.x + 1}:${first.y}`);
+    world._handleWorkerMessage({
+      type: 'tile-phase', phase: 'roads', requestId: resident.requestId, key: resident.key,
+      geometry: compileGeoFixture('provider-equivalence', 'openmaptiles').roads,
+      bytes: 1024, provider: 'Fixture/openmaptiles', servedFromCache: true, tileCache: cacheDiagnostics,
+    });
+    const stats = world.stats;
+    assert.equal(stats.tileCacheEntries, 3);
+    assert.equal(stats.tileCacheBytes, 40_960);
+    assert.equal(stats.tileCacheMaxBytes, 16 * 1024 * 1024);
+    assert.equal(stats.tileCacheServed, 1, 'a cache-served phase is counted for the HUD');
+    assert.equal(stats.tileCachePersistent, true);
+    assert.equal(stats.tileCacheStorageKind, 'cache-storage');
+    // The runtime budget surface reads the same truth and passes the low ceilings.
+    const metrics = collectGeoRuntimeBudgetMetrics(null, world, { view: 'street' });
+    assert.equal(metrics.tileCacheEntries, 3);
+    assert.equal(metrics.tileCacheBytes, 40_960);
+    const report = evaluateLowProfileBudget(metrics);
+    assert.equal(report.breaches.filter(breach => breach.metric.startsWith('tileCache')).length, 0);
+    const snapshot = buildGeoDebugSnapshot(world, { x: 0, z: 0 });
+    assert.equal(snapshot.summary.tileCache.namespace, 'gdo:tileCache:v1');
+    assert.equal(snapshot.summary.tileCache.maxEntries, 64);
+    // An over-ceiling cache is a descriptive budget failure, not a silent pass.
+    const breached = evaluateLowProfileBudget({
+      ...metrics, tileCacheBytes: GDO_LOW_PROFILE_BUDGETS.tileCacheBytes + 1,
+      tileCacheEntries: GDO_LOW_PROFILE_BUDGETS.tileCacheEntries + 1,
+    });
+    assert.deepEqual(breached.breaches.map(item => item.metric).sort(),
+      ['tileCacheBytes', 'tileCacheEntries']);
+  } finally {
+    world.dispose();
+    globalThis.Worker = previousWorker;
+  }
+  assert.equal(CacheWorker.active, 0);
 });
 
 function landmarkColliderBlocked(tile, x, y, z, radius) {

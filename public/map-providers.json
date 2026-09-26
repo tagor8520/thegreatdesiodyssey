@@ -3,12 +3,14 @@
     {
       "id": "openfreemap",
       "label": "OpenFreeMap / OpenMapTiles",
-      "url": "https://tiles.openfreemap.org/planet/latest/{z}/{x}/{y}.pbf"
+      "url": "https://tiles.openfreemap.org/planet/latest/{z}/{x}/{y}.pbf",
+      "attribution": "© OpenStreetMap contributors · OpenMapTiles · OpenFreeMap"
     },
     {
       "id": "openstreetmap",
       "label": "OpenStreetMap Shortbread",
-      "url": "https://vector.openstreetmap.org/shortbread_v1/{z}/{x}/{y}.mvt"
+      "url": "https://vector.openstreetmap.org/shortbread_v1/{z}/{x}/{y}.mvt",
+      "attribution": "© OpenStreetMap contributors · Shortbread"
     }
   ]
 }
