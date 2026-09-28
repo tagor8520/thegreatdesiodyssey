@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { buildVoxelMesh } from './VoxelBuilder.js';
+import { buildModuleGroup } from './VoxelBuilder.js';
 import { GDO_CONTENT_SCHEMA_NAMESPACE, loadContentState } from './ContentSchema.js';
+import { compileStatePack } from './RecipeCompiler.js';
 
 const PICKUP_RADIUS = 1.8;
 
@@ -26,13 +27,23 @@ export class StateManager {
     this.lastStateReport = null;
     this.stateLoads = 0;
     this.stateRejections = 0;
+    // `CNT-02`: the compiled module list for the current pack (null until one loads).
+    this.compiledState = null;
   }
 
-  /** Diagnostics view for the loaded pack: version, migration, and verdict. */
+  /** Diagnostics view for the loaded pack: version, migration, verdict, recipes. */
   stateDiagnostics() {
     const report = this.lastStateReport;
+    const recipes = this.compiledState?.diagnostics ?? null;
     return Object.freeze({
       namespace: GDO_CONTENT_SCHEMA_NAMESPACE,
+      // `CNT-02`: what the pack compiled to, so a debug session sees the module
+      // count and the fingerprint the runtime actually spawned.
+      recipeNamespace: this.compiledState?.namespace ?? null,
+      recipeFingerprint: this.compiledState?.fingerprint ?? null,
+      recipeModules: recipes?.modules ?? 0,
+      recipeFamilies: recipes?.families ?? 0,
+      recipePrunedModules: recipes?.prunedModules ?? 0,
       loads: this.stateLoads,
       rejections: this.stateRejections,
       loaded: Boolean(this.currentState),
@@ -80,10 +91,13 @@ export class StateManager {
       this.hud.stateLabel.textContent = report.data.stateName;
     }
 
-    // Spawn collectibles
-    for (const item of stateData.collectibles) {
-      const mesh = buildVoxelMesh(item.voxels, 0.22);
-      const sp = item.spawnPosition;
+    // `CNT-02`: the pack is compiled once into modules, and the spawn loop reads
+    // the compiled list instead of the raw JSON — layout arithmetic and cap
+    // enforcement live in the compiler, so a new pack needs no code here.
+    this.compiledState = compileStatePack(stateData, { scale: .22, profile: 'low' });
+    for (const item of this.compiledState.collectibles) {
+      const mesh = buildModuleGroup(item, { scale: .22 });
+      const sp = item.spawn;
       mesh.position.set(sp.x, sp.y + 0.5, sp.z);
       mesh.castShadow = true;
       this.scene.add(mesh);
@@ -105,7 +119,7 @@ export class StateManager {
         mesh,
         ring,
         data: item,
-        stateData,
+        stateData: { stateName: report.data.stateName },
         collected: false,
         baseY: sp.y + 0.5,
       });
