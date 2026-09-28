@@ -50,7 +50,13 @@ export function mountReferenceGame(container, {
     budgetMs: profile.streamBudgetMs,
     decorationDensity: profile.decorationDensity,
   });
-  const bridges = new BridgeManager(scene, { cameraBlockers: biomes.cameraBlockers });
+  // `COL-06`: bridges and signs join the island's own structural sweep, so the
+  // camera's clip query is the declared `dynamicSweep` member and not a second
+  // private blocker list.
+  const bridges = new BridgeManager(scene, {
+    cameraBlockers: biomes.cameraBlockers,
+    sweep: biomes.structureSweep,
+  });
   const store = createUIStore();
   const player = new Player(scene, camera, bridges, {
     canvas,

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { VoxelBatch, disposeGroup, randomFor } from './VoxelBatch.js';
 import { isGameplayClearance } from './GameplayLayout.js';
 import { defineWorldDomain } from '../engine/DomainInterface.js';
+import { createStructureSweep } from '../engine/StructureSweep.js';
 import { GDO_WATER_SURFACE_SOURCE, classifyWaterContact } from '../engine/WaterContact.js';
 
 export const WORLD = Object.freeze({ min: -128, max: 128, chunkSize: 32, tileSize: 4, waterY: 0 });
@@ -14,7 +15,9 @@ export const GDO_CURATED_WORLD_DOMAIN = defineWorldDomain({
   label: 'Curated island',
   unitsPerMetre: 1,
   bounds: { minX: WORLD.min, maxX: WORLD.max, minZ: WORLD.min, maxZ: WORLD.max },
-  capabilities: { terrainSupport: true, verticalGrades: true },
+  // `COL-06`: the island answers the shared sweep member, so its structural
+  // masses participate in the same declared query the mapped world serves.
+  capabilities: { terrainSupport: true, verticalGrades: true, dynamicSweep: true },
 });
 export const LANDMARKS = Object.freeze({ gateway: [-66, -44], chariot: [62, -44] });
 
@@ -226,6 +229,10 @@ export class BiomeManager {
       ...createLandmarkCameraBlockers(),
       ...createOrdinaryStructureCameraBlockers(seed, decorationDensity),
     ];
+    // `COL-06`: one live structural set behind one declared sweep. Bridges and
+    // signs are pushed into this same array, so the query the world declares is
+    // the query the camera actually uses.
+    this.structureSweep = createStructureSweep({ profile: 'low', boxes: this.cameraBlockers });
     this.descriptors = []; this.descriptorByKey = new Map();
     this._nearbyCacheKey = null; this._nearbyCache = [];
     for (let z = WORLD.min; z < WORLD.max; z += WORLD.chunkSize) {
@@ -289,6 +296,15 @@ export class BiomeManager {
     return out;
   }
   /**
+   * `COL-06`: the declared `dynamicSweep` member. Same record shape, same
+   * semantics, and the same bounded candidate work as the coordinate world's
+   * `querySweep`, over the island's live structural boxes.
+   */
+  querySweep(x, y, z, dx, dy, dz, radius, out = {}, queryMask) {
+    return this.structureSweep.querySweep(x, y, z, dx, dy, dz, radius, out, queryMask);
+  }
+
+  /**
    * `COL-08`: the curated island answers the same water sensor as the coordinate
    * world — a fixed water plane at `WORLD.waterY`, the analytic terrain under it,
    * and the shared state machine. Both modes therefore share one set of rules.
@@ -317,6 +333,9 @@ export class BiomeManager {
       actors: this.actors.size,
       decorations: this.decorationDensity,
       seed: this.seed,
+      // `COL-06`: the declared sweep's live counters, so a debug session can see
+      // how many structural boxes a camera query actually touched.
+      sweep: this.structureSweep.diagnostics(),
     };
   }
   distance(descriptor, focus) {

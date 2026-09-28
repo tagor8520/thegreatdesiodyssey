@@ -97,7 +97,10 @@ test('both worlds satisfy one interface at different scales', () => {
     assert.equal(coordinate.domain.capabilities.labels, true);
     assert.equal(curated.world.domain.capabilities.coordinates, false);
     assert.equal(curated.world.domain.capabilities.streamed, false);
-    assert.equal(curated.world.domain.capabilities.dynamicSweep, false);
+    // `COL-06`: the island now answers the shared sweep member too, so both
+    // worlds declare the same capability and are consumed by the same code.
+    assert.equal(curated.world.domain.capabilities.dynamicSweep, true);
+    assert.equal(coordinate.domain.capabilities.dynamicSweep, true);
   } finally {
     coordinate.dispose();
     curated.dispose();
@@ -179,11 +182,28 @@ test('one support query serves both worlds, in their own units', () => {
     // One shared consumer: the camera sweep with each world's own profile radius.
     const camera = new THREE.PerspectiveCamera(68, 16 / 9, .02, 210);
     const radius = cameraNearPlaneSweepRadius(camera);
-    const islandClearance = coordinate.querySweep(0, 4, 0, 0, 0, 12, radius, {});
-    assert.equal(typeof islandClearance.hit, 'boolean');
-    assert.equal(Number.isFinite(islandClearance.time), true);
+    const mappedClearance = coordinate.querySweep(0, 4, 0, 0, 0, 12, radius, {});
+    assert.equal(typeof mappedClearance.hit, 'boolean');
+    assert.equal(Number.isFinite(mappedClearance.time), true);
     assert.ok(coordinate.querySnapshot().queries.sphereSweeps >= 1);
     assert.ok(curated.world.querySnapshot().chunks <= curated.world.descriptors.length);
+
+    // `COL-06`: the island answers the same member, with the same record shape,
+    // and its own live structures are the ones that answer.
+    // (The island's terrain is support, not a camera blocker, so the sweep is
+    // aimed at a real structure: the elevated railway deck at z = -80.)
+    const islandSweep = curated.world.querySweep(-64, 12, -80, 0, -8, 0, .3, {});
+    assert.equal(typeof islandSweep.hit, 'boolean');
+    assert.equal(Number.isFinite(islandSweep.time), true);
+    assert.equal(islandSweep.hit, true, 'the island structure answers the sweep');
+    assert.equal(islandSweep.blockerId, 'railway:deck');
+    assert.equal(islandSweep.blockerRole, 'camera-blocker');
+    assert.equal(Object.hasOwn(islandSweep, 'blockerMask'), true, 'the same record keys as the mapped sweep');
+    assert.equal(Object.hasOwn(mappedClearance, 'blockerMask'), true);
+    assert.equal(curated.world.querySnapshot().sweep.namespace, 'gdo:structureSweep:v1');
+    // A drifted curated world fails the same way the mapped one does.
+    const driftedIsland = Object.assign(Object.create(Object.getPrototypeOf(curated.world)), curated.world, { querySweep: undefined });
+    assert.deepEqual(describeDomainCompliance(driftedIsland, GDO_CURATED_WORLD_DOMAIN).violations.map(item => item.member), ['querySweep']);
   } finally {
     coordinate.dispose();
     curated.dispose();

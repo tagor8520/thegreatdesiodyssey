@@ -1586,6 +1586,9 @@ export class GeoWorld {
       out.polygonIndex = -1;
       out.dynamicId = dynamicHit.id;
       out.dynamicKind = dynamicHit.kind;
+      out.blockerId = dynamicHit.id ?? null;
+      out.blockerRole = dynamicHit.kind ?? 'dynamic';
+      out.blockerMask = queryMask;
     }
     for (const tile of this.tiles.values()) {
       if (!tile.collisionGrid || sweepMaxX < tile.bounds.minX || sweepMinX > tile.bounds.maxX ||
@@ -1797,6 +1800,13 @@ export class GeoWorld {
     out.normalZ = 0;
     out.tileKey = null;
     out.polygonIndex = -1;
+    // `COL-06`: the shared sweep record names its contact the same way the
+    // curated structural sweep does, so a caller that consumes `querySweep`
+    // needs no branch for which world answered.
+    out.blockerId = null;
+    out.blockerRole = null;
+    out.blockerMask = 0;
+    out.blockerDistance = 0;
     const sweepMinX = Math.min(x, x + dx) - radius;
     const sweepMaxX = Math.max(x, x + dx) + radius;
     const sweepMinZ = Math.min(z, z + dz) - radius;
@@ -1881,6 +1891,14 @@ export class GeoWorld {
             planeZ + radius >= tile.colliders[index + 1] && planeZ - radius <= tile.colliders[index + 3];
         if (hasExactFootprints) this.queryDiagnostics.exactTests++;
         if (overlapsFootprint) considerSweepHit(out, planeTime, 0, normalY, 0, tile, index);
+      }
+    }
+    if (out.hit) {
+      out.blockerDistance = Math.hypot(dx, dy, dz) * out.time;
+      if (out.blockerId == null) {
+        out.blockerId = out.polygonIndex >= 0 ? `${out.tileKey}:${out.polygonIndex}` : out.tileKey;
+        out.blockerRole = 'structure';
+        out.blockerMask = queryMask;
       }
     }
     return out;
