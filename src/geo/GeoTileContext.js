@@ -644,6 +644,42 @@ function placeProps(vectorTile, request, { decorations, obstacles, waterDomain, 
   return { placements, tests: tests.length, truncated, families: new Set(placements.map(entry => entry.family)).size, solids };
 }
 
+/**
+ * `GME-07`: the road polylines the local navigation graph is built from, in world
+ * coordinates with their provider names and levels. This is the *only* place the
+ * navigation feature reads map data, so guidance is derived from the same pass the
+ * world already drew rather than from a second renderer or a second fetch.
+ */
+function collectNavigationLines(vectorTile, request) {
+  const vectorLayer = pickMapLayer(vectorTile.layers, GEO_MAP_ROLE.TRANSPORT)?.layer;
+  if (!vectorLayer) return { lines: [], names: [], levels: [], truncated: false };
+  const lines = [], names = [], levels = [];
+  const maxLines = GDO_LOW_PROFILE_BUDGETS.navLinesPerTile;
+  let truncated = false;
+  for (let featureIndex = 0; featureIndex < vectorLayer.length; featureIndex++) {
+    const feature = vectorLayer.feature(featureIndex);
+    // Only a placed, walkable road belongs on the graph: a tunnel, a rail line, or
+    // a raised deck is not a street the player can follow at ground level.
+    if (feature.type !== 2) continue;
+    const style = roadStyle(feature.properties, request.schema);
+    if (style.transport.rail || style.transport.tunnel || style.transport.physicalLevel !== 0) continue;
+    const name = featureName(feature.properties);
+    for (const line of feature.loadGeometry()) {
+      if (lines.length >= maxLines) { truncated = true; break; }
+      const flat = [];
+      for (const point of line) {
+        const [x, z] = pointToWorld(point, feature.extent, request);
+        flat.push(Number(x.toFixed(3)), Number(z.toFixed(3)));
+      }
+      if (flat.length < 4) continue;
+      lines.push(flat);
+      names.push(name);
+      levels.push(style.transport.physicalLevel);
+    }
+  }
+  return { lines, names, levels, truncated };
+}
+
 function addLegacyParkedCars(vectorTile, request, decorations, seed) {
   const vectorLayer = pickMapLayer(vectorTile.layers, GEO_MAP_ROLE.TRANSPORT)?.layer;
   if (!vectorLayer || decorations.length / 6 >= MAX_DECORATIONS) return;
@@ -972,6 +1008,8 @@ export function buildContextData(vectorTile, request) {
     clearanceDiagnostics: diagnostics,
     morphologyDiagnostics: finalizedMorphologyDiagnostics,
     labels: collectLabels(vectorTile, request),
+    // `GME-07`: the mapped polylines the local navigation graph is built from.
+    navigation: collectNavigationLines(vectorTile, request),
     biome,
     environment,
   };

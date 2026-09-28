@@ -36,6 +36,7 @@ export const GDO_FEATURE_VERSIONS = Object.freeze({
   surfaceDetail: 1,
   waterVisual: 1,
   propGrammar: 1,
+  localNavigation: 1,
   actionRegistry: 1,
   plantSilhouetteAudit: 1,
   dynamicProxy: 1,

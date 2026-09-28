@@ -118,6 +118,15 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   waterVisualDitherSize: 8,
   waterVisualUniformWritesPerFrame: 1,
   waterVisualSteadyFrameAllocations: 0,
+  // `GME-07`: research §4.7 — the local route/minimap is a simplified nearby
+  // graph, so its node/edge set, its bounded route search, and the segments the
+  // 2D HUD may draw are all declared ceilings on the low profile.
+  navLinesPerTile: 260,
+  navNodes: 160,
+  navEdges: 320,
+  navRouteExpansions: 256,
+  navMinimapSegments: 64,
+  navSteadyFrameAllocations: 0,
   // `DET-10`: research §15.9 — 2–12 boxes for an ordinary near prop, 12–32 for one
   // hero food/kiosk, one authored solid proxy family, and a bounded trigger set.
   propFamilies: 8,
@@ -279,6 +288,12 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'waterVisualWaveScales', budget: 'waterVisualWaveScales', label: 'water wave scales' }),
   Object.freeze({ metric: 'waterVisualUniformWrites', budget: 'waterVisualUniformWritesPerFrame', label: 'water uniform writes/frame' }),
   Object.freeze({ metric: 'waterVisualSteadyFrameAllocations', budget: 'waterVisualSteadyFrameAllocations', label: 'water steady-frame allocations' }),
+  Object.freeze({ metric: 'navLines', budget: 'navLinesPerTile', label: 'navigation road lines/tile' }),
+  Object.freeze({ metric: 'navNodes', budget: 'navNodes', label: 'local navigation nodes' }),
+  Object.freeze({ metric: 'navEdges', budget: 'navEdges', label: 'local navigation edges' }),
+  Object.freeze({ metric: 'navRouteExpansions', budget: 'navRouteExpansions', label: 'route search expansions' }),
+  Object.freeze({ metric: 'navMinimapSegments', budget: 'navMinimapSegments', label: 'minimap segments' }),
+  Object.freeze({ metric: 'navSteadyFrameAllocations', budget: 'navSteadyFrameAllocations', label: 'navigation steady-frame allocations' }),
   Object.freeze({ metric: 'propFamilies', budget: 'propFamilies', label: 'compiled prop families' }),
   Object.freeze({ metric: 'propTriggers', budget: 'propTriggersPerTile', label: 'prop interaction triggers/tile' }),
   Object.freeze({ metric: 'propPlacementTests', budget: 'propPlacementTestsPerTile', label: 'prop placement tests/tile' }),

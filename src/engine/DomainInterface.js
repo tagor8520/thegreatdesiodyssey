@@ -52,6 +52,7 @@ export const GDO_WORLD_CAPABILITIES = Object.freeze([
   'dynamicSweep',     // querySweep moves a sphere through dynamic blockers
   'labels',           // visibleLabels exposes map/place labels
   'interaction',      // an interaction/action registry is mounted
+  'navigation',       // local guidance is derived from mapped roads and places
   'verticalGrades',   // bridges and tunnels occupy distinct physical levels
   'streamed',         // residency is a bounded sliding window, not a fixed island
 ]);
@@ -224,6 +225,9 @@ export function describeDomainCompliance(implementation, descriptor) {
     }
     if (caps.streamed && !descriptor.streaming) {
       violations.push({ member: 'streaming', reason: 'streamed capability declared without resident limits' });
+    }
+    if (caps.navigation && !isFunction(implementation.navigationGuidance)) {
+      violations.push({ member: 'navigationGuidance', reason: 'capability navigation declared without a guidance query' });
     }
     if (caps.coordinates && !isFunction(implementation.coordinateAt)) {
       violations.push({ member: 'coordinateAt', reason: 'capability coordinates declared without a coordinate conversion' });

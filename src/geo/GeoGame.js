@@ -39,6 +39,9 @@ const coordinateActions = createActionRegistry({
     // prop `interact` verb reaches the pad, the key filter, and the help line
     // exactly like every other registered action.
     interaction: GDO_COORDINATE_WORLD_DOMAIN.capabilities.interaction === true,
+    // `GME-07`: the world derives guidance from mapped places, so the `guide`
+    // verb reaches the same pad, filter, and help line as every other action.
+    navigation: GDO_COORDINATE_WORLD_DOMAIN.capabilities.navigation === true,
   },
 });
 
@@ -50,6 +53,13 @@ function uiMarkup() {
         <strong>Coordinate Explorer <span class="geo-scale-badge">1:10 footprint scale</span></strong>
         <div class="geo-coordinates">Locating…</div>
         <div class="geo-map-readout" aria-live="off">Reading map…</div>
+      <div class="geo-navigation" aria-live="polite">
+        <canvas class="geo-minimap" width="132" height="132" aria-label="Local minimap"></canvas>
+        <div class="geo-nav-detail">
+          <div class="geo-nav-target">No route · choose a place from the map</div>
+          <div class="geo-nav-guidance">Guidance appears once a target is chosen</div>
+        </div>
+      </div>
         <div class="geo-camera-status">First-person camera · V to switch</div>
         <div class="geo-runtime">Preparing local map generator…</div>
         <div class="geo-source"></div>
@@ -104,6 +114,9 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
 
   const coordinateElement = overlay.querySelector('.geo-coordinates');
   const mapReadoutElement = overlay.querySelector('.geo-map-readout');
+  const minimapElement = overlay.querySelector('.geo-minimap');
+  const navTargetElement = overlay.querySelector('.geo-nav-target');
+  const navGuidanceElement = overlay.querySelector('.geo-nav-guidance');
   const runtimeElement = overlay.querySelector('.geo-runtime');
   const sourceElement = overlay.querySelector('.geo-source');
   const loadingElement = overlay.querySelector('.geo-loading');
@@ -208,7 +221,12 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     cameraButton.textContent = firstPerson ? 'TPP' : 'FPP';
     cameraButton.setAttribute('aria-label', `Switch to ${firstPerson ? 'third' : 'first'}-person camera`);
   };
-  player = new GeoPlayer(scene, camera, canvas, world, { onCameraModeChange: updateCameraUI });
+  // `GME-05`/`GME-07`: the avatar consumes the *same* action registry the UI does,
+  // so a verb declared for guidance is dispatchable from the keyboard the moment
+  // it is registered — no second table, no edit in the input filter.
+  player = new GeoPlayer(scene, camera, canvas, world, {
+    onCameraModeChange: updateCameraUI, actions: coordinateActions,
+  });
   // `LAY-06`: the avatar fades through the same policy the world's ambient
   // clutter does, so a close third-person camera dithers it once.
   if (world.cameraFade) player.attachCameraFade(world.cameraFade);
@@ -271,6 +289,41 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   // `DET-10`: the prop `interact` verb joins the one registry, so the pad, the
   // keyboard filter, and the help sentence pick it up together.
   world.propInteraction = registerPropInteraction(coordinateActions);
+  // `GME-07`: `guide` picks the nearest mapped place, and repeats cycle through the
+  // ranked local targets — every one of them is a real name from a resident tile.
+  let navigationTargetIndex = -1;
+  const chooseNavigationTarget = () => {
+    const targets = world.navigationTargets(player.position.x, player.position.z, { limit: 6 });
+    if (!targets.length) return null;
+    navigationTargetIndex = (navigationTargetIndex + 1) % targets.length;
+    const target = targets[navigationTargetIndex];
+    const route = world.navigateTo({ placeId: target.id }, { x: player.position.x, z: player.position.z });
+    logger.info('navigation', 'guidance target chosen', {
+      target: target.name, ok: Boolean(route?.ok), reason: route?.reason ?? null,
+      distanceMetres: route?.distanceMetres ?? 0,
+    });
+    return route;
+  };
+  const guideRegistration = coordinateActions.register({
+    id: 'guide', kind: 'tap', label: 'Guide', hint: 'G',
+    capability: 'navigation', keyboard: ['KeyG'], touch: { control: 'button', label: 'GUIDE' },
+  });
+  if (coordinateActions.has('guide')) {
+    world.navigationInteraction = { registered: true, reason: null };
+  } else {
+    world.navigationInteraction = { registered: false, reason: guideRegistration?.reason ?? 'capability' };
+  }
+  if (coordinateActions.has('guide')) {
+    // Desktop and the pad share the one handler: key `G` cycles the target, and a
+    // second, longer hold cancels the guidance instead of re-targeting.
+    player.setActionHandler('guide', entry => { chooseNavigationTarget(); return entry; });
+  }
+  const cancelGuidance = () => {
+    const had = world.cancelNavigation();
+    navigationTargetIndex = -1;
+    if (had) logger.info('navigation', 'guidance cancelled', {});
+    return had;
+  };
   const labelLos = createLabelLosTester({ world, profile: world.profile });
   const losAnchor = new THREE.Vector3();
   world.labelLosDiagnostics = labelLos.diagnostics();
@@ -308,6 +361,104 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     world.mapLabelDiagnostics = labels.diagnostics();
   };
 
+  // `GME-07`: the minimap and its guidance sentence are drawn from the world's
+  // navigation *model* — normalized 2D points — on this canvas, which the caller
+  // already owns. No scene object, no material, no draw call joins the render.
+  const minimapContext = minimapElement?.getContext?.('2d') ?? null;
+  const minimapPalette = {
+    tile: 'rgba(140, 170, 200, .10)', road: 'rgba(226, 232, 240, .55)',
+    route: '#7dd3fc', routeEdge: 'rgba(125, 211, 252, .28)',
+    place: '#fbbf24', player: '#f8fafc', north: 'rgba(226, 232, 240, .7)',
+  };
+  let drawnRouteKey = null, drawnMinimapHeading = null;
+  const drawMinimap = (model, routeKey) => {
+    if (!minimapContext || !model) return 0;
+    const { width, height } = minimapElement;
+    minimapContext.clearRect(0, 0, width, height);
+    const px = u => (u * .5 + .5) * width;
+    const py = v => (v * .5 + .5) * height;
+    minimapContext.fillStyle = 'rgba(12, 18, 28, .55)';
+    minimapContext.fillRect(0, 0, width, height);
+    minimapContext.strokeStyle = minimapPalette.tile;
+    minimapContext.lineWidth = 1;
+    for (const tile of model.tiles) {
+      minimapContext.strokeRect(px(tile.u), py(tile.v), tile.w * .5 * width, tile.h * .5 * height);
+    }
+    minimapContext.strokeStyle = minimapPalette.road;
+    minimapContext.lineWidth = 1;
+    minimapContext.beginPath();
+    for (const segment of model.roads) {
+      minimapContext.moveTo(px(segment.u1), py(segment.v1));
+      minimapContext.lineTo(px(segment.u2), py(segment.v2));
+    }
+    minimapContext.stroke();
+    if (model.route.length > 1) {
+      minimapContext.strokeStyle = minimapPalette.routeEdge;
+      minimapContext.lineWidth = 4;
+      minimapContext.beginPath();
+      model.route.forEach(([u, v], index) => {
+        if (index === 0) minimapContext.moveTo(px(u), py(v));
+        else minimapContext.lineTo(px(u), py(v));
+      });
+      minimapContext.stroke();
+      minimapContext.strokeStyle = minimapPalette.route;
+      minimapContext.lineWidth = 2;
+      minimapContext.stroke();
+    }
+    for (const place of model.places) {
+      minimapContext.fillStyle = minimapPalette.place;
+      minimapContext.beginPath();
+      minimapContext.arc(px(place.u), py(place.v), 2.4, 0, Math.PI * 2);
+      minimapContext.fill();
+    }
+    // North-up, so the player marker is what turns: a small heading triangle.
+    const heading = (model.player.headingDegrees ?? 0) * Math.PI / 180;
+    minimapContext.save();
+    minimapContext.translate(width / 2, height / 2);
+    minimapContext.rotate(Math.PI - heading);
+    minimapContext.fillStyle = minimapPalette.player;
+    minimapContext.beginPath();
+    minimapContext.moveTo(0, 5.5);
+    minimapContext.lineTo(-3.5, -3.5);
+    minimapContext.lineTo(3.5, -3.5);
+    minimapContext.closePath();
+    minimapContext.fill();
+    minimapContext.restore();
+    minimapContext.fillStyle = minimapPalette.north;
+    minimapContext.font = '9px system-ui, sans-serif';
+    minimapContext.fillText('N', width / 2 - 3, 10);
+    drawnRouteKey = routeKey;
+    drawnMinimapHeading = model.player.headingDegrees;
+    return model.segments;
+  };
+
+  const updateNavigation = () => {
+    // The world rate-limits by movement, so this is a per-frame call that only
+    // re-plans, re-models, or re-draws when something actually changed.
+    const guidance = world.navigationGuidance(player.position.x, player.position.z, {
+      headingDegrees: (player.cameraMode === 'first-person' ? player.yaw : camera.rotation.y) * 180 / Math.PI,
+    });
+    world.navigationGuidanceRecord = guidance;
+    const minimap = guidance.minimap;
+    const changed = guidance.routeKey !== drawnRouteKey
+      || drawnMinimapHeading == null
+      || Math.abs(((guidance.heading - drawnMinimapHeading + 540) % 360) - 180) > 6;
+    if (!guidance.reused || changed) {
+      // A reused record whose heading has not turned is redrawn from the same
+      // model — the loop keeps its allocation count at zero either way.
+      world.navigationMinimapSegments = drawMinimap(minimap, guidance.routeKey);
+    }
+    if (navTargetElement) {
+      navTargetElement.textContent = guidance.route?.ok
+        ? `${guidance.route.targetName || 'Route'} · ${Math.round(guidance.progress?.remainingMetres ?? 0)} m remaining`
+        : 'No route · choose a place from the map';
+    }
+    if (navGuidanceElement) {
+      navGuidanceElement.textContent = guidance.guidance?.text ?? 'Guidance appears once a target is chosen';
+    }
+    return guidance;
+  };
+
   const joystick = new FlexibleJoystick(
     joystickZone,
     joystickBase,
@@ -322,6 +473,8 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     registry: coordinateActions,
     lifecycle,
     onAction: (id, phase) => {
+      // `GME-07`: a pad tap on `guide` cycles the guidance target exactly like the key.
+      if (id === 'guide' && phase === 'tap') { chooseNavigationTarget(); return; }
       const action = coordinateActions.action(id);
       if (action?.kind === 'tap') {
         if (id === 'camera') { player.toggleCameraMode(); return; }
@@ -382,6 +535,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     debugOverlay?.update(world, player.position, renderer, now);
     renderer.render(scene, camera);
     updateMapLabels(now);
+    updateNavigation();
     sampleCpuMilliseconds += performance.now() - cpuStart;
     worstFrameGap = Math.max(worstFrameGap, frameGap);
     sampleFrames++;

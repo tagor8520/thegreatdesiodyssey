@@ -25,6 +25,14 @@ import { createAmbientLifeScheduler } from '../engine/AmbientLifeScheduler.js';
 import { createCameraFade } from '../engine/CameraFade.js';
 import { GDO_WATER_VISUAL_CLASSES } from '../engine/WaterVisualClasses.js';
 import { GDO_LOW_PROFILE_BUDGETS } from '../engine/PerformanceBudget.js';
+import { GDO_NAV_ARRIVAL_RADIUS, GDO_NAV_SNAP_LIMIT, createLocalNavigation } from '../engine/LocalNavigation.js';
+
+/** `GME-07`: guidance refresh thresholds, so a steady frame re-uses its record. */
+export const GDO_NAV_GUIDANCE_MOVE = .75;
+export const GDO_NAV_GUIDANCE_TURN = 6;
+export const GDO_NAV_REPLAN_DISTANCE = GDO_NAV_SNAP_LIMIT * .5;
+export const GDO_NAV_DEFAULT_RADIUS = 120;
+export { GDO_NAV_ARRIVAL_RADIUS };
 import {
   GDO_PROP_FAMILIES, GDO_PROP_FAMILY_IDS, propToneColor, queryPropTriggerStream,
 } from '../engine/PropGrammar.js';
@@ -433,6 +441,10 @@ export const GDO_COORDINATE_WORLD_DOMAIN = defineWorldDomain({
     // `DET-10`: the props the world places are the interaction target the
     // `GME-05` registry's `interact` action is declared against.
     interaction: true,
+    // `GME-07`: the world derives navigation guidance from the resident tiles'
+    // mapped lines and named places, so the `guide` verb has a real capability
+    // behind it and a world without a graph can skip the action by name.
+    navigation: true,
   },
 });
 
@@ -554,6 +566,11 @@ export class GeoWorld {
     this.buildingMaterial = createBuildingMaterial(this.materialLibrary);
     // `ENV-03`: the water material and its class/profile policy. The low path is
     // opaque and single-family; higher profiles are the bounded blended path.
+    // `GME-07`: one local navigation graph over the resident tiles' mapped lines
+    // and named places. It is data and maths only — no scene object, no material,
+    // no draw call — so guidance can never be a second world renderer.
+    this.navigation = createLocalNavigation({ profile });
+    this.navigationRoute = null;
     this.waterMaterial = createWaterVisualMaterial({ library: this.materialLibrary, profile });
     this.waterVisual = createWaterVisualPolicy({ material: this.waterMaterial, library: this.materialLibrary, profile });
     this.decorationMaterial = configureSemanticMaterial(
@@ -1045,6 +1062,13 @@ export class GeoWorld {
       // Commit metadata first so one malformed provider geometry cannot suppress
       // the biome, map names, or every other detail family on the tile.
       tile.labels = Array.isArray(context.labels) ? context.labels : [];
+      // `GME-07`: the tile's mapped road lines and named places join the local
+      // graph, so guidance is derived from real map context only.
+      if (context.navigation) {
+        tile.navigation = context.navigation;
+        this.navigation.addTile(tile.key, context.navigation);
+        this.navigation.addPlaces(tile.key, tile.labels);
+      }
       tile.biome = context.biome || tile.biome;
       tile.environment = context.environment || tile.environment;
       tile.landFeatures = context.land?.meta?.features ?? 0;
@@ -1364,6 +1388,21 @@ export class GeoWorld {
       propTriggerCeiling: this.propTriggerCeiling,
       propSolidBoxes: this.propSolidBoxes,
       propInteraction: this.propInteraction,
+      // `GME-07`: the local navigation graph, the guided route, and the fact that
+      // guidance is a HUD model rather than a second world renderer.
+      navNodes: this.navigation.graph.diagnostics.nodes,
+      navEdges: this.navigation.graph.diagnostics.edges,
+      navPlaces: this.navigation.graph.diagnostics.places,
+      navPrunedNodes: this.navigation.graph.diagnostics.prunedNodes,
+      navPrunedEdges: this.navigation.graph.diagnostics.prunedEdges,
+      navPlaceRefusals: this.navigation.graph.diagnostics.placeRefusals,
+      navPlaceOrphans: this.navigation.graph.diagnostics.placeOrphans,
+      navRouteExpansions: this.navigation.diagnostics.expanded,
+      navRoutes: this.navigation.diagnostics.routes,
+      navRefusals: this.navigation.diagnostics.refusals,
+      navMinimapSegments: this.navigationGuidanceRecord?.minimap?.segments ?? 0,
+      navSteadyFrameAllocations: this.navigationGuidanceRecord?.steadyFrameAllocations ?? 0,
+      navTarget: this.navigationRouteKey,
       // `ENV-03`: the water path, its class table, and the per-frame counters.
       waterVisualPath: this.waterVisual?.appearance.path ?? null,
       waterVisualClasses: Object.keys(GDO_WATER_VISUAL_CLASSES).length,
@@ -1640,6 +1679,14 @@ export class GeoWorld {
     for (const slot of ['ground', 'roads', 'land', 'water', 'buildings', 'buildingDetails']) {
       this._releaseTileGeometry(tile, slot);
     }
+    // `GME-07`: an evicted tile leaves the local graph, and a route whose own
+    // nodes left with it is dropped rather than followed into a world that is gone.
+    this.navigation.removeTile(tile.key);
+    if (this.navigationRoute?.ok) {
+      const first = this.navigationRoute.nodes[0];
+      if (!this.navigation.graph.nodes.some(node => node.id === first)) this.cancelNavigation();
+    }
+    tile.navigation = null;
     tile.decorations.length = 0;
     // `DET-10`: a prop's records, triggers, and authored solids leave with its tile.
     tile.props = null;
@@ -2391,6 +2438,137 @@ export class GeoWorld {
     out.placeName = nearest?.name ?? null;
     out.placeKind = nearest?.kind ?? null;
     out.placeDistance = nearest ? nearestDistance : Infinity;
+    return out;
+  }
+
+  /**
+   * `GME-07`: the named places on the local graph, nearest first — the list the
+   * HUD offers as guidance targets. Deterministic order, bounded count.
+   */
+  navigationTargets(x, z, { limit = 6 } = {}) {
+    // Only a place that really joined the graph is a target: the graph refuses a
+    // name with no mapped road beside it, and guidance must not offer it.
+    const linked = new Set();
+    for (const node of this.navigation.graph.nodes) if (node.kind === 'place') linked.add(node.id);
+    const places = this.navigation.places().filter(place => linked.has(place.id));
+    const ranked = places.map(place => ({
+      id: place.id, name: place.name, kind: place.kind, tile: place.tile,
+      distance: Math.hypot(place.x - x, place.z - z),
+    })).sort((first, second) => (first.distance - second.distance) || (first.id < second.id ? -1 : 1));
+    const out = this.navigationTargetsRecord ??= [];
+    out.length = 0;
+    for (const target of ranked.slice(0, limit)) {
+      target.distanceMetres = Math.round(target.distance * 10);
+      target.distance = Number(target.distance.toFixed(2));
+      out.push(target);
+    }
+    return out;
+  }
+
+  /** Plan (or re-plan) the guided route to a mapped point or a named place. */
+  navigateTo(target, from, { force = false } = {}) {
+    if (!target || !from || !Number.isFinite(from.x) || !Number.isFinite(from.z)) return null;
+    const placeId = typeof target === 'string' ? target : target.placeId ?? null;
+    const route = placeId
+      ? this.navigation.routeToPlace(placeId, from)
+      : this.navigation.routeTo({ x: target.x, z: target.z }, from);
+    if (!route.ok && !force) {
+      this.navigationRoute = null;
+      this.navigationRouteKey = null;
+      return route;
+    }
+    this.navigationRoute = route;
+    this.navigationRouteKey = placeId ?? `${Math.round(target.x * 10)}:${Math.round(target.z * 10)}`;
+    return route;
+  }
+
+  cancelNavigation() {
+    const had = Boolean(this.navigationRoute);
+    this.navigationRoute = null;
+    this.navigationRouteKey = null;
+    return had;
+  }
+
+  /**
+   * The per-frame guidance record: the stored route's progress, one guidance
+   * sentence, and the minimap model. It is *rate-limited by movement* — the same
+   * record is handed back while the player has not moved past the declared
+   * refresh distance or turned past the declared refresh angle, so a steady frame
+   * allocates nothing. The route itself is re-planned only when the player leaves
+   * it or asks for a new target, never every frame.
+   */
+  navigationGuidance(x, z, { headingDegrees = 0, radius = null } = {}) {
+    const cached = this.navigationGuidanceRecord;
+    if (cached && Number.isFinite(x) && Number.isFinite(z)
+      && Math.hypot(x - cached.x, z - cached.z) < GDO_NAV_GUIDANCE_MOVE
+      && Math.abs(((headingDegrees - cached.heading + 540) % 360) - 180) < GDO_NAV_GUIDANCE_TURN) {
+      cached.reused = true;
+      cached.steadyFrameAllocations = 0;
+      return cached;
+    }
+    const out = this.navigationGuidanceRecord = {
+      namespace: 'gdo:localNavigation:v1',
+      x, z, heading: headingDegrees,
+      routeKey: this.navigationRouteKey ?? null,
+      route: this.navigationRoute,
+      progress: null, guidance: null, minimap: null,
+      reused: false, steadyFrameAllocations: 1,
+    };
+    // The minimap is drawn with or without a route: the local roads, the named
+    // places, and the loaded tiles are useful before a target is chosen, and the
+    // model is the same bounded data either way.
+    if (!this.navigationRoute?.ok) {
+      out.guidance = {
+        kind: 'unavailable',
+        text: 'No route — press G to guide to the nearest mapped place',
+        reason: this.navigationRoute?.reason ?? 'no-route',
+      };
+      out.minimap = this.navigation.minimap({
+        route: null, x, z, headingDegrees,
+        radius: radius ?? GDO_NAV_DEFAULT_RADIUS, loadedTiles: this.navigationTileBounds(),
+      });
+      return out;
+    }
+    const route = this.navigationRoute;
+    const progress = this.navigation.progress(route, x, z);
+    // Off the line: re-plan from where the player actually is, which is the only
+    // thing that makes guidance recover from a detour.
+    if (progress.ok && progress.offRoute > GDO_NAV_REPLAN_DISTANCE) {
+      const replanned = this.navigation.routeTo(
+        { x: route.coordinates[route.coordinates.length - 1][0], z: route.coordinates[route.coordinates.length - 1][1] },
+        { x, z },
+      );
+      if (replanned.ok) {
+        this.navigationRoute = replanned;
+        out.route = replanned;
+        out.progress = this.navigation.progress(replanned, x, z);
+        out.guidance = this.navigation.guidance(replanned, x, z);
+        out.minimap = this.navigation.minimap({
+          route: replanned, x, z, headingDegrees,
+          radius: radius ?? GDO_NAV_DEFAULT_RADIUS, loadedTiles: this.navigationTileBounds(),
+        });
+        out.replanned = true;
+        return out;
+      }
+    }
+    out.progress = progress;
+    out.guidance = this.navigation.guidance(route, x, z);
+    out.minimap = this.navigation.minimap({
+      route, x, z, headingDegrees,
+      radius: radius ?? GDO_NAV_DEFAULT_RADIUS, loadedTiles: this.navigationTileBounds(),
+    });
+    return out;
+  }
+
+  /** Resident tile rectangles, which the minimap draws as the loaded set. */
+  navigationTileBounds() {
+    const out = this.navigationTileBoundsRecord ??= [];
+    out.length = 0;
+    for (const key of [...this.tiles.keys()].sort()) {
+      const bounds = this.tiles.get(key)?.bounds;
+      if (!bounds) continue;
+      out.push({ key, minX: bounds.minX, minZ: bounds.minZ, maxX: bounds.maxX, maxZ: bounds.maxZ });
+    }
     return out;
   }
 
