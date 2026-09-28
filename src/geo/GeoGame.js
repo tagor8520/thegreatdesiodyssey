@@ -20,6 +20,7 @@ import { createPlantSilhouetteAuditRunner } from '../engine/PlantSilhouetteAudit
 import { createTimeOfDayAuditRunner } from '../engine/TimeOfDayAudit.js';
 import { actionCapabilitiesForDomain, createActionRegistry } from '../engine/ActionRegistry.js';
 import { createTouchActionControls, touchActionMarkup } from './GeoActionControls.js';
+import { createContentValidatorExtras } from '../engine/ContentValidatorTool.js';
 import './geo.css';
 
 function formatBytes(bytes) {
@@ -650,6 +651,10 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       world, player, camera, renderer,
       movementAudit,
       snapshot: () => world.movementSnapshot({ camera, renderer, cameraMode: player.cameraMode }),
+      // `CNT-03`: the content tool is reachable from a browser console, so a
+      // contributor can paste a pack or a landmark recipe and read the same
+      // verdict the CLI prints.
+      ...createContentValidatorExtras({ providers: providers ?? null, profile: profile ?? 'low' }),
     },
   });
   if (debugHooks) logger.info('debug', 'hook installed', { key: '__gdo', audits: ['movement', 'silhouette', 'timeOfDay'] });
