@@ -111,6 +111,9 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
   const dynamicProxyDiagnostics = world?.dynamicProxies?.diagnostics?.() ?? null;
   const timeOfDayDiagnostics = world?.timeOfDayState?.diagnostics?.() ?? null;
   const waterContact = world?.waterContactSummary ?? null;
+  const discoverySummary = world?.discoverySummary ?? null;
+  const discoveryDiagnostics = world?.discoveryJournal?.diagnostics?.() ?? null;
+  const discoveryStorage = world?.discoveryStorage?.diagnostics?.() ?? null;
   estimatedGpuBytes += materialTextureBytes;
   return Object.freeze({
     view,
@@ -243,6 +246,17 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
     labelLosTestsPerSecond: world?.labelLosRate ?? world?.labelLosDiagnostics?.testsPerSecond ?? 0,
     labelLosCandidates: world?.labelLosDiagnostics?.lastBatch ?? 0,
     labelLosSteadyFrameAllocations: world?.labelLosSteadyFrameAllocations ?? 0,
+    // `GME-06`: the bounded discovery journal — what it remembers, what is still
+    // only sighted, and how many observations the sight range refused.
+    discoveryRecords: discoverySummary?.records ?? 0,
+    discoveryVisited: discoverySummary?.visited ?? 0,
+    discoverySighted: discoverySummary?.sighted ?? 0,
+    discoveryObservations: discoveryDiagnostics?.observations ?? 0,
+    discoveryEvictions: discoveryDiagnostics?.evictions ?? 0,
+    discoveryRejected: discoveryDiagnostics?.rejected ?? 0,
+    discoverySaves: discoveryStorage?.writes ?? 0,
+    discoverySaveFailures: discoveryStorage?.failures ?? 0,
+    discoverySteadyFrameAllocations: discoveryDiagnostics?.steadyFrameAllocations ?? 0,
   });
 }
 

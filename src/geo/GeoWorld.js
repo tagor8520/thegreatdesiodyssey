@@ -22,6 +22,7 @@ import {
 } from '../engine/AmbientLifeMotion.js';
 import { createAmbientLifeScheduler } from '../engine/AmbientLifeScheduler.js';
 import { DynamicProxyGrid } from '../engine/DynamicProxyGrid.js';
+import { createDiscoveryJournal, createJournalStorage } from '../engine/DiscoveryJournal.js';
 import {
   GDO_WATER_CONTACT_PROFILES,
   GDO_WATER_STATE,
@@ -632,6 +633,22 @@ export class GeoWorld {
     // the static tiles, so `collidesCircle`/`sweepCircle`/`sweepSphere` merge one
     // contact set for the player, the camera, and future agents.
     this.dynamicProxies = new DynamicProxyGrid({ profile: 'low', ledger: this.lifecycle });
+    // `GME-06`: the discovery journal is bounded local state. Ids and eviction
+    // are deterministic, so the same walk keeps the same journal, and the
+    // versioned payload restores through a store that refuses to guess.
+    this.discoveryJournal = createDiscoveryJournal({ profile: this.profile });
+    this.discoverySummary = null;
+    this.discoveryStorage = null;
+    try {
+      // A browser that refuses storage (private mode, quota) just runs without
+      // persistence: the accessor itself can throw, so it is probed here.
+      const store = globalThis.localStorage;
+      if (store && typeof store.getItem === 'function') {
+        this.discoveryStorage = createJournalStorage(store);
+        this.discoveryStorage.load(this.discoveryJournal, 0);
+      }
+    } catch { this.discoveryStorage = null; }
+    this.nextDiscoveryPassMilliseconds = 0;
     this.dynamicCandidateIds = [];
     this.dynamicWindow = { x: 0, z: 0, radius: 0 };
     this.activeBiome = { id: 'temperate', label: 'Reading map landscape…', ground: [.16, .30, .10] };
@@ -1349,6 +1366,37 @@ export class GeoWorld {
   // Ambient life motion now lives entirely in the shared vertex program; the
   // world only forwards the frame clock (one uniform write, zero matrices).
 
+  /**
+   * `GME-06`: one discovery pass over the names the readout is already showing.
+   *
+   * The pass is throttled to the label-refresh cadence, so the journal never
+   * rebuilds the visible-name list every frame, and it writes local state only
+   * when something became visited (plus a slow heartbeat) — a reload keeps what
+   * the player found without a storage write per frame.
+   */
+  observeDiscovery(x, z, nowMilliseconds = 0) {
+    const journal = this.discoveryJournal;
+    if (!journal || this.disposed) return this.discoverySummary;
+    if (nowMilliseconds < this.nextDiscoveryPassMilliseconds) return this.discoverySummary;
+    this.nextDiscoveryPassMilliseconds = nowMilliseconds + 250;
+    journal.observeAll(this.visibleLabels, { x, z, clock: nowMilliseconds });
+    const summary = journal.progress();
+    this.discoverySummary = summary;
+    if (this.discoveryStorage &&
+        (summary.visited !== (this.discoverySavedVisited ?? 0) ||
+          nowMilliseconds - (this.discoverySavedMilliseconds ?? nowMilliseconds) >= 30_000)) {
+      this.discoverySavedVisited = summary.visited;
+      this.discoverySavedMilliseconds = nowMilliseconds;
+      this.discoveryStorage.save(journal);
+    }
+    return summary;
+  }
+
+  /** `GME-06`: restore the journal from the local store, if there is one. */
+  loadDiscovery() {
+    return this.discoveryStorage?.load(this.discoveryJournal, 0) ?? 0;
+  }
+
   update(position, camera = this.viewCamera, viewportHeight = this.viewportHeight, nowMilliseconds = performance.now()) {
     if (this.disposed) return;
     if (camera?.isCamera) this.viewCamera = camera;
@@ -1364,6 +1412,7 @@ export class GeoWorld {
     this.waterMaterial.uniforms.uTime.value = time;
     this.ambientLifePools.update(nowMilliseconds);
     this.scheduleAmbientLife(nowMilliseconds);
+    this.observeDiscovery(position.x, position.z, nowMilliseconds);
     const fractionalX = this.reference.originX + position.x / this.reference.tileSize;
     const fractionalY = this.reference.originY + position.z / this.reference.tileSize;
     const x = Math.floor(fractionalX), y = Math.floor(fractionalY);
@@ -2394,6 +2443,9 @@ export class GeoWorld {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    // `GME-06`: the last pass may have happened before the final visit, so the
+    // journal gets one explicit save before its storage is released.
+    this.discoveryStorage?.save(this.discoveryJournal);
     if (this.plantMountTimer != null) clearTimeout(this.plantMountTimer);
     this.plantMountTimer = null;
     this.plantTimerHandle?.release();

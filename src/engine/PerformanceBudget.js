@@ -98,6 +98,10 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   mainThreadMountMilliseconds: 8,
   maxCollisionCandidates: 256,
   maxSupportCandidates: 256,
+  // `GME-06`: the discovery journal is bounded local state — a capped record set
+  // of deterministic place ids with no per-frame allocation.
+  discoveryRecords: 48,
+  discoverySteadyFrameAllocations: 0,
   // `GME-04` label LOS ceilings from CLIPPING_AND_LAYERING_RESEARCH.md §13.
   labelLosTestsPerSecond: 20,
   labelLosCandidates: 5,
@@ -207,6 +211,8 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'mainThreadMountMilliseconds', budget: 'mainThreadMountMilliseconds', label: 'main-thread mount ms' }),
   Object.freeze({ metric: 'maxCollisionCandidates', budget: 'maxCollisionCandidates', label: 'collision candidates' }),
   Object.freeze({ metric: 'maxSupportCandidates', budget: 'maxSupportCandidates', label: 'support candidates' }),
+  Object.freeze({ metric: 'discoveryRecords', budget: 'discoveryRecords', label: 'discovery journal records' }),
+  Object.freeze({ metric: 'discoverySteadyFrameAllocations', budget: 'discoverySteadyFrameAllocations', label: 'discovery steady-frame allocations' }),
   Object.freeze({ metric: 'labelLosTestsPerSecond', budget: 'labelLosTestsPerSecond', label: 'label LOS tests/second' }),
   Object.freeze({ metric: 'labelLosCandidates', budget: 'labelLosCandidates', label: 'labels LOS-tested per frame' }),
   Object.freeze({ metric: 'labelLosSteadyFrameAllocations', budget: 'labelLosSteadyFrameAllocations', label: 'label LOS steady-frame allocations' }),

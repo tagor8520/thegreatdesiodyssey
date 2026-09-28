@@ -390,7 +390,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       const water = player.waterDiagnostics();
       world.waterContactSummary = water;
       mapReadoutElement.textContent = `${readout.supportKind}${readout.supportLevel ? ` L${readout.supportLevel}` : ''} · ${readout.waterClassName}${water.state === 'dry' ? '' : ` (${water.state})`}${readout.inWater && water.state === 'dry' ? ' (in water)' : ''} · ${readout.placeName ? `${readout.placeName} ${Math.round(readout.placeDistance)}u` : 'no mapped name'} · tile ${readout.tileKey ?? '—'} · ${readout.providerSchema ?? 'schema unknown'}`;
-      runtimeElement.textContent = `${Math.round(fps)} FPS · ${averageCpu.toFixed(1)}ms CPU · ${Math.round(worstFrameGap)}ms worst · ${renderer.info.render.calls} calls · ${Math.round(renderer.info.render.triangles / 1000)}k tris · ${renderer.info.memory.geometries} geo · ${longTaskCount} stalls · q ${queries.sweeps}/${queries.sphereSweeps} sweeps · ${queries.maxCandidates} max collision · ${queries.maxSupportCandidates} max support · ${queries.groundRejects} ground rejects · ${queries.depenetrations} recoveries · ${latestStatus?.roads ?? 0} roads · ${latestStatus?.buildings ?? 0} buildings · ${latestStatus?.decorations ?? 0} details · ${latestStatus?.labels ?? 0} names · LOS ${los?.tests ?? 0}/${los?.testsPerSecond ?? 0} per s · ${los?.hidden ?? 0} hidden${latestStatus?.truncated ? ' · safety cap reached' : ''} · ${world.ambientSchedule?.active ?? 0}/${world.ambientLifePools?.entries ?? 0} life`;
+      runtimeElement.textContent = `${Math.round(fps)} FPS · ${averageCpu.toFixed(1)}ms CPU · ${Math.round(worstFrameGap)}ms worst · ${renderer.info.render.calls} calls · ${Math.round(renderer.info.render.triangles / 1000)}k tris · ${renderer.info.memory.geometries} geo · ${longTaskCount} stalls · q ${queries.sweeps}/${queries.sphereSweeps} sweeps · ${queries.maxCandidates} max collision · ${queries.maxSupportCandidates} max support · ${queries.groundRejects} ground rejects · ${queries.depenetrations} recoveries · ${latestStatus?.roads ?? 0} roads · ${latestStatus?.buildings ?? 0} buildings · ${latestStatus?.decorations ?? 0} details · ${latestStatus?.labels ?? 0} names · LOS ${los?.tests ?? 0}/${los?.testsPerSecond ?? 0} per s · ${los?.hidden ?? 0} hidden${latestStatus?.truncated ? ' · safety cap reached' : ''} · ${world.ambientSchedule?.active ?? 0}/${world.ambientLifePools?.entries ?? 0} life · ${world.discoverySummary?.visited ?? 0}/${world.discoverySummary?.records ?? 0} found`;
       // Ignore samples contaminated by a tab/screenshot stall, and require
       // sustained slowness before reallocating the drawing buffer.
       const stableSample = worstFrameGap < 100;
@@ -627,6 +627,11 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
         // `LAY-05`: how many names the DOM layer is showing and why the rest
         // are hidden.
         mapLabels: world.mapLabelDiagnostics ?? null,
+        // `GME-06`: what the journal remembers, what is still merely sighted,
+        // and whether the local store accepted the last write.
+        discovery: world.discoverySummary ? { ...world.discoverySummary } : null,
+        discoveryJournal: world.discoveryJournal?.diagnostics?.() ?? null,
+        discoveryStorage: world.discoveryStorage?.diagnostics?.() ?? null,
         timeOfDayAudit: timeOfDayAudit.summary(),
         profile: world.profile,
       };
