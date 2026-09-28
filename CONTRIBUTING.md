@@ -67,7 +67,10 @@ silently repaired: if the tool fails your pack, fix the pack.
 
 ### State packs
 
-Packs live in `public/content/states/<stateId>.json`. Required keys are
+Packs live in `public/content/states/<stateId>.json` and must be registered in
+`GDO_STATE_PACK_IDS` (`src/engine/StateCatalog.js`): the validator refuses a pack
+file that is not registered, and a registered pack with no file, so no content can
+arrive unvalidated. Required keys are
 `stateId`, `stateName`, and `collectibles`; `schemaVersion`, `bgColor`,
 `fogColor`, and `ambientColor` are optional, and a pack that derives from mapped
 data must declare its providers in `sources` plus an `attribution` line.
@@ -139,8 +142,10 @@ stay walkable, and lives beside the code that places it (for example
 * Compiled modules come from data deterministically: same recipe, same
   fingerprint. Moving a recipe does not change its identity.
 
-Nothing under `public/content/` is added by hand-editing a generated file: run
-`npm run validate:content` and commit the pack together with its report.
+Nothing under `public/content/` is added by hand-editing a generated file: register
+the pack, run `npm run validate:content`, and commit the pack together with its
+report. The shipped states today are Kerala, Maharashtra, Karnataka, Punjab, and
+Tamil Nadu.
 
 ---
 

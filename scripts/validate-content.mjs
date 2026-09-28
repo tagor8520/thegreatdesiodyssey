@@ -16,6 +16,9 @@ import { resolve, basename } from 'node:path';
 import { runContentCheck } from '../src/engine/ContentValidatorTool.js';
 import { compileLandmarkRecipe } from '../src/engine/RecipeCompiler.js';
 import { GDO_CURATED_LANDMARKS } from '../src/reference/landmarkRecipes.js';
+import {
+  GDO_STATE_PACK_IDS, statePackSourcePath, verifyStatePackFiles,
+} from '../src/engine/StateCatalog.js';
 
 const args = process.argv.slice(2);
 const flags = new Set(args.filter(argument => argument.startsWith('--')));
@@ -27,10 +30,23 @@ const budgetProviderCredits = providers.map(entry => `${entry.id}: ${entry.attri
 
 function packPaths() {
   if (paths.length) return paths.map(path => resolve(path));
-  return readdirSync(resolve(roots[0]))
+  // `CNT-04`: the catalogue is the shipping list, and the folder has to match it
+  // — a pack dropped in without registering would otherwise never be validated.
+  const shipped = readdirSync(resolve(roots[0]))
     .filter(name => name.endsWith('.json'))
-    .sort()
-    .map(name => resolve(roots[0], name));
+    .map(name => name.replace(/\.json$/, ''))
+    .sort();
+  const verdict = verifyStatePackFiles(shipped);
+  if (!verdict.ok) {
+    if (verdict.missing.length) {
+      console.error(`catalogue lists packs with no file: ${verdict.missing.join(', ')}`);
+    }
+    if (verdict.unlisted.length) {
+      console.error(`unregistered pack file(s) in ${roots[0]}: register them in GDO_STATE_PACK_IDS — ${verdict.unlisted.join(', ')}`);
+    }
+    process.exitCode = 1;
+  }
+  return GDO_STATE_PACK_IDS.map(id => resolve(statePackSourcePath(id)));
 }
 
 function readJson(path) {

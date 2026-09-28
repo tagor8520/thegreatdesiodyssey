@@ -31,6 +31,7 @@ export const GDO_FEATURE_VERSIONS = Object.freeze({
   structureSweep: 1,
   recipeCompiler: 1,
   contentValidator: 1,
+  stateCatalog: 1,
   actionRegistry: 1,
   plantSilhouetteAudit: 1,
   dynamicProxy: 1,

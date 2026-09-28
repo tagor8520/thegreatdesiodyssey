@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { buildModuleGroup } from './VoxelBuilder.js';
 import { GDO_CONTENT_SCHEMA_NAMESPACE, loadContentState } from './ContentSchema.js';
 import { compileStatePack } from './RecipeCompiler.js';
+import { GDO_STATE_PACK_IDS, statePackRuntimePath } from './StateCatalog.js';
 
 const PICKUP_RADIUS = 1.8;
 
@@ -61,7 +62,11 @@ export class StateManager {
    * @param {string} stateId - e.g. "kerala"
    */
   async loadState(stateId) {
-    const url = `/content/states/${stateId}.json`;
+    // `CNT-04`: a catalogued pack's URL comes from the catalogue, so the runtime
+    // and the validated content folder cannot drift apart.
+    const url = GDO_STATE_PACK_IDS.includes(stateId)
+      ? statePackRuntimePath(stateId)
+      : `/content/states/${stateId}.json`;
     const res = await fetch(url);
     if (!res.ok) {
       console.error(`Failed to load state: ${stateId}`);
