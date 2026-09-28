@@ -1,4 +1,5 @@
 import { GDO_FEATURE_VERSIONS, featureNamespace } from '../engine/FeatureVersions.js';
+import { GEO_MAP_SCHEMA, resolveMapSchema } from './GeoMapSemantics.js';
 import { buildBuildingGeometry, buildRoadGeometry } from './GeoTileBuilder.js';
 import { buildContextData } from './GeoTileContext.js';
 import { streetFurnitureRecipes } from './GeoStreetFurnitureGrammar.js';
@@ -23,6 +24,7 @@ export const GEO_FIXTURE_MATRIX = Object.freeze([
   Object.freeze({ id: 'stacked-bridge', category: 'bridge', variants: Object.freeze(['openmaptiles']) }),
   Object.freeze({ id: 'mapped-coast', category: 'coast', variants: Object.freeze(['openmaptiles']) }),
   Object.freeze({ id: 'provider-equivalence', category: 'provider-schema', variants: Object.freeze(['openmaptiles', 'shortbread']) }),
+  Object.freeze({ id: 'provider-semantics', category: 'provider-semantics', variants: Object.freeze(['openmaptiles', 'shortbread']) }),
 ]);
 
 const FIXTURE_BY_ID = new Map(GEO_FIXTURE_MATRIX.map(entry => [entry.id, entry]));
@@ -149,6 +151,42 @@ function providerLayers(variant) {
   };
 }
 
+/**
+ * `MAP-08`: the same OSM reality expressed in each provider's real vocabulary.
+ * OpenMapTiles uses `class`/`subclass`, `brunnel`/`layer`, `render_height` and
+ * `water`/`place`; Shortbread uses the raw OSM `kind`, boolean bridge/tunnel
+ * flags, a marker-only `buildings` layer and `water_polygons`/`place_labels`.
+ * A residential road, a mapped bridge, the land cover, the water body and the
+ * town label must all compile to the same semantics through the adapter.
+ */
+function providerSemanticsLayers(variant) {
+  const schema = variant === 'shortbread' ? 'shortbread' : 'openmaptiles';
+  if (schema === 'shortbread') {
+    return {
+      streets: [
+        line(80, [[0, 3072], [4096, 3072]], { kind: 'residential', name: 'Semantics Lane' }),
+        line(81, [[2048, 0], [2048, 4096]], { kind: 'secondary', bridge: true, oneway: true, name: 'Semantics Bridge' }),
+        line(82, [[0, 1024], [4096, 1024]], { kind: 'tram', rail: true, name: 'Semantics Tram' }),
+      ],
+      land: [polygon(83, [[[0, 0], [4096, 0], [4096, 900], [0, 900]]], { kind: 'residential' })],
+      water_polygons: [polygon(84, [[[600, 1600], [1600, 1600], [1600, 2600], [600, 2600]]], { kind: 'water', name: 'Semantics Pond' })],
+      place_labels: [marker(85, [1400, 3400], { kind: 'town', name: 'Semantics Town', population: 9000 })],
+      buildings: [polygon(86, [[[2600, 1400], [3500, 1400], [3500, 2300], [2600, 2300]]], { dummy: 1 })],
+    };
+  }
+  return {
+    transportation: [
+      line(80, [[0, 3072], [4096, 3072]], { class: 'minor', subclass: 'residential', name: 'Semantics Lane' }),
+      line(81, [[2048, 0], [2048, 4096]], { class: 'secondary', brunnel: 'bridge', layer: 1, oneway: 1, name: 'Semantics Bridge' }),
+      line(82, [[0, 1024], [4096, 1024]], { class: 'rail', subclass: 'tram', name: 'Semantics Tram' }),
+    ],
+    landuse: [polygon(83, [[[0, 0], [4096, 0], [4096, 900], [0, 900]]], { class: 'residential' })],
+    water: [polygon(84, [[[600, 1600], [1600, 1600], [1600, 2600], [600, 2600]]], { class: 'lake', name: 'Semantics Pond' })],
+    place: [marker(85, [1400, 3400], { class: 'town', name: 'Semantics Town', rank: 4 })],
+    building: [polygon(86, [[[2600, 1400], [3500, 1400], [3500, 2300], [2600, 2300]]], { class: 'building' })],
+  };
+}
+
 function fixtureLayers(id, variant) {
   if (id === 'dense-urban') return denseUrbanLayers();
   if (id === 'sparse-rural') return sparseRuralLayers();
@@ -157,6 +195,7 @@ function fixtureLayers(id, variant) {
   if (id === 'stacked-bridge') return bridgeLayers();
   if (id === 'mapped-coast') return coastLayers();
   if (id === 'provider-equivalence') return providerLayers(variant);
+  if (id === 'provider-semantics') return providerSemanticsLayers(variant);
   throw new RangeError(`Unknown geographic fixture: ${id}`);
 }
 
@@ -210,6 +249,9 @@ export function geoFixtureRequest(id, variant = 'openmaptiles') {
     longitude: coordinate.longitude,
     terrainSeed: terrainSeedForCoordinate(coordinate.latitude, coordinate.longitude),
     featureVersions: GDO_FEATURE_VERSIONS,
+    // `MAP-08`: fixture variants exercise the real provider schemas, so the
+    // compiled request declares which vocabulary the features above use.
+    schema: variant === 'shortbread' ? GEO_MAP_SCHEMA.SHORTBREAD : resolveMapSchema(variant, GEO_MAP_SCHEMA.OPENMAPTILES),
   });
 }
 

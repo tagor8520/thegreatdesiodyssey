@@ -1,6 +1,10 @@
 import earcut from 'earcut';
 import { classifyRings } from '@mapbox/vector-tile';
 import { roadStyle } from './GeoTileBuilder.js';
+import {
+  GEO_MAP_ROLE, GEO_PLACE_CLASS, describeMapPlace, mapLayersForRole, pickMapLayer,
+  resolveLandCoverClass, resolveMapWaterClass, resolveMapWaterKind,
+} from './GeoMapSemantics.js';
 import { GEO_SURFACE_Y, landSurfaceY } from './GeoLayers.js';
 import { terrainHeightAt } from './GeoTerrain.js';
 import { compileStreetFurniture } from './GeoStreetFurnitureGrammar.js';
@@ -8,7 +12,6 @@ import { compileBridges } from './GeoBridgeGrammar.js';
 import {
   GEO_WATER_CLASS,
   GEO_WATER_DOMAIN_LIMITS,
-  classifyWaterClass,
   createWaterDomain,
   queryWaterDomain,
   waterwayRibbonIntersectsPolygons,
@@ -48,19 +51,21 @@ const LAND_COLORS = Object.freeze({
   default: [0.15, 0.29, 0.10],
 });
 const WATER_COLOR = Object.freeze([0.008, 0.20, 0.41]);
-const LAND_LAYER_NAMES = ['land', 'landcover', 'landuse', 'park'];
-const WATER_POLYGON_NAMES = ['water_polygons', 'water', 'ocean'];
-const WATER_LINE_NAMES = ['waterway', 'water_lines'];
+// `MAP-08`: layer names come from the one semantic adapter, so adding a provider
+// spelling is a single-table change instead of a new scattered probe.
+const LAND_LAYER_NAMES = mapLayersForRole(GEO_MAP_ROLE.LAND);
+const WATER_POLYGON_NAMES = mapLayersForRole(GEO_MAP_ROLE.WATER_POLYGON);
+const WATER_LINE_NAMES = mapLayersForRole(GEO_MAP_ROLE.WATER_LINE);
 const LABEL_LAYERS = Object.freeze([
-  { names: ['place_labels', 'place'], priority: 90, group: 'place' },
-  { names: ['water_polygons_labels', 'water_lines_labels', 'water_name'], priority: 55, group: 'water' },
+  { names: mapLayersForRole(GEO_MAP_ROLE.PLACE), priority: 90, group: 'place' },
+  { names: mapLayersForRole(GEO_MAP_ROLE.WATER_LABEL), priority: 55, group: 'water' },
   { names: ['water_polygons', 'water', 'waterway'], priority: 48, group: 'water' },
-  { names: ['street_labels', 'transportation_name'], priority: 38, group: 'street' },
+  { names: mapLayersForRole(GEO_MAP_ROLE.TRANSPORT_LABEL), priority: 38, group: 'street' },
   // Many z14 providers omit dedicated label layers but retain names on source
   // transportation/land features. They are still map data and make rural tiles useful.
-  { names: ['transportation', 'streets'], priority: 32, group: 'street' },
+  { names: mapLayersForRole(GEO_MAP_ROLE.TRANSPORT), priority: 32, group: 'street' },
   { names: ['pois', 'poi', 'sites'], priority: 24, group: 'poi' },
-  { names: ['park', 'landcover', 'landuse', 'land'], priority: 20, group: 'poi' },
+  { names: mapLayersForRole(GEO_MAP_ROLE.LAND), priority: 20, group: 'poi' },
 ]);
 const MAX_SURFACE_VERTICES = 48_000;
 const MAX_DECORATIONS = 1_340;
@@ -219,11 +224,11 @@ function environmentAt(clearanceContext, x, z, mappedLandKind) {
 
 function decorationKind(landKind, environment, seed) {
   const random = random01(seed ^ 0x51f15e);
-  if (['sand', 'beach', 'desert', 'bare_rock'].some(kind => landKind.includes(kind)) && random < .52) return 4;
+  if (['sand', 'beach', 'desert', 'bare_rock', 'rock', 'ice', 'shingle'].some(kind => landKind.includes(kind)) && random < .52) return 4;
   if (['scrub', 'heath', 'farmland', 'farmyard'].some(kind => landKind.includes(kind))) {
     return random > .72 ? 4 : random < .18 ? 5 : 2;
   }
-  if (['grass', 'meadow'].some(kind => landKind.includes(kind)) && random < .54) {
+  if (['grass', 'grassland', 'meadow'].some(kind => landKind.includes(kind)) && random < .54) {
     return selectMorphologyPlantType('ground-cover', environment, seed);
   }
   return selectMorphologyPlantType('canopy', environment, seed);
@@ -231,7 +236,8 @@ function decorationKind(landKind, environment, seed) {
 
 function addPolygonDecorations(decorations, rings, landKind, seed, clearanceContext) {
   if (decorations.length / 6 >= MAX_NATURE_DECORATIONS) return;
-  const decorated = ['forest', 'wood', 'park', 'garden', 'grass', 'meadow', 'orchard', 'scrub', 'heath', 'wetland', 'farmland', 'sand', 'beach', 'desert'];
+  // Canonical classes first, then spellings a provider may still hand through.
+  const decorated = ['forest', 'wood', 'park', 'garden', 'grass', 'grassland', 'meadow', 'orchard', 'scrub', 'heath', 'wetland', 'farmland', 'sand', 'beach', 'ice', 'rock'];
   if (!decorated.some(kind => landKind.includes(kind))) return;
   const outer = rings[0];
   let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
@@ -239,7 +245,7 @@ function addPolygonDecorations(decorations, rings, landKind, seed, clearanceCont
     minX = Math.min(minX, x); minZ = Math.min(minZ, z); maxX = Math.max(maxX, x); maxZ = Math.max(maxZ, z);
   }
   const density = landKind.includes('forest') || landKind.includes('wood') ? .42
-    : ['sand', 'beach', 'desert'].some(kind => landKind.includes(kind)) ? .025 : .16;
+    : ['sand', 'beach', 'rock', 'ice'].some(kind => landKind.includes(kind)) ? .025 : .16;
   const requested = Math.min(42, Math.max(1, Math.round(polygonArea(outer) * density)));
   let placed = 0;
   for (let attempt = 0; attempt < requested * 7 && placed < requested && decorations.length / 6 < MAX_NATURE_DECORATIONS; attempt++) {
@@ -273,12 +279,13 @@ function labelPosition(feature, request) {
 }
 
 function labelPriority(base, properties) {
-  const kind = kindOf(properties);
-  if (kind === 'city' || kind === 'capital') return base + 20;
-  if (kind === 'town') return base + 12;
-  if (kind === 'village' || kind === 'suburb') return base + 5;
-  const rank = Number(properties.rank || properties.labelrank);
-  return base + (Number.isFinite(rank) ? Math.max(0, 8 - rank) : 0);
+  // `MAP-08`: OpenMapTiles publishes `rank`/`labelrank` where Shortbread publishes
+  // `population`; the adapter turns both into one canonical place class and rank.
+  const place = describeMapPlace(properties);
+  if (place.placeClass === GEO_PLACE_CLASS.CITY || place.placeClass === GEO_PLACE_CLASS.CAPITAL) return base + 20;
+  if (place.placeClass === GEO_PLACE_CLASS.TOWN) return base + 12;
+  if (place.placeClass === GEO_PLACE_CLASS.VILLAGE || place.placeClass === GEO_PLACE_CLASS.SUBURB) return base + 5;
+  return base + Math.max(0, 8 - place.rank);
 }
 
 function collectLabels(vectorTile, request) {
@@ -323,12 +330,12 @@ function distanceToSegmentSquared(x, z, segment) {
 function collectObstacles(vectorTile, request) {
   const roads = [], buildings = [];
   let roadTruncated = false, buildingTruncated = false;
-  const roadLayer = vectorTile.layers.transportation || vectorTile.layers.streets;
+  const roadLayer = pickMapLayer(vectorTile.layers, GEO_MAP_ROLE.TRANSPORT)?.layer;
   if (roadLayer) for (let featureIndex = 0; featureIndex < roadLayer.length; featureIndex++) {
     if (roads.length >= 3500) { roadTruncated = true; break; }
     const feature = roadLayer.feature(featureIndex);
     if (feature.type !== 2) continue;
-    const style = roadStyle(feature.properties);
+    const style = roadStyle(feature.properties, request.schema);
     const radius = style.width / 2;
     for (const line of feature.loadGeometry()) for (let index = 1; index < line.length; index++) {
       if (roads.length >= 3500) { roadTruncated = true; break; }
@@ -337,7 +344,7 @@ function collectObstacles(vectorTile, request) {
       roads.push([first[0], first[1], second[0], second[1], radius, style.transport.physicalLevel]);
     }
   }
-  const buildingLayer = vectorTile.layers.building || vectorTile.layers.buildings;
+  const buildingLayer = pickMapLayer(vectorTile.layers, GEO_MAP_ROLE.BUILDING)?.layer;
   if (buildingLayer) for (let featureIndex = 0; featureIndex < buildingLayer.length; featureIndex++) {
     if (buildings.length >= 1600) { buildingTruncated = true; break; }
     const feature = buildingLayer.feature(featureIndex);
@@ -416,7 +423,7 @@ function fallbackDecorationKind(environment, seed) {
 }
 
 function addFallbackNature(vectorTile, request, decorations, clearanceContext, polygonRecords, diagnostics, seed) {
-  const roadLayer = vectorTile.layers.transportation || vectorTile.layers.streets;
+  const roadLayer = pickMapLayer(vectorTile.layers, GEO_MAP_ROLE.TRANSPORT)?.layer;
   const roadCandidates = [];
   // Roblox-like readable streets: use map geometry, then line suitable roads with
   // sparse deterministic voxel trees/flowers instead of scattering visual noise.
@@ -555,7 +562,7 @@ function addAmbientLife(request, decorations, centerEnvironment, seed) {
 }
 
 function addLegacyParkedCars(vectorTile, request, decorations, seed) {
-  const vectorLayer = vectorTile.layers.transportation || vectorTile.layers.streets;
+  const vectorLayer = pickMapLayer(vectorTile.layers, GEO_MAP_ROLE.TRANSPORT)?.layer;
   if (!vectorLayer || decorations.length / 6 >= MAX_DECORATIONS) return;
   for (let featureIndex = 0; featureIndex < vectorLayer.length && decorations.length / 6 < MAX_DECORATIONS; featureIndex++) {
     const feature = vectorLayer.feature(featureIndex);
@@ -599,7 +606,7 @@ export function buildContextData(vectorTile, request) {
     for (let featureIndex = 0; featureIndex < vectorLayer.length; featureIndex++) {
       const feature = vectorLayer.feature(featureIndex);
       if (feature.type !== 3) continue;
-      const kind = kindOf(feature.properties) || (layerName === 'park' ? 'park' : 'default');
+      const kind = resolveLandCoverClass(feature.properties, layerName === 'park' ? 'park' : 'default');
       const polygons = classifyRings(feature.loadGeometry());
       for (const polygon of polygons) {
         const rings = polygon.map(withoutClosingPoint).filter(ring => ring.length >= 3)
@@ -630,7 +637,12 @@ export function buildContextData(vectorTile, request) {
           .map(ring => ring.map(point => pointToWorld(point, feature.extent, request)));
         if (!rings.length || water.positions.length / 3 > MAX_SURFACE_VERTICES) continue;
         appendPolygon(water, rings, GEO_SURFACE_Y.WATER, WATER_COLOR);
-        waterPolygons.push({ rings, kind: feature.properties, layerName });
+        // `MAP-08`: the water domain receives a canonical class name, so a
+        // Shortbread `kind:'water'` is the same lake as an OpenMapTiles one.
+        waterPolygons.push({
+          rings, layerName, kind: resolveMapWaterKind(feature.properties, request.schema),
+          properties: feature.properties,
+        });
         waterFeatures++;
       }
     }
@@ -639,7 +651,7 @@ export function buildContextData(vectorTile, request) {
     for (let featureIndex = 0; featureIndex < vectorLayer.length; featureIndex++) {
       const feature = vectorLayer.feature(featureIndex);
       if (feature.type !== 2) continue;
-      const waterClassCode = classifyWaterClass(feature.properties);
+      const waterClassCode = resolveMapWaterClass(feature.properties, request.schema);
       const width = waterClassCode === GEO_WATER_CLASS.RIVER ? .8
         : waterClassCode === GEO_WATER_CLASS.CANAL ? .5 : .24;
       for (const line of feature.loadGeometry()) for (let index = 1; index < line.length; index++) {
@@ -650,7 +662,10 @@ export function buildContextData(vectorTile, request) {
         const first = pointToWorld(line[index - 1], feature.extent, request);
         const second = pointToWorld(line[index], feature.extent, request);
         const segment = [first[0], first[1], second[0], second[1]];
-        waterways.push({ segment, halfWidth: width / 2, kind: feature.properties, properties: feature.properties });
+        waterways.push({
+          segment, halfWidth: width / 2, properties: feature.properties,
+          kind: resolveMapWaterKind(feature.properties, request.schema),
+        });
         if (waterwayRibbonIntersectsPolygons(segment, width, waterPolygons)) {
           waterwaySegmentsSuppressed++;
         } else {
@@ -680,7 +695,7 @@ export function buildContextData(vectorTile, request) {
   const centerEnvironment = environmentAt(
     clearanceContext, centerX, centerZ, mappedLandKindAt(centerX, centerZ, polygonRecords),
   );
-  const buildingLayer = vectorTile.layers.building || vectorTile.layers.buildings;
+  const buildingLayer = pickMapLayer(vectorTile.layers, GEO_MAP_ROLE.BUILDING)?.layer;
   const environment = createEnvironmentSummary(centerEnvironment, buildingLayer?.length || 0);
   // `biome` remains a backwards-compatible display alias. Plant decisions use
   // point samples and never this source-tile summary.

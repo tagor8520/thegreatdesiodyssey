@@ -209,7 +209,8 @@ export function sampleVegetationEnvironment({
     (GEO_TERRAIN_DEFAULTS.maximumHeight - GEO_TERRAIN_DEFAULTS.minimumHeight));
   const riparian = water.inWater ? 1 : clamp(1 - water.waterDistance / 2.4);
   const wetland = water.wetland || mappedFlag(mappedLandKind, ['wetland', 'marsh', 'swamp']);
-  const sand = mappedFlag(mappedLandKind, ['sand', 'beach', 'desert', 'bare_rock']);
+  // `MAP-08` canonical classes ('rock', 'ice') plus legacy provider spellings.
+  const sand = mappedFlag(mappedLandKind, ['sand', 'beach', 'desert', 'bare_rock', 'rock', 'ice', 'shingle']);
   const forest = mappedFlag(mappedLandKind, ['forest', 'wood']);
   const park = mappedFlag(mappedLandKind, ['park', 'garden']);
   const cropland = mappedFlag(mappedLandKind, ['farmland', 'farmyard', 'orchard', 'crop', 'meadow']);

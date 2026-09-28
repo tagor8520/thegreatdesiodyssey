@@ -1,6 +1,7 @@
 import { GEO_QUERY_MASK } from './GeoCollision.js';
 import { GEO_SUPPORT_SLOT_FIELD, GEO_SUPPORT_SLOT_STRIDE } from './GeoSupportSlots.js';
 import { describeDomain, describeDomainCompliance } from '../engine/DomainInterface.js';
+import { GEO_MAP_ROLE, GEO_ROAD_CLASS, mapLayersForRole } from './GeoMapSemantics.js';
 
 export const GEO_DEBUG_LIMITS = Object.freeze({
   maxLineSegments: 6_000,
@@ -211,6 +212,12 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
   });
 }
 
+/** `MAP-08`: the adapter's declared vocabulary, frozen once for every snapshot. */
+const GEO_MAP_SEMANTICS_VOCABULARY = Object.freeze({
+  roles: Object.freeze(Object.values(GEO_MAP_ROLE).filter(role => mapLayersForRole(role).length)),
+  roadClasses: Object.freeze(Object.values(GEO_ROAD_CLASS)),
+});
+
 export function describeGeoQueryMask(mask) {
   const value = Number.isFinite(mask) ? Math.round(mask) : 0;
   const roles = MASK_ROLES.filter(([, bit]) => (value & bit) !== 0).map(([name]) => name);
@@ -415,6 +422,13 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
       bridges: world?.bridgePools?.diagnostics ?? null,
       landmarks: world?.landmarkPools?.diagnostics ?? null,
       tileCache: world?.tileCacheDiagnostics ?? null,
+      // `MAP-08`: the vocabulary the resident tiles were normalized from, plus
+      // the canonical classes and roles the adapter recognizes.
+      mapSemantics: Object.freeze({
+        providerSchema: world?.providerSchema ?? null,
+        roles: GEO_MAP_SEMANTICS_VOCABULARY.roles,
+        roadClasses: GEO_MAP_SEMANTICS_VOCABULARY.roadClasses,
+      }),
       // `FND-08`: the shared world domain, its scale and live compliance verdict,
       // so one consumer can prove it is talking to the interface it expects.
       domain: world?.domain ? Object.freeze({

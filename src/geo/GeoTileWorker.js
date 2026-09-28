@@ -1,4 +1,5 @@
-import { decodeVectorTile, buildRoadGeometry, buildBuildingGeometry } from './GeoTileBuilder.js';
+import { buildBuildingGeometry, buildRoadGeometry, decodeVectorTile } from './GeoTileBuilder.js';
+import { resolveMapSchema } from './GeoMapSemantics.js';
 import { acquireTileCache } from './GeoTileCache.js';
 import { buildContextData } from './GeoTileContext.js';
 import { waterDomainTransferables } from './GeoWaterDomains.js';
@@ -98,9 +99,18 @@ async function buildTile(request) {
     const fetchMilliseconds = performance.now() - requestStarted;
     if (cancelled.has(request.requestId)) return;
 
+    // `MAP-08`: the serving provider decides which class/level vocabulary the
+    // payload uses, so every phase below reads one explicit schema instead of
+    // guessing from whichever layer names happen to exist.
+    const phaseRequest = Object.freeze({
+      ...request,
+      schema: resolveMapSchema(fetched.provider?.schema ?? fetched.providerId, request.schema),
+      providerId: fetched.providerId,
+    });
+
     // Roads are intentionally produced and transferred before any building work.
     const roadsStarted = performance.now();
-    const roads = buildRoadGeometry(fetched.vectorTile, request);
+    const roads = buildRoadGeometry(fetched.vectorTile, phaseRequest);
     const roadsMilliseconds = performance.now() - roadsStarted;
     self.postMessage({
       type: 'tile-phase',
@@ -123,7 +133,7 @@ async function buildTile(request) {
     if (cancelled.has(request.requestId)) return;
 
     const contextStarted = performance.now();
-    const context = buildContextData(fetched.vectorTile, request);
+    const context = buildContextData(fetched.vectorTile, phaseRequest);
     const contextMilliseconds = performance.now() - contextStarted;
     self.postMessage({
       type: 'tile-phase',
@@ -154,7 +164,7 @@ async function buildTile(request) {
     if (cancelled.has(request.requestId)) return;
 
     const buildingsStarted = performance.now();
-    const buildings = buildBuildingGeometry(fetched.vectorTile, request);
+    const buildings = buildBuildingGeometry(fetched.vectorTile, phaseRequest);
     const buildingsMilliseconds = performance.now() - buildingsStarted;
     self.postMessage({
       type: 'tile-phase',

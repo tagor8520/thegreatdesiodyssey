@@ -3,6 +3,9 @@ import { PbfReader } from 'pbf';
 import earcut from 'earcut';
 import { GEO_LAYER, GEO_SURFACE_Y, resolveTransportLevel } from './GeoLayers.js';
 import {
+  GEO_MAP_ROLE, GEO_MAP_SCHEMA, describeMapBuilding, describeMapTransport, pickMapLayer, resolveMapSchema,
+} from './GeoMapSemantics.js';
+import {
   GEO_SUPPORT_SLOT_STRIDE,
   appendPackedSupportSlots,
   generateRoofSupportSlots,
@@ -114,20 +117,25 @@ function pointToWorld(point, extent, request) {
   ];
 }
 
-function roadClass(properties) {
-  if (properties.rail) return properties.kind || 'rail';
-  return properties.class || properties.kind || properties.subclass || 'minor';
+/**
+ * `MAP-08`: one canonical road class for both provider schemas. The adapter is
+ * the only reader of `class`, `kind`, `subclass`, `rail`, and `link`, so a
+ * Shortbread `kind:'residential'` and an OpenMapTiles
+ * `class:'minor', subclass:'residential'` produce the same family here.
+ */
+export function roadClass(properties, schema = GEO_MAP_SCHEMA.UNKNOWN) {
+  return describeMapTransport(properties, schema).roadClass;
 }
 
-export function roadStyle(properties) {
-  const kind = roadClass(properties);
-  const family = kind.includes('rail') || kind === 'transit' || kind === 'tram' ? 'rail' : kind;
+export function roadStyle(properties, schema = GEO_MAP_SCHEMA.UNKNOWN) {
+  const transport = describeMapTransport(properties, schema);
+  const kind = transport.roadClass;
+  const family = transport.rail ? 'rail' : kind;
   const widthMetres = ROAD_WIDTH_METRES[family] ?? ROAD_WIDTH_METRES.minor;
   let color = ROAD_COLORS[family] ?? ROAD_COLORS.default;
-  if (['path', 'footway', 'cycleway', 'pedestrian', 'steps'].includes(kind)) color = ROAD_COLORS.path;
-  const transport = resolveTransportLevel(properties);
-  if (transport.kind === 'tunnel') color = color.map(component => component * .62);
-  return { kind, width: widthMetres * requestScale(properties), color, transport };
+  if (kind === 'path') color = ROAD_COLORS.path;
+  if (transport.tunnel) color = color.map(component => component * .62);
+  return { kind, family, width: widthMetres * requestScale(properties), color, transport };
 }
 
 // Isolated for tests and future per-provider scaling. All source widths are metres.
@@ -213,7 +221,7 @@ function transportLevelSummary(levelStats) {
 }
 
 export function buildRoadGeometry(vectorTile, request) {
-  const layer = vectorTile.layers.transportation ?? vectorTile.layers.streets;
+  const layer = pickMapLayer(vectorTile.layers, GEO_MAP_ROLE.TRANSPORT)?.layer;
   const positions = [], normals = [], colors = [], indices = [], levelStats = new Map(), supportSegmentValues = [];
   const junctions = [], junctionByKey = new Map(), junctionGrid = new Map(), longJunctionSegments = [], junctionSegments = [];
   if (!layer) return {
@@ -284,7 +292,7 @@ export function buildRoadGeometry(vectorTile, request) {
     if (segments >= MAX_ROAD_SEGMENTS) { truncated = true; break; }
     const feature = layer.feature(featureIndex);
     if (feature.type !== 2) continue;
-    const style = roadStyle(feature.properties);
+    const style = roadStyle(feature.properties, request.schema);
     const { transport } = style;
     const surfaceOffset = transport.surfaceY;
     const halfWidth = style.width / 2;
@@ -412,7 +420,7 @@ function buildingDetailHash(rings, tileX, tileY) {
 }
 
 function collectBuildingRoadSegments(vectorTile, request) {
-  const layer = vectorTile.layers.transportation ?? vectorTile.layers.streets;
+  const layer = pickMapLayer(vectorTile.layers, GEO_MAP_ROLE.TRANSPORT)?.layer;
   const segments = [];
   let truncated = false;
   if (!layer) return { segments, truncated };
@@ -420,9 +428,10 @@ function collectBuildingRoadSegments(vectorTile, request) {
   features: for (let featureIndex = 0; featureIndex < layer.length; featureIndex++) {
     const feature = layer.feature(featureIndex);
     if (feature.type !== 2) continue;
-    const kind = String(roadClass(feature.properties));
-    const transport = resolveTransportLevel(feature.properties);
-    if (transport.physicalLevel !== 0 || ['rail', 'transit', 'tram', 'light_rail', 'runway', 'taxiway'].some(value => kind.includes(value))) {
+    const street = describeMapTransport(feature.properties, request.schema);
+    const kind = street.roadClass;
+    // Elevated, tunnelled, rail, and runway features never host road furniture.
+    if (street.physicalLevel !== 0 || street.rail || kind === 'runway' || kind === 'taxiway') {
       continue;
     }
     for (const line of feature.loadGeometry()) for (let index = 1; index < line.length; index++) {
@@ -480,14 +489,17 @@ function appendBox(
   }
 }
 
-function buildingHeight(properties, footprintArea, hash) {
-  const tagged = Number(properties.render_height);
-  if (Number.isFinite(tagged) && tagged > 0) return Math.max(.45, Math.min(12, tagged * .1));
-  // Shortbread deliberately has no height field. Generate a stable, stylized Z
-  // from the tile-addressed footprint hash; horizontal geometry remains map-derived.
-  const areaHint = Math.min(12, Math.sqrt(Math.max(footprintArea, .01)) * 2.2);
-  const realMetres = 5 + areaHint + hash % 18;
-  return Math.max(.55, Math.min(8, realMetres * .1));
+/**
+ * `MAP-08`: OpenMapTiles publishes `render_height`/`render_min_height`, while a
+ * Shortbread `buildings` feature carries only its marker. The adapter decides
+ * which case applies; the stylized fallback stays a deterministic function of the
+ * tile-addressed footprint hash, so horizontal geometry remains map-derived.
+ */
+export function buildingHeight(properties, footprintArea, hash, schema = GEO_MAP_SCHEMA.UNKNOWN) {
+  const building = describeMapBuilding(properties, schema, { footprintArea, hash });
+  return building.hasHeightField
+    ? Math.max(.45, Math.min(12, building.heightMetres * .1))
+    : Math.max(.55, Math.min(8, building.heightMetres * .1));
 }
 
 /**
@@ -547,7 +559,7 @@ export function appendCompoundCollider(
 }
 
 export function buildBuildingGeometry(vectorTile, request) {
-  const layer = vectorTile.layers.building ?? vectorTile.layers.buildings;
+  const layer = pickMapLayer(vectorTile.layers, GEO_MAP_ROLE.BUILDING)?.layer;
   const positions = [], normals = [], colors = [], indices = [], colliderValues = [];
   const detailPositions = [], detailNormals = [], detailColors = [], detailIndices = [];
   const supportSlotValues = [], supportSlotStates = [];
@@ -639,7 +651,7 @@ export function buildBuildingGeometry(vectorTile, request) {
       const detailHash = buildingDetailHash(worldRings, request.tileX, request.tileY);
       const wallColor = BUILDING_PALETTE[detailHash % BUILDING_PALETTE.length];
       const roofColor = wallColor.map(value => Math.min(1, value * 1.13));
-      const height = buildingHeight(feature.properties, footprintArea, detailHash);
+      const height = buildingHeight(feature.properties, footprintArea, detailHash, request.schema);
       // A hero replaces its mapped shell, so the exact vertex/index range is
       // recorded here and removed only if this polygon actually wins selection.
       const landmarkEligible = landmarkEnabled && landmarkEligibility(worldRings, height).eligible;

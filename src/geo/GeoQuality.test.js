@@ -97,7 +97,7 @@ function assertMountedSnapshotsEqual(first, second) {
 
 test('canonical geographic fixture matrix covers every required topology and provider schema', () => {
   assert.deepEqual(GEO_FIXTURE_MATRIX.map(item => item.category),
-    ['dense', 'sparse', 'concave', 'hole', 'bridge', 'coast', 'provider-schema']);
+    ['dense', 'sparse', 'concave', 'hole', 'bridge', 'coast', 'provider-schema', 'provider-semantics']);
   assert.equal(new Set(GEO_FIXTURE_MATRIX.map(item => item.id)).size, GEO_FIXTURE_MATRIX.length);
 
   const dense = compileGeoFixture('dense-urban');
@@ -159,7 +159,9 @@ test('every canonical fixture is byte-equivalent after deterministic recompilati
     assert.match(fingerprint, /^[0-9a-f]{8}$/);
     fingerprints.add(fingerprint);
   }
-  assert.equal(fingerprints.size, 8, 'each fixture/provider payload should retain a distinct fingerprint');
+  const compilations = GEO_FIXTURE_MATRIX.reduce((total, descriptor) => total + descriptor.variants.length, 0);
+  assert.equal(fingerprints.size, compilations,
+    'each fixture/provider payload should retain a distinct fingerprint, including provider provenance');
 });
 
 test('fixture tile eviction and remount reproduce bytes and release owned resources', () => {

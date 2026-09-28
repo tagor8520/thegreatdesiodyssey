@@ -83,12 +83,16 @@ async function loadMapProviders() {
       typeof provider?.url === 'string' &&
       (provider.url.startsWith('https://') || (provider.url.startsWith('/') && !provider.url.startsWith('//'))) &&
       provider.url.includes('{z}') && provider.url.includes('{x}') && provider.url.includes('{y}'))
-      // MAP-09 only persists a payload when the provider declares how it must be
-      // credited, so attribution travels with the operator configuration.
-      .map(provider => typeof provider.attribution === 'string' && provider.attribution.trim() &&
-        provider.attribution.length <= 160
-        ? Object.freeze({ ...provider, attribution: provider.attribution.trim() })
-        : Object.freeze({ id: provider.id, label: provider.label, url: provider.url }));
+      // `MAP-08` needs the serving provider's schema to normalize classes and
+      // levels, so a declared shortbread/openmaptiles spelling travels with the
+      // descriptor; `MAP-09` only persists a payload when the provider declares
+      // how it must be credited, so attribution travels with it too.
+      .map(provider => Object.freeze({
+        id: provider.id, label: provider.label, url: provider.url,
+        ...(typeof provider.schema === 'string' && provider.schema.trim() ? { schema: provider.schema.trim() } : {}),
+        ...(typeof provider.attribution === 'string' && provider.attribution.trim() && provider.attribution.length <= 160
+          ? { attribution: provider.attribution.trim() } : {}),
+      }));
     return providers?.length ? providers : undefined;
   } catch {
     return undefined;

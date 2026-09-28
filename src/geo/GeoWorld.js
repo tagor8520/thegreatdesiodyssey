@@ -8,6 +8,7 @@ import { LandmarkPools } from './GeoLandmarkPools.js';
 import { GEO_TILE_CACHE_LIMITS } from './GeoTileCache.js';
 import { LifecycleLedger } from '../engine/LifecycleContract.js';
 import { defineWorldDomain } from '../engine/DomainInterface.js';
+import { resolveMapSchema } from './GeoMapSemantics.js';
 import {
   AmbientLifePools,
   GDO_AMBIENT_LIFE_SOURCE_TYPES,
@@ -476,6 +477,9 @@ export class GeoWorld {
     this.lastFocusKey = null;
     this.totalBytes = 0;
     this.provider = 'Connecting…';
+    // `MAP-08`: the schema of the provider that actually served the resident
+    // tiles, so the debug surface can name the vocabulary being normalized.
+    this.providerSchema = resolveMapSchema(this.providers?.[0]?.schema ?? this.providers?.[0]?.id);
     this.timings = null;
     this.mountDiagnostics = { lastMilliseconds: 0, maximumMilliseconds: 0, phases: Object.create(null) };
     this.viewCamera = camera;
@@ -890,6 +894,7 @@ export class GeoWorld {
 
     const mountStarted = performance.now();
     this.provider = message.provider || this.provider;
+    this.providerSchema = resolveMapSchema(message.providerId ?? message.provider, this.providerSchema);
     this.timings = message.timings ?? this.timings;
     tile.timings = message.timings ?? tile.timings;
     if (!tile.bytes) {
@@ -1156,6 +1161,7 @@ export class GeoWorld {
     const landmarkDiagnostics = this.landmarkPools.diagnostics;
     return Object.freeze({
       provider: this.provider,
+      providerSchema: this.providerSchema,
       generatorVersion: GDO_GENERATOR_VERSION,
       terrainSeed: this.terrainSeed,
       terrainResolution: GEO_TERRAIN_DEFAULTS.gridResolution,
