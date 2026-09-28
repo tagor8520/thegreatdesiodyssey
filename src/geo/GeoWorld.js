@@ -24,6 +24,10 @@ import {
 import { createAmbientLifeScheduler } from '../engine/AmbientLifeScheduler.js';
 import { createCameraFade } from '../engine/CameraFade.js';
 import { GDO_WATER_VISUAL_CLASSES } from '../engine/WaterVisualClasses.js';
+import { GDO_LOW_PROFILE_BUDGETS } from '../engine/PerformanceBudget.js';
+import {
+  GDO_PROP_FAMILIES, GDO_PROP_FAMILY_IDS, propToneColor, queryPropTriggerStream,
+} from '../engine/PropGrammar.js';
 import {
   createWaterVisualMaterial, createWaterVisualPolicy, waterVisualAppearance,
 } from '../engine/WaterVisualClasses.js';
@@ -248,6 +252,29 @@ function coloredBox(size, position, color, rotationY = 0, rotationZ = 0) {
   return geometry;
 }
 
+/** `DET-10`: the prop families' geometry range inside the decoration table. */
+const PROP_TYPE_BASE = 13;
+
+function createPropGeometry(familyIndex) {
+  const family = GDO_PROP_FAMILIES[familyIndex];
+  const pieces = [];
+  const moduleBoxes = family.modules.map((module, index) => ({
+    index, role: module.role, size: module.size, offset: module.offset,
+    tone: module.tone, spin: module.spin ?? 0, tilt: module.tilt ?? 0,
+  }));
+  for (const module of moduleBoxes) {
+    const [width, height, depth] = module.size;
+    const [x, y, z] = module.offset;
+    // Every module keeps its own grammar tone, so a topping never reads as part
+    // of the structure it sits on.
+    pieces.push(coloredBox([width, height, depth], [x, y, z], propToneColor(module.tone), module.spin ?? 0, module.tilt ?? 0));
+  }
+  const merged = mergeGeometries(pieces, false);
+  for (const piece of pieces) piece.dispose();
+  merged.computeBoundingSphere();
+  return merged;
+}
+
 function createDecorationGeometry(type) {
   const pieces = [];
   if (type === 0) {
@@ -403,6 +430,9 @@ export const GDO_COORDINATE_WORLD_DOMAIN = defineWorldDomain({
   capabilities: {
     coordinates: true, terrainSupport: true, dynamicSweep: true,
     labels: true, streamed: true, verticalGrades: true,
+    // `DET-10`: the props the world places are the interaction target the
+    // `GME-05` registry's `interact` action is declared against.
+    interaction: true,
   },
 });
 
@@ -443,6 +473,15 @@ export class GeoWorld {
     this.profile = GEO_TILE_CACHE_PROFILES.includes(profile) ? profile : 'low';
     this.tileCacheDiagnostics = null;
     this.tileCacheServed = 0;
+    // `DET-10`: props are counted once per placement, and only authored proxies
+    // can ever appear in the collision stream.
+    this.tileProps = 0;
+    this.propPlacements = 0;
+    this.propSolidBoxes = 0;
+    this.propTriggerCeiling = GDO_LOW_PROFILE_BUDGETS.propTriggersPerTile;
+    // `DET-10`: the host registers the `interact` verb through the `GME-05`
+    // registry (GeoGame owns it) and records the outcome here.
+    this.propInteraction = null;
     this.tileCacheRetained = '';
     this.tiles = new Map();
     this.queue = [];
@@ -558,9 +597,15 @@ export class GeoWorld {
       appliedCount: assigned.size,
       skipped: Object.freeze(skipped),
     });
-    this.decorationGeometries = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-      .map(type => GEO_PLANT_TYPES.has(type) || GDO_AMBIENT_LIFE_SOURCE_TYPES[type]
-        ? null : createDecorationGeometry(type));
+    this.decorationGeometries = [
+      ...[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        .map(type => GEO_PLANT_TYPES.has(type) || GDO_AMBIENT_LIFE_SOURCE_TYPES[type]
+          ? null : createDecorationGeometry(type)),
+      // `DET-10`: one compiled geometry per prop family, drawn by the same pools.
+      ...GDO_PROP_FAMILIES.map((family, index) => createPropGeometry(index)),
+    ];
+    this.propTypes = Object.freeze(Object.fromEntries(
+      GDO_PROP_FAMILIES.map((family, index) => [PROP_TYPE_BASE + index, family.id])));
     this.lifecycle.own('material', 'ground', this.groundMaterial, item => item.dispose?.());
     for (const [name, material] of [['road', this.roadMaterial], ['land', this.landMaterial],
       ['building', this.buildingMaterial], ['water', this.waterMaterial], ['decoration', this.decorationMaterial]]) {
@@ -728,6 +773,8 @@ export class GeoWorld {
       clearanceDiagnostics: null, morphologyDiagnostics: null,
       roadSupportSegments: null, roadSupportStride: 0, roadSupportGrid: null,
       colliders: null, collisionGrid: null,
+      // `DET-10`: prop records, triggers, authored solids, and their diagnostics.
+      props: null, propTriggers: null, propSolids: null, propStride: 6, propDiagnostics: null,
       collisionVertices: null, collisionRingOffsets: null, collisionPolygonOffsets: null,
       collisionSpans: null, collisionMasks: null,
       supportSlots: null, supportSlotStates: null, supportSlotStride: 0,
@@ -853,7 +900,9 @@ export class GeoWorld {
       dummy.updateMatrix();
       mesh.setMatrixAt(cursor, dummy.matrix);
     }
-    const names = ['trees', 'palms', 'shrubs', 'street-lamps', 'rocks', 'flowers', 'benches', 'parked-cars', 'herbs', 'tall-grass', 'birds', 'bees', 'bamboo'];
+    const names = ['trees', 'palms', 'shrubs', 'street-lamps', 'rocks', 'flowers', 'benches', 'parked-cars', 'herbs', 'tall-grass', 'birds', 'bees', 'bamboo',
+      // `DET-10`: the prop families draw under their own family names.
+      ...GDO_PROP_FAMILY_IDS];
     for (let type = 0; type < meshes.length; type++) {
       const mesh = meshes[type];
       if (!mesh) continue;
@@ -1022,6 +1071,9 @@ export class GeoWorld {
       this.landmarkPools.removeOwner(tile.key);
       this.ambientLifePools.removeOwner(tile.key);
       tile.land = null; tile.water = null; tile.decorations.length = 0;
+      // `DET-10`: a released tile keeps no prop records, triggers, or solids.
+      tile.props = null; tile.propTriggers = null; tile.propSolids = null; tile.propDiagnostics = null;
+      if (tile.collisionHasPropSolids) tile.collisionHasPropSolids = false;
       tile.decorationCount = 0; tile.plantPoolCount = 0; tile.streetFurnitureCount = 0;
       tile.ambientLifeCount = 0;
       try {
@@ -1062,6 +1114,18 @@ export class GeoWorld {
           tile.key, bridgeValues, context.bridges?.stride || 11,
         );
       } catch (error) { warnings.push(`bridges: ${error.message || error}`); }
+      // `DET-10`: the placed props, the flat trigger stream gameplay reads, and
+      // the authored solid proxies that (and only those) may block the player.
+      tile.props = context.props instanceof Float32Array ? context.props : null;
+      tile.propTriggers = context.propTriggers instanceof Float32Array ? context.propTriggers : null;
+      tile.propSolids = context.propSolids instanceof Float32Array ? context.propSolids : null;
+      tile.propStride = context.propStride || 6;
+      tile.propDiagnostics = context.propDiagnostics ?? null;
+      if (tile.propDiagnostics?.placed) {
+        this.tileProps++;
+        this.propPlacements += tile.propDiagnostics.placed;
+      }
+      if (tile.propDiagnostics?.solidProxies) this.propSolidBoxes += tile.propDiagnostics.solidProxies;
       try {
         const decorationValues = context.decorations instanceof Float32Array ? context.decorations : new Float32Array();
         const clearanceValues = context.decorationClearances instanceof Float32Array ? context.decorationClearances : null;
@@ -1131,7 +1195,13 @@ export class GeoWorld {
       tile.supportSlots = message.geometry.supportSlots;
       tile.supportSlotStates = message.geometry.supportSlotStates;
       tile.supportSlotStride = message.geometry.supportSlotStride ?? 0;
-      tile.collisionGrid = buildCollisionGrid(tile.colliders);
+      // `DET-10`: a prop without an authored solid proxy contributes nothing here;
+      // a family that declares one contributes exactly its declared boxes.
+      const propSolids = tile.propSolids?.length
+        ? new Float32Array([...tile.colliders, ...tile.propSolids])
+        : tile.colliders;
+      tile.collisionGrid = buildCollisionGrid(propSolids);
+      tile.collisionHasPropSolids = Boolean(tile.propSolids?.length);
       try {
         // A hero is already compiled and hidden-face reduced, so the pool only
         // merges, mounts, and releases it. A malformed hero stream must never
@@ -1285,6 +1355,15 @@ export class GeoWorld {
       timings: this.timings,
       materialLibrary: this.materialLibrary.diagnostics,
       materialTextureBytes: this.materialLibrary.diagnostics.estimatedBytes,
+      // `DET-10`: the placed props, their triggers, and the authored proxies that
+      // are the only prop geometry allowed to reach the collision stream.
+      propFamilies: GDO_PROP_FAMILIES.length,
+      propPlacements: this.propPlacements,
+      propTiles: this.tileProps,
+      propTriggers: this.propTriggerCount(),
+      propTriggerCeiling: this.propTriggerCeiling,
+      propSolidBoxes: this.propSolidBoxes,
+      propInteraction: this.propInteraction,
       // `ENV-03`: the water path, its class table, and the per-frame counters.
       waterVisualPath: this.waterVisual?.appearance.path ?? null,
       waterVisualClasses: Object.keys(GDO_WATER_VISUAL_CLASSES).length,
@@ -1418,6 +1497,42 @@ export class GeoWorld {
   }
 
   /** `GME-06`: restore the journal from the local store, if there is one. */
+  /**
+   * `DET-10`: the nearest prop trigger within its own declared range, read from
+   * the resident tiles' flat streams. The test is a bounded distance check over
+   * preallocated records — no `Box3`, no per-frame rebuild, no allocation — so a
+   * bobbing or spinning prop keeps the same stable interaction range.
+   */
+  queryPropTrigger(x, y, z, { range = 0 } = {}) {
+    let best = null;
+    for (const tile of this.tiles.values()) {
+      const stream = tile.propTriggers;
+      if (!stream?.length) continue;
+      const hit = queryPropTriggerStream(stream, tile.propStride ?? 6, x, y, z);
+      if (!hit) continue;
+      if (range > 0 && hit.distance > range) continue;
+      if (best && hit.distance >= best.distance) continue;
+      best = { ...hit, tileKey: tile.key };
+    }
+    if (!best) return null;
+    const family = GDO_PROP_FAMILIES[best.action] ?? null;
+    return Object.freeze({
+      tileKey: best.tileKey,
+      family: family?.id ?? null,
+      order: best.prop,
+      distance: best.distance,
+      range: best.radius,
+      action: 'interact',
+    });
+  }
+
+  /** Resident prop triggers, so the debug surface can show the live count. */
+  propTriggerCount() {
+    let total = 0;
+    for (const tile of this.tiles.values()) total += (tile.propTriggers?.length ?? 0) / (tile.propStride ?? 6);
+    return total;
+  }
+
   loadDiscovery() {
     return this.discoveryStorage?.load(this.discoveryJournal, 0) ?? 0;
   }
@@ -1526,6 +1641,12 @@ export class GeoWorld {
       this._releaseTileGeometry(tile, slot);
     }
     tile.decorations.length = 0;
+    // `DET-10`: a prop's records, triggers, and authored solids leave with its tile.
+    tile.props = null;
+    tile.propTriggers = null;
+    tile.propSolids = null;
+    tile.propDiagnostics = null;
+    tile.collisionHasPropSolids = false;
     tile.waterDomain = null;
     tile.waterDomainMeta = null;
     tile.streetFurnitureMeta = null;

@@ -20,6 +20,13 @@ import {
 } from './GeoWaterDomains.js';
 import { waterVisualVertexAppearance } from '../engine/WaterVisualClasses.js';
 import {
+  GDO_PROP_FAMILIES,
+  GDO_PROP_LIMITS,
+  compileProp,
+  propModuleBoxes,
+} from '../engine/PropGrammar.js';
+import { GDO_LOW_PROFILE_BUDGETS } from '../engine/PerformanceBudget.js';
+import {
   GEO_DEFAULT_CROWN_ADAPTATION,
   GEO_PLANT_CLEARANCE_STRIDE,
   GEO_PLANT_TYPE_FAMILIES,
@@ -567,6 +574,76 @@ function addAmbientLife(request, decorations, centerEnvironment, seed) {
   }
 }
 
+/**
+ * `DET-10`: place food props beside mapped streets, in the land contexts their
+ * family declares. The pass is bounded twice over — a declared number of
+ * placement tests per tile and a declared number of triggers per tile — and it
+ * refuses a site that is inside a building, inside water, or too far from a road.
+ * Each placed prop contributes one visual record to the decoration stream and one
+ * trigger record to `props`, which is the *only* thing gameplay reads.
+ */
+function placeProps(vectorTile, request, { decorations, obstacles, waterDomain, clearanceContext, landKindAt }) {
+  const anchors = [];
+  const vectorLayer = pickMapLayer(vectorTile.layers, GEO_MAP_ROLE.TRANSPORT)?.layer;
+  if (!vectorLayer) return { placements: [], tests: 0, truncated: false, families: 0, solids: [] };
+  const seed = hashText(`gdo:propGrammar:v1:${request.tileX}:${request.tileY}`);
+  const tests = [];
+  for (let featureIndex = 0; featureIndex < vectorLayer.length; featureIndex++) {
+    const feature = vectorLayer.feature(featureIndex);
+    if (feature.type !== 2) continue;
+    const style = roadStyle(feature.properties, request.schema);
+    if (style.transport.physicalLevel !== 0) continue;
+    for (const line of feature.loadGeometry()) {
+      for (let index = 1; index < line.length; index++) {
+        if (tests.length >= GDO_LOW_PROFILE_BUDGETS.propPlacementTestsPerTile) break;
+        const [x1, z1] = pointToWorld(line[index - 1], feature.extent, request);
+        const [x2, z2] = pointToWorld(line[index], feature.extent, request);
+        const dx = x2 - x1, dz = z2 - z1, length = Math.hypot(dx, dz);
+        if (length < 2.4) continue;
+        const middle = (hashText(`${seed}:${featureIndex}:${index}`) % 1000) / 1000;
+        tests.push({ x: x1 + dx * middle, z: z1 + dz * middle, length, dx, dz, width: style.width });
+      }
+    }
+  }
+  const placements = [];
+  const solids = [];
+  let truncated = tests.length >= GDO_LOW_PROFILE_BUDGETS.propPlacementTestsPerTile;
+  for (const test of tests) {
+    if (placements.length >= GDO_LOW_PROFILE_BUDGETS.propTriggersPerTile) { truncated ||= true; }
+    const kind = landKindAt(test.x, test.z) ?? '';
+    // A family matches when the mapped land context names one of its contexts, or
+    // when it is a street vendor (`street`) that belongs beside any road.
+    const family = GDO_PROP_FAMILIES
+      .filter(candidate => candidate.placementKinds.some(context =>
+        context === 'street' ? true : kind.includes(context)))
+      .find(candidate => (candidate.weight + (hashText(`${seed}:${test.x}:${test.z}`) % 3)) > 3);
+    if (!family) continue;
+    const normalX = -test.dz / test.length, normalZ = test.dx / test.length;
+    const side = hashText(`${seed}:side:${test.x}`) % 2 ? 1 : -1;
+    const offset = (family.roadOffsetMetres + test.width * .5) * .1 * side;
+    const x = test.x + normalX * offset, z = test.z + normalZ * offset;
+    if (placements.length >= GDO_LOW_PROFILE_BUDGETS.propTriggersPerTile) continue;
+    if (queryWaterDomain(waterDomain, x, z, {}).waterDistance <= .35) continue;
+    if (obstacles.buildings.some(box => x > box[0] - .3 && x < box[2] + .3 && z > box[1] - .3 && z < box[3] + .3)) continue;
+    const scale = .92 + ((hashText(`${seed}:scale:${x}:${z}`) % 100) / 100) * .18;
+    const rotation = Math.atan2(test.dx, test.dz);
+    const prop = compileProp(family, { seed: hashText(`${seed}:${x}:${z}`), scale });
+    placements.push({
+      x, z, scale, rotation, family: family.id, prop,
+      solidProxy: prop.solidProxy,
+    });
+    // The decoration stream draws it: one visual record per prop, no new pool.
+    decorations.push(x, z, scale, 13 + GDO_PROP_FAMILIES.indexOf(family), rotation, 1);
+    if (prop.solidProxy) {
+      for (const box of prop.solidProxy) {
+        solids.push(x + box.offset[0] - box.size[0] / 2, z + box.offset[2] - box.size[2] / 2,
+          x + box.offset[0] + box.size[0] / 2, z + box.offset[2] + box.size[2] / 2);
+      }
+    }
+  }
+  return { placements, tests: tests.length, truncated, families: new Set(placements.map(entry => entry.family)).size, solids };
+}
+
 function addLegacyParkedCars(vectorTile, request, decorations, seed) {
   const vectorLayer = pickMapLayer(vectorTile.layers, GEO_MAP_ROLE.TRANSPORT)?.layer;
   if (!vectorLayer || decorations.length / 6 >= MAX_DECORATIONS) return;
@@ -792,6 +869,10 @@ export function buildContextData(vectorTile, request) {
   addAmbientLife(request, decorations, centerEnvironment, tileSeed);
   // DET-07 will replace this retained baseline with a versioned vehicle grammar.
   addLegacyParkedCars(vectorTile, request, decorations, tileSeed);
+  const props = placeProps(vectorTile, request, {
+    decorations, obstacles, waterDomain, clearanceContext,
+    landKindAt: (x, z) => mappedLandKindAt(x, z, polygonRecords),
+  });
   const streetFurniture = compileStreetFurniture(vectorTile, request, {
     buildings: obstacles.buildings,
     buildingsTruncated: obstacles.capEvents.buildings,
@@ -833,6 +914,18 @@ export function buildContextData(vectorTile, request) {
     buildings: obstacles.capEvents.buildings,
     waterDomain: Object.values(waterDomain.meta.capEvents).some(Boolean),
     bridges: Object.values(bridges.meta.capEvents).some(Boolean),
+    props: props.truncated,
+  };
+  const propDiagnostics = {
+    namespace: 'gdo:propGrammar:v1',
+    families: GDO_PROP_FAMILIES.length,
+    placed: props.placements.length,
+    familiesUsed: props.families,
+    placementTests: props.tests,
+    triggers: props.placements.length,
+    solidProxies: props.solids.length / 4,
+    truncated: props.truncated,
+    triggerCeiling: GDO_LOW_PROFILE_BUDGETS.propTriggersPerTile,
   };
   const diagnostics = finalizePlantClearanceDiagnostics(clearanceDiagnostics, capEvents);
   const finalizedMorphologyDiagnostics = finalizeMorphologyDiagnostics(morphologyDiagnostics, capEvents);
@@ -857,12 +950,25 @@ export function buildContextData(vectorTile, request) {
     waterDomain,
     streetFurniture,
     bridges,
+    // `DET-10`: `${x, z, y, familyIndex, order, rotation}` per placed prop, plus the
+    // flat trigger stream gameplay reads and the authored solid proxies.
+    props: new Float32Array(props.placements.flatMap((entry, index) => [
+      entry.x, entry.z, entry.prop.anchorHeightMetres / 2,
+      GDO_PROP_FAMILIES.findIndex(family => family.id === entry.family), index, entry.rotation,
+    ])),
+    propTriggers: new Float32Array(props.placements.flatMap((entry, index) => [
+      entry.x, entry.prop.trigger.centre[1], entry.z, entry.prop.trigger.radius,
+      GDO_PROP_FAMILIES.findIndex(family => family.id === entry.family), index,
+    ])),
+    propStride: 6,
+    propSolids: new Float32Array(props.solids),
     decorations: new Float32Array(decorations),
     decorationStride: 6,
     decorationClearances: new Float32Array(decorationClearances),
     decorationClearanceStride: GEO_PLANT_CLEARANCE_STRIDE,
     decorationMorphologies: new Uint8Array(decorationMorphologies),
     decorationMorphologyStride: GEO_MORPHOLOGY_STRIDE,
+    propDiagnostics,
     clearanceDiagnostics: diagnostics,
     morphologyDiagnostics: finalizedMorphologyDiagnostics,
     labels: collectLabels(vectorTile, request),

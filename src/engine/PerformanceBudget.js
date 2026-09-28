@@ -118,6 +118,13 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   waterVisualDitherSize: 8,
   waterVisualUniformWritesPerFrame: 1,
   waterVisualSteadyFrameAllocations: 0,
+  // `DET-10`: research §15.9 — 2–12 boxes for an ordinary near prop, 12–32 for one
+  // hero food/kiosk, one authored solid proxy family, and a bounded trigger set.
+  propFamilies: 8,
+  propOrdinaryModules: 12,
+  propHeroModules: 32,
+  propTriggersPerTile: 6,
+  propPlacementTestsPerTile: 192,
   // `COL-06`: the curated island's structural sweep answers the declared
   // `dynamicSweep` member with the same bounded candidate work the coordinate
   // sweep declares.
@@ -272,6 +279,9 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'waterVisualWaveScales', budget: 'waterVisualWaveScales', label: 'water wave scales' }),
   Object.freeze({ metric: 'waterVisualUniformWrites', budget: 'waterVisualUniformWritesPerFrame', label: 'water uniform writes/frame' }),
   Object.freeze({ metric: 'waterVisualSteadyFrameAllocations', budget: 'waterVisualSteadyFrameAllocations', label: 'water steady-frame allocations' }),
+  Object.freeze({ metric: 'propFamilies', budget: 'propFamilies', label: 'compiled prop families' }),
+  Object.freeze({ metric: 'propTriggers', budget: 'propTriggersPerTile', label: 'prop interaction triggers/tile' }),
+  Object.freeze({ metric: 'propPlacementTests', budget: 'propPlacementTestsPerTile', label: 'prop placement tests/tile' }),
   Object.freeze({ metric: 'curatedSweepCandidates', budget: 'curatedSweepCandidates', label: 'curated structural sweep candidates' }),
   Object.freeze({ metric: 'curatedSweepSteadyFrameAllocations', budget: 'curatedSweepSteadyFrameAllocations', label: 'curated sweep steady-frame allocations' }),
   Object.freeze({ metric: 'discoveryRecords', budget: 'discoveryRecords', label: 'discovery journal records' }),

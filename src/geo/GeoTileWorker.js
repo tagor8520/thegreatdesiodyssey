@@ -69,6 +69,9 @@ function geometryTransfers(geometry, includeColliders = false) {
   for (const key of ['shallow', 'deep', 'manner', 'flow', 'classCode']) {
     if (geometry[key] instanceof Float32Array) transfers.push(geometry[key].buffer);
   }
+  for (const key of ['propTriggers', 'propSolids']) {
+    if (geometry[key] instanceof Float32Array) transfers.push(geometry[key].buffer);
+  }
   if (geometry.detailPositions instanceof Float32Array) transfers.push(
     geometry.detailPositions.buffer,
     geometry.detailNormals.buffer,
@@ -156,6 +159,10 @@ async function buildTile(request) {
       context.streetFurniture.placements.buffer,
       context.bridges.placements.buffer,
       context.decorations.buffer,
+      // `DET-10`: prop records, triggers, and authored solid proxies.
+      context.props.buffer,
+      context.propTriggers.buffer,
+      context.propSolids.buffer,
       context.decorationClearances.buffer,
       context.decorationMorphologies.buffer,
       context.environment.fields.buffer,

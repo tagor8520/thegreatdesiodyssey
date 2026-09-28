@@ -6,8 +6,9 @@ import {
   GDO_PALETTE,
 } from '../engine/ProceduralEngine.js';
 import { createTimeOfDayState, luminance, nightReadability } from '../engine/TimeOfDaySky.js';
-import { GeoWorld } from './GeoWorld.js';
+import { GeoWorld, GDO_COORDINATE_WORLD_DOMAIN } from './GeoWorld.js';
 import { GeoPlayer, probeAuditedCameraClearance } from './GeoPlayer.js';
+import { registerPropInteraction } from '../engine/PropGrammar.js';
 import { FlexibleJoystick, shouldUseTouchControls } from './GeoControls.js';
 import { validateCoordinate } from './GeoMath.js';
 import { LifecycleLedger } from '../engine/LifecycleContract.js';
@@ -32,7 +33,13 @@ function formatBytes(bytes) {
 // `GME-03`/`GME-05`: the on-screen pad and the keyboard filter are generated from
 // one registry built on the coordinate player domain's declared capabilities.
 const coordinateActions = createActionRegistry({
-  capabilities: actionCapabilitiesForDomain(GDO_COORDINATE_PLAYER_DOMAIN),
+  capabilities: {
+    ...actionCapabilitiesForDomain(GDO_COORDINATE_PLAYER_DOMAIN),
+    // `DET-10`: the world declares that it mounts interaction targets, so the
+    // prop `interact` verb reaches the pad, the key filter, and the help line
+    // exactly like every other registered action.
+    interaction: GDO_COORDINATE_WORLD_DOMAIN.capabilities.interaction === true,
+  },
 });
 
 function uiMarkup() {
@@ -261,6 +268,9 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   // `GME-04`: labels are occlusion-tested through the shared `LOS_BLOCKER` sweep
   // at a bounded rate, so a name behind a building is hidden instead of drawn on
   // top of it, and the DOM/HUD read the same verdicts the tests assert.
+  // `DET-10`: the prop `interact` verb joins the one registry, so the pad, the
+  // keyboard filter, and the help sentence pick it up together.
+  world.propInteraction = registerPropInteraction(coordinateActions);
   const labelLos = createLabelLosTester({ world, profile: world.profile });
   const losAnchor = new THREE.Vector3();
   world.labelLosDiagnostics = labelLos.diagnostics();
@@ -618,6 +628,16 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
         },
         // `GME-05`: which actions the live registry exposes and how they are bound.
         actions: coordinateActions.diagnostics(),
+        // `DET-10`: the placed props, their triggers, and the registered verb.
+        props: {
+          families: world.stats.propFamilies,
+          placements: world.stats.propPlacements,
+          tiles: world.stats.propTiles,
+          triggers: world.stats.propTriggers,
+          triggerCeiling: world.stats.propTriggerCeiling,
+          solidBoxes: world.stats.propSolidBoxes,
+          interaction: world.propInteraction,
+        },
         dispatched: player.actionDiagnostics().recent,
         support: createSupportQuery(world, world.domain).support(player.position.x, player.position.z),
         movementAudit: movementAudit.summary(),
