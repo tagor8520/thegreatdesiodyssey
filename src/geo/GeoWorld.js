@@ -2572,6 +2572,7 @@ export class GeoWorld {
     camera = this.viewCamera,
     renderer = null,
     cameraMode = 'first-person',
+    player = null,
     clearance = 0,
     pathId = null,
     index = -1,
@@ -2594,6 +2595,18 @@ export class GeoWorld {
       pathId, index, phase,
       camera: { mode: cameraMode, position: { x: position.x, y: position.y, z: position.z }, clearance },
       bands,
+      // `QLT-06` water/wetland: the audit needs the movement state the world was
+      // walked in, and it is read from the calling player so the report never
+      // races a second player instance.
+      water: typeof player?.waterDiagnostics === 'function'
+        ? (() => {
+          const water = player.waterDiagnostics();
+          return {
+            state: water.state, submerged: water.submerged, source: water.source,
+            submersion: water.submersion,
+          };
+        })()
+        : null,
       lod: this.plantLodByFamily(),
       subpixel: this.surfaceDetailSamples({ camera, renderer }),
       residentTiles: [...this.tiles.keys()].sort(),

@@ -14,6 +14,8 @@
  * `node --test`.
  */
 
+import { GDO_WATER_STATE_ORDER } from './WaterContact.js';
+
 export const MOVEMENT_AUDIT_NAMESPACE = 'gdo:movementAudit:v1';
 
 /**
@@ -28,6 +30,35 @@ export const MOVEMENT_AUDIT_PATHS = Object.freeze([
   { id: 'tpp-focus-orbit', cameraMode: 'third-person', steps: 48, forward: .5, yawTurns: 2 },
   { id: 'tpp-boundary-cross', cameraMode: 'third-person', steps: 48, forward: 1, yawTurns: .25 },
 ]);
+
+/**
+ * `QLT-06` water/wetland extension: the same fixed-step script walked into, along,
+ * and out of mapped water. The sequence matters — a run enters shallow water,
+ * pushes into the deep, returns to the bank, then strafes the shoreline — so the
+ * `water` verdict can prove the state machine moves one step at a time instead of
+ * teleporting between dry ground and submersion.
+ */
+export const MOVEMENT_AUDIT_WATER_PATHS = Object.freeze([
+  // Each water path is its own walk from a declared start, so the shoreline
+  // sequence does not depend on how far the previous path happened to travel.
+  { id: 'water-wade-in', cameraMode: 'first-person', steps: 96, forward: 1, facing: 'water', start: 'bank' },
+  { id: 'water-swim-out', cameraMode: 'first-person', steps: 120, forward: 1, facing: 'water', start: 'bank' },
+  { id: 'water-shore-return', cameraMode: 'first-person', steps: 120, forward: 1, turn: .5, facing: 'water', start: 'water' },
+  { id: 'water-shoreline-strafe', cameraMode: 'third-person', steps: 96, forward: .2, strafe: 1, turn: .25, facing: 'water', start: 'bank' },
+]);
+
+/**
+ * Water-path requirements: no illegal sample, at least one shoreline crossing per
+ * water fixture, and — across the water fixtures — every state the row names,
+ * because one shore may drop straight into deep water while another wades first.
+ */
+export const MOVEMENT_AUDIT_WATER_THRESHOLDS = Object.freeze({
+  illegalTransitions: 0,
+  shorelineCrossingsPerFixture: 1,
+  requiredStates: Object.freeze([
+    GDO_WATER_STATE_ORDER[0], GDO_WATER_STATE_ORDER[1], GDO_WATER_STATE_ORDER[2],
+  ]),
+});
 
 export const MOVEMENT_AUDIT_THRESHOLDS = Object.freeze({
   /** A camera that ends up inside a blocker reports negative clearance. */
@@ -59,6 +90,14 @@ function input(path, index) {
     strafe: path.strafe ?? 0,
     yawTurns: (path.yawTurns ?? 0) * phase,
     zoomTurns: (path.zoomTurns ?? 0) * phase,
+    // `QLT-06` water paths: `facing: 'water'` asks the runtime to aim the yaw at
+    // the mapped water it found for this fixture (offset by `turn`, a constant
+    // bearing change rather than the swept `yawTurns`), and `start` says which
+    // side of the shoreline that walk begins on. The audit itself never looks for
+    // or places water; it only runs the walks.
+    facing: path.facing ?? null,
+    turn: path.turn ?? 0,
+    start: path.start ?? null,
     run: false,
   };
 }
@@ -268,6 +307,103 @@ function evaluateResidency(samples, thresholds) {
 }
 
 /**
+ * The `water` verdict. It is deliberately tolerant of a fixture with no water —
+ * the six canonical biomes keep their seven verdicts — but the moment a sample
+ * reports a water state the run is held to the state machine: a legal one-step
+ * transition each sample, submersion only while swimming, and every required
+ * state actually reached.
+ */
+function evaluateWater(samples, thresholds, waterPaths) {
+  const wet = samples.filter(sample => sample?.water && typeof sample.water.state === 'string');
+  if (!wet.length) {
+    return {
+      id: 'water', ok: true, skipped: true, waterPaths: Boolean(waterPaths),
+      states: Object.freeze([]), coverage: Object.freeze({}), overWater: 0, crossings: 0,
+      detail: 'no water samples on this fixture',
+    };
+  }
+  const violations = [];
+  const coverage = Object.fromEntries(GDO_WATER_STATE_ORDER.map(state => [state, 0]));
+  const transitions = Object.create(null);
+  let overWater = 0;
+  let crossings = 0;
+  let enters = 0;
+  let leaves = 0;
+  let previous = null;
+  for (const sample of wet) {
+    const water = sample.water;
+    const state = water.state;
+    if (water.source && water.source !== 'none') overWater++;
+    if (!coverage[state]) coverage[state] = 0;
+    if (!(state in coverage)) {
+      violations.push({ pathId: sample.pathId, index: sample.index, reason: `unknown water state ${state}` });
+      continue;
+    }
+    coverage[state]++;
+    const submersion = Number(water.submersion ?? 0);
+    // The state machine's own semantics, checked against the submersion it
+    // reports: dry ground is never under water, and anything wet is.
+    if (state === 'dry' && !(submersion === 0)) {
+      violations.push({ pathId: sample.pathId, index: sample.index, reason: `dry with submersion ${submersion}` });
+    }
+    if (state !== 'dry' && !(submersion > 0)) {
+      violations.push({ pathId: sample.pathId, index: sample.index, reason: `${state} without submersion` });
+    }
+    if (!(submersion >= 0 && submersion <= 1)) {
+      violations.push({ pathId: sample.pathId, index: sample.index, reason: `submersion ${submersion} out of range` });
+    }
+    // Submersion is the deepest state; it can never be reported for dry feet.
+    if (water.submerged === true && state === 'dry') {
+      violations.push({ pathId: sample.pathId, index: sample.index, reason: 'dry and submerged' });
+    }
+    if (previous && previous.pathId === sample.pathId) {
+      if (previous.state !== state) {
+        const key = `${previous.state}->${state}`;
+        transitions[key] = (transitions[key] ?? 0) + 1;
+        if (previous.wet !== (state !== 'dry')) {
+          crossings++;
+          if (state !== 'dry') enters++; else leaves++;
+        }
+      }
+    }
+    previous = { pathId: sample.pathId, state, wet: state !== 'dry' };
+  }
+  // A declared water run must really meet water and really cross a shoreline;
+  // the state coverage is required across the water fixtures, not per fixture,
+  // because a mapped ocean shore may drop straight into deep water while a
+  // wetland basin wades first.
+  if (waterPaths) {
+    if (overWater === 0) violations.push({ reason: 'no sample stood over mapped water' });
+    if (coverage.dry === 0) violations.push({ reason: 'the water paths never touched dry ground' });
+    if (coverage.wading + coverage.swimming + coverage.submerged === 0) {
+      violations.push({ reason: 'the water paths never got wet' });
+    }
+    if (crossings === 0) violations.push({ reason: 'the water paths never crossed a shoreline' });
+  }
+  const reached = GDO_WATER_STATE_ORDER.filter(state => coverage[state] > 0);
+  return {
+    id: 'water',
+    ok: violations.length === 0,
+    skipped: false,
+    waterPaths: Boolean(waterPaths),
+    samples: wet.length,
+    overWater,
+    crossings,
+    enters,
+    leaves,
+    transitions: Object.freeze({ ...transitions }),
+    states: Object.freeze(reached),
+    coverage: Object.freeze(coverage),
+    declared: Boolean(waterPaths),
+    detail: violations.length
+      ? `${violations.length} water violation(s): ${violations.slice(0, 3).map(item => item.reason).join('; ')}`
+      : `${overWater} of ${wet.length} samples stood over mapped water, ${crossings} shoreline crossing(s), states ${reached.join(' → ')}`,
+    violations: violations.slice(0, 8),
+    illegalTransitions: violations.length,
+  };
+}
+
+/**
  * Runs the fixed script twice and proves the runtime is deterministic, then
  * evaluates every movement verdict against the first pass.
  */
@@ -280,6 +416,7 @@ export function runMovementAudit({
   repeat = 2,
   reset = null,
   label = 'coordinate-movement',
+  waterPaths = false,
 } = {}) {
   if (typeof step !== 'function' || typeof probe !== 'function') {
     throw new Error('runMovementAudit needs step(input) and probe() functions');
@@ -304,12 +441,14 @@ export function runMovementAudit({
     evaluateShimmer(samples, thresholds),
     evaluateStability(samples, thresholds),
     evaluateResidency(samples, thresholds),
+    evaluateWater(samples, MOVEMENT_AUDIT_WATER_THRESHOLDS, waterPaths),
   ];
   const report = {
     namespace: MOVEMENT_AUDIT_NAMESPACE,
     label,
     dt,
     paths: paths.map(path => path.id),
+    waterPaths: Boolean(waterPaths),
     samples: samples.length,
     fingerprint: fingerprint(samples),
     ok: verdicts.every(verdict => verdict.ok),

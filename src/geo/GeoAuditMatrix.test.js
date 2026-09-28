@@ -3,13 +3,18 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import {
   GDO_AUDIT_MATRIX_FIXTURES,
+  GDO_AUDIT_MATRIX_WATER_FIXTURES,
   runMovementAuditMatrix,
+  runMovementAuditWaterMatrix,
 } from '../engine/MovementAuditMatrix.js';
-import { MOVEMENT_AUDIT_NAMESPACE } from '../engine/MovementAudit.js';
+import { MOVEMENT_AUDIT_NAMESPACE, MOVEMENT_AUDIT_WATER_PATHS } from '../engine/MovementAudit.js';
 import { LifecycleLedger } from '../engine/LifecycleContract.js';
 import { GDO_LOW_PROFILE_BUDGETS } from '../engine/PerformanceBudget.js';
 import { GeoWorld } from './GeoWorld.js';
-import { GeoPlayer, cameraNearPlaneSweepRadius, probeAuditedCameraClearance } from './GeoPlayer.js';
+import {
+  GEO_WATER_BODY_HEIGHT, GEO_WATER_GRAVITY, GeoPlayer,
+  cameraNearPlaneSweepRadius, probeAuditedCameraClearance,
+} from './GeoPlayer.js';
 import { compileGeoFixture } from './GeoFixtures.js';
 
 /**
@@ -82,17 +87,60 @@ function createFixtureRun(fixtureId, ledger) {
   const roadVertex = Math.floor(roadPositions.length / 6) * 3;
   const spawn = { x: roadPositions[roadVertex], z: roadPositions[roadVertex + 2] };
   let clock = 0;
+  // `QLT-06` water/wetland: the water script starts at real mapped water. The
+  // sweep is fixed — nearest ring first, ascending bearings, wet state only — so
+  // the entry point and the heading are properties of the fixture, not of the
+  // frame the probe ran on. The script is then "walk in from the edge to the
+  // deep and back along the bank", which is exactly what the state machine is
+  // being audited for.
+  const waterEntry = () => {
+    // The probe stands the body on the real support surface, exactly like the
+    // player: a mapped pond's state depends on where the feet are, not on sea level.
+    const contactAt = (x, z) => {
+      const feetY = world.supportAt?.(x, z)?.y ?? 0;
+      return world.waterContact?.(x, z, {
+        feetY, bodyHeight: GEO_WATER_BODY_HEIGHT, gravity: GEO_WATER_GRAVITY, profile: 'low',
+      });
+    };
+    for (let distance = 2; distance <= 60; distance += 2) {
+      for (let stepIndex = 0; stepIndex < 48; stepIndex++) {
+        const angle = (stepIndex / 48) * Math.PI * 2;
+        const x = spawn.x + Math.sin(angle) * distance;
+        const z = spawn.z + Math.cos(angle) * distance;
+        const contact = contactAt(x, z);
+        if (contact && contact.state && contact.state !== 'dry') {
+          // The sweep is ring-first, so every nearer ring was dry: the script
+          // starts on the bank, a short walk short of the water it found.
+          const bank = Math.max(0, distance - 4);
+          const at = value => ({
+            x: spawn.x + Math.sin(angle) * value,
+            z: spawn.z + Math.cos(angle) * value,
+          });
+          return {
+            angle, distance, state: contact.state,
+            ...at(bank), shoreDistance: bank, water: at(distance),
+          };
+        }
+      }
+    }
+    return null;
+  };
+  let heading = null;
+  let entryState = null;
   const clearInput = () => {
     player.analogMove.x = 0;
     player.analogMove.z = 0;
     player.jumpQueued = false;
     player.setMoveInput(0, 0);
   };
-  const reset = () => {
+  const reset = ({ paths } = {}) => {
     clock = 0;
+    const entry = paths?.some(path => path.facing === 'water') ? waterEntry() : null;
+    heading = entry ? { angle: entry.angle, distance: entry.distance, state: entry.state } : null;
+    entryState = entry ? { ...entry } : null;
     player.disposed = false;
     player.setCameraMode('first-person', true);
-    player.setPosition(spawn.x, spawn.z);
+    player.setPosition(entry ? entry.x : spawn.x, entry ? entry.z : spawn.z);
     player.yaw = 0;
     player.thirdPersonPitch = .32;
     player.distance = 2.6;
@@ -103,7 +151,16 @@ function createFixtureRun(fixtureId, ledger) {
   };
   const step = (input, { dt = 1 / 30 } = {}) => {
     if (player.cameraMode !== input.cameraMode) player.setCameraMode(input.cameraMode, true);
-    player.yaw = (input.yawTurns ?? 0) * Math.PI * 2;
+    // A water walk is placed at its own declared start, so every path in the set
+    // is an independent shoreline walk rather than a continuation of the last.
+    if (input.facing === 'water' && input.index === 0 && entryState) {
+      const point = input.start === 'water' ? entryState.water : entryState;
+      player.setPosition(point.x, point.z);
+      player.yaw = heading.angle + (input.turn ?? 0) * Math.PI * 2;
+      player.enabled = true;
+      player.update(0);
+    }
+    player.yaw = (heading?.angle ?? 0) + (input.yawTurns ?? 0) * Math.PI * 2 + (input.turn ?? 0) * Math.PI * 2;
     if (input.zoomTurns != null) player.distance = 2.6 + input.zoomTurns * 3.4;
     clearInput();
     player.analogMove.x = input.strafe ?? 0;
@@ -118,7 +175,7 @@ function createFixtureRun(fixtureId, ledger) {
       world, player.cameraTarget, camera, player.cameraMode === 'first-person',
     );
     return world.movementSnapshot({
-      camera, renderer: null, cameraMode: player.cameraMode,
+      camera, renderer: null, cameraMode: player.cameraMode, player,
       clearance: clearance.clearance,
       pathId: info?.pathId ?? null, index: info?.index ?? -1, phase: info?.phase ?? 0,
     });
@@ -140,6 +197,8 @@ function createFixtureRun(fixtureId, ledger) {
   return {
     step, probe, reset, measure,
     spawn, player, camera, world,
+    get waterHeading() { return heading; },
+    get waterEntry() { return entryState; },
     dispose: () => { player.dispose?.(); world.dispose(); },
   };
 }
@@ -275,6 +334,78 @@ test('QLT-06 the fixture matrix replays identically and localizes a broken biome
     assert.equal(unmeasured.ok, false);
     assert.deepEqual(unmeasured.failed, ['arid']);
     assert.match(unmeasured.detail, /arid\(budgets\)/);
+  } finally {
+    for (const run of runs) run.dispose();
+    ledger.disposeAll();
+    assert.deepEqual(ledger.leaks(), []);
+  }
+});
+
+test('QLT-06 the water path set walks the canonical water fixtures through the state machine', () => {
+  const ledger = new LifecycleLedger({ label: 'audit-matrix-water' });
+  const runs = [];
+  const create = (fixture, index, tag) => {
+    const run = createFixtureRun(fixture.fixtureId, ledger.child(`${tag}:${fixture.id}:${index}`));
+    runs.push(run);
+    return run;
+  };
+  try {
+    const report = runMovementAuditWaterMatrix({
+      repeat: 1,
+      createRun: (fixture, index) => create(fixture, index, 'water'),
+    });
+    assert.deepEqual(report.paths, MOVEMENT_AUDIT_WATER_PATHS.map(path => path.id));
+    assert.equal(report.ok, true, report.detail);
+    assert.deepEqual(report.failed, []);
+    assert.deepEqual(report.missingStates, [], 'the water set covers every state the row names');
+    assert.deepEqual(report.states.slice().sort(), ['dry', 'swimming', 'wading']);
+    assert.deepEqual(report.undeclared, [], 'both water fixtures really hold mapped water');
+    assert.deepEqual(report.uncrossed, [], 'both water fixtures crossed a shoreline');
+    assert.deepEqual(report.fixtures.map(entry => entry.id), ['coast-water', 'wetland-water']);
+    assert.deepEqual(report.fixtures.map(entry => entry.fixtureId), ['mapped-coast', 'wetland-basin']);
+
+    for (const entry of report.fixtures) {
+      assert.equal(entry.ok, true, `${entry.id} failed ${entry.failed.join(',')}`);
+      assert.equal(entry.waterDeclared, true, `${entry.id} reported no water samples`);
+      assert.equal(entry.illegalTransitions, 0, `${entry.id} reported an illegal water sample`);
+      assert.ok(entry.waterOverWater > 0, `${entry.id} stood over mapped water`);
+      // The shoreline transition pair: each fixture both enters and leaves water,
+      // and both are counted on the state changes rather than on a position.
+      assert.ok(entry.waterEnters > 0, `${entry.id} never entered water`);
+      assert.ok(entry.waterLeaves > 0, `${entry.id} never left water`);
+      assert.ok(entry.waterCrossings >= 2, `${entry.id} crossed a shoreline ${entry.waterCrossings} time(s)`);
+      // States are required of the set, not of one fixture: an ocean shore drops
+      // straight to deep water, a wetland basin wades first.
+      assert.ok(entry.waterStates.length >= 2, `${entry.id} touched ${entry.waterStates.join(',')}`);
+      assert.ok(entry.waterStates.includes('dry'), `${entry.id} touched ${entry.waterStates.join(',')}`);
+      assert.ok(entry.waterStates.some(state => state !== 'dry'), `${entry.id} touched ${entry.waterStates.join(',')}`);
+      const water = entry.verdicts.find(verdict => verdict.id === 'water');
+      assert.equal(water.ok, true, `${entry.id} water: ${water.detail}`);
+      assert.match(water.detail, /shoreline crossing/);
+      // Every other movement verdict is unchanged by the extension.
+      for (const verdict of entry.verdicts) {
+        if (verdict.id === 'water') continue;
+        assert.equal(verdict.ok, true, `${entry.id} ${verdict.id}: ${verdict.detail}`);
+      }
+    }
+
+    // The set is exactly the row's claim: wade, and swim, and the shore in between.
+    const coast = report.fixtures[0], wetland = report.fixtures[1];
+    assert.deepEqual(coast.waterStates.slice().sort(), ['dry', 'swimming']);
+    assert.deepEqual(wetland.waterStates.slice().sort(), ['dry', 'wading']);
+    assert.ok(coast.waterOverWater >= 100, `coast spent ${coast.waterOverWater} samples over water`);
+    assert.ok(wetland.waterOverWater >= 100, `wetland spent ${wetland.waterOverWater} samples over water`);
+
+    // Replaying the water script is byte-identical, like the general matrix.
+    const replay = runMovementAuditWaterMatrix({
+      repeat: 1,
+      createRun: (fixture, index) => create(fixture, index, 'water-replay'),
+    });
+    assert.equal(replay.fingerprint, report.fingerprint);
+    assert.deepEqual(replay.fixtures.map(entry => entry.fingerprint),
+      report.fixtures.map(entry => entry.fingerprint));
+    assert.deepEqual(replay.fixtures.map(entry => entry.waterStates),
+      report.fixtures.map(entry => entry.waterStates));
   } finally {
     for (const run of runs) run.dispose();
     ledger.disposeAll();

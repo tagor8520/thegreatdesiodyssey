@@ -16,7 +16,10 @@
  */
 
 import { featureNamespace } from './FeatureVersions.js';
-import { MOVEMENT_AUDIT_NAMESPACE, runMovementAudit } from './MovementAudit.js';
+import {
+  MOVEMENT_AUDIT_NAMESPACE, MOVEMENT_AUDIT_WATER_PATHS, MOVEMENT_AUDIT_WATER_THRESHOLDS,
+  runMovementAudit,
+} from './MovementAudit.js';
 
 export const MOVEMENT_AUDIT_MATRIX_NAMESPACE = featureNamespace('auditMatrix');
 
@@ -28,6 +31,15 @@ export const GDO_AUDIT_MATRIX_FIXTURES = Object.freeze([
   Object.freeze({ id: 'wetland', fixtureId: 'wetland-basin', label: 'Wetland basin' }),
   Object.freeze({ id: 'mountain', fixtureId: 'mountain-terrace', label: 'Mountain terrace' }),
   Object.freeze({ id: 'arid', fixtureId: 'arid-basin', label: 'Arid basin' }),
+]);
+
+/**
+ * `QLT-06` water/wetland extension: the two canonical fixtures that actually hold
+ * mapped water, audited with the water path set instead of the general one.
+ */
+export const GDO_AUDIT_MATRIX_WATER_FIXTURES = Object.freeze([
+  Object.freeze({ id: 'coast-water', fixtureId: 'mapped-coast', label: 'Mapped coast water paths' }),
+  Object.freeze({ id: 'wetland-water', fixtureId: 'wetland-basin', label: 'Wetland basin water paths' }),
 ]);
 
 /** Every fixture reports these measured numbers, or the matrix fails its budget. */
@@ -77,6 +89,8 @@ export function runMovementAuditMatrix({
   dt = 1 / 30,
   repeat = 2,
   onFixture = null,
+  summarize = null,
+  waterPaths = false,
 } = {}) {
   if (typeof createRun !== 'function') throw new TypeError('runMovementAuditMatrix needs createRun(fixture, index)');
   if (!Array.isArray(fixtures) || fixtures.length === 0) throw new RangeError('The audit matrix needs at least one fixture');
@@ -91,16 +105,20 @@ export function runMovementAuditMatrix({
     }
     const report = runMovementAudit({
       step: run.step, probe: run.probe, reset: run.reset ?? null,
-      paths, thresholds, dt, repeat, label: `${MOVEMENT_AUDIT_NAMESPACE}/${fixture.id}`,
+      paths, thresholds, dt, repeat, waterPaths, label: `${MOVEMENT_AUDIT_NAMESPACE}/${fixture.id}`,
     });
     const budgets = typeof run.measure === 'function' ? run.measure() : null;
     const budget = evaluateBudgets(budgets, budgetKeys);
     const failed = [...report.verdicts.filter(verdict => !verdict.ok).map(verdict => verdict.id),
       ...(budget.ok ? [] : ['budgets'])];
+    // A caller may fold its own measured summary (the water verdict's state
+    // coverage, for example) into the entry without the matrix knowing about it.
+    const extra = typeof summarize === 'function' ? summarize(report, fixture, budgets) : null;
     const entry = Object.freeze({
       id: fixture.id,
       fixtureId: fixture.fixtureId,
       label: fixture.label ?? fixture.id,
+      ...(extra && typeof extra === 'object' ? extra : null),
       ok: report.ok && budget.ok,
       failed: Object.freeze(failed),
       fingerprint: report.fingerprint,
@@ -116,7 +134,8 @@ export function runMovementAuditMatrix({
     onFixture?.(entry, fixture, index);
   }
   const fingerprint = hash(entries.map(entry =>
-    `${entry.id}:${entry.fingerprint}:${entry.ok ? 1 : 0}:${entry.failed.join('+')}`).join('|'));
+    `${entry.id}:${entry.fingerprint}:${entry.ok ? 1 : 0}:${entry.failed.join('+')}` +
+    `${entry.waterStates ? `:${entry.waterStates.join('+')}` : ''}`).join('|'));
   const report = {
     namespace: MOVEMENT_AUDIT_MATRIX_NAMESPACE,
     auditNamespace: MOVEMENT_AUDIT_NAMESPACE,
@@ -133,6 +152,85 @@ export function runMovementAuditMatrix({
     ? `${entries.length} fixtures passed the movement audit and reported ${budgetKeys.length} budgets each (${fingerprint})`
     : `failed: ${failures.map(id => `${id}(${entries.find(entry => entry.id === id).failed.join('+')})`).join(', ')}`;
   return report;
+}
+
+/**
+ * `QLT-06` water/wetland extension: run the same matrix over the two water
+ * fixtures with the water path set, and report each fixture's reached water
+ * states so a regression is localized to the coast or the wetland rather than to
+ * "the water audit".
+ */
+export function runMovementAuditWaterMatrix({
+  createRun,
+  fixtures = GDO_AUDIT_MATRIX_WATER_FIXTURES,
+  budgetKeys = GDO_AUDIT_MATRIX_BUDGET_KEYS,
+  thresholds = MOVEMENT_AUDIT_WATER_THRESHOLDS,
+  ...options
+} = {}) {
+  const report = runMovementAuditMatrix({
+    createRun, fixtures, budgetKeys, paths: MOVEMENT_AUDIT_WATER_PATHS, waterPaths: true,
+    summarize: (fixtureReport) => {
+      const water = fixtureReport.verdicts.find(verdict => verdict.id === 'water') ?? null;
+      return {
+        waterStates: Object.freeze([...(water?.states ?? [])]),
+        waterSamples: water?.samples ?? 0,
+        waterOverWater: water?.overWater ?? 0,
+        waterCrossings: water?.crossings ?? 0,
+        waterEnters: water?.enters ?? 0,
+        waterLeaves: water?.leaves ?? 0,
+        waterTransitions: water?.transitions ?? Object.freeze({}),
+        waterDeclared: Boolean(water?.declared),
+        illegalTransitions: water?.illegalTransitions ?? 0,
+      };
+    },
+    ...options,
+  });
+  // The row asks for swim, wade, and the shoreline transitions around them. A
+  // single fixture need not touch every state — an ocean shore drops straight to
+  // deep water — so the coverage is required of the water set as a whole.
+  const reached = new Set();
+  for (const entry of report.fixtures) for (const state of entry.waterStates) reached.add(state);
+  const missingStates = thresholds.requiredStates.filter(state => !reached.has(state));
+  const undeclared = report.fixtures
+    .filter(entry => !entry.waterDeclared || entry.waterOverWater === 0).map(entry => entry.id);
+  const uncrossed = report.fixtures
+    .filter(entry => (entry.waterCrossings ?? 0) < thresholds.shorelineCrossingsPerFixture).map(entry => entry.id);
+  const noEnter = report.fixtures.filter(entry => !(entry.waterEnters > 0)).map(entry => entry.id);
+  const noLeave = report.fixtures.filter(entry => !(entry.waterLeaves > 0)).map(entry => entry.id);
+  // Entering and leaving are the shoreline transition pair; they must both be
+  // exercised somewhere in the set, not necessarily on the same fixture.
+  const enteredAny = report.fixtures.some(entry => entry.waterEnters > 0);
+  const leftAny = report.fixtures.some(entry => entry.waterLeaves > 0);
+  const failures = [...new Set([
+    ...report.failed, ...undeclared, ...uncrossed,
+    ...(missingStates.length ? [missingStates.map(state => `no-${state}`).join('+')] : []),
+    ...(enteredAny ? [] : ['never-entered-water']),
+    ...(leftAny ? [] : ['never-left-water']),
+  ])];
+  const waterReport = {
+    ...report,
+    namespace: `${MOVEMENT_AUDIT_MATRIX_NAMESPACE}/water`,
+    thresholds,
+    fixtures: report.fixtures.map(entry => Object.freeze({
+      ...entry,
+      ok: entry.ok && entry.waterDeclared && entry.waterOverWater > 0
+        && (entry.waterCrossings ?? 0) >= thresholds.shorelineCrossingsPerFixture,
+    })),
+    paths: MOVEMENT_AUDIT_WATER_PATHS.map(path => path.id),
+    states: Object.freeze([...reached]),
+    missingStates: Object.freeze(missingStates),
+    undeclared: Object.freeze(undeclared),
+    uncrossed: Object.freeze(uncrossed),
+    noEnter: Object.freeze(noEnter),
+    noLeave: Object.freeze(noLeave),
+    failed: Object.freeze(failures),
+    ok: failures.length === 0,
+  };
+  waterReport.detail = waterReport.ok
+    ? `${waterReport.fixtures.length} water fixtures walked ${waterReport.states.join(' → ')} with `
+      + `${waterReport.fixtures.map(entry => `${entry.id}:${entry.waterCrossings}`).join(' ')} shoreline crossing(s) (${waterReport.fingerprint})`
+    : `failed: ${failures.join(', ')}`;
+  return waterReport;
 }
 
 /** Reusable runner for the debug hook: one call per explicit audit request. */

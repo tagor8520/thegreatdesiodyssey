@@ -69,7 +69,7 @@ test('the matrix is declared and runs every canonical biome in order', () => {
   assert.equal(report.repeat, 2);
   for (const entry of report.fixtures) {
     assert.equal(entry.ok, true, `${entry.id}: ${entry.failed.join(',')}`);
-    assert.equal(entry.verdicts.length, 7, 'determinism plus the six movement verdicts');
+    assert.equal(entry.verdicts.length, 8, 'determinism, the six movement verdicts, and the water state check');
     assert.deepEqual(entry.failed, []);
     assert.ok(entry.samples > 0);
     assert.match(entry.fingerprint, /^[0-9a-f]{8}$/);

@@ -67,9 +67,14 @@ test('movement audit passes a deterministic, well-behaved runtime', () => {
   assert.equal(report.paths.length, MOVEMENT_AUDIT_PATHS.length);
   assert.equal(report.samples, MOVEMENT_AUDIT_PATHS.reduce((sum, path) => sum + path.steps, 0));
   assert.match(report.fingerprint, /^[0-9a-f]{8}$/);
-  assert.match(report.detail, /passed 7 movement verdicts/);
+  assert.match(report.detail, /passed 8 movement verdicts/);
   assert.deepEqual(report.verdicts.map(verdict => verdict.id),
-    ['determinism', 'clipping', 'ordering', 'popping', 'shimmer', 'stability', 'residency']);
+    ['determinism', 'clipping', 'ordering', 'popping', 'shimmer', 'stability', 'residency', 'water']);
+  // `QLT-06` water/wetland: the general script is not obliged to find water, but
+  // it must still report a legal state for every sample it takes.
+  const water = report.verdicts.find(verdict => verdict.id === 'water');
+  assert.equal(water.ok, true, water.detail);
+  assert.equal(water.waterPaths, false);
   assert.equal(report.verdicts.find(verdict => verdict.id === 'popping').families.broadleaf.toggles, 0);
   assert.ok(report.verdicts.find(verdict => verdict.id === 'shimmer').detail.includes('mip-mapped'));
   assert.ok(runtime.inputs.length >= report.samples * 2, 'the audit runs the script in two passes');

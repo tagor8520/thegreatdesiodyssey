@@ -498,7 +498,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       world, player.cameraTarget, camera, player.cameraMode === 'first-person',
     );
     return world.movementSnapshot({
-      camera, renderer, cameraMode: player.cameraMode,
+      camera, renderer, cameraMode: player.cameraMode, player,
       clearance: clearanceProbe.clearance,
       pathId: info?.pathId ?? null, index: info?.index ?? -1, phase: info?.phase ?? 0,
     });
