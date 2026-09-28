@@ -19,8 +19,10 @@ import {
 import {
   AmbientLifePools,
   GDO_AMBIENT_LIFE_SOURCE_TYPES,
+  createAmbientLifeMaterial,
 } from '../engine/AmbientLifeMotion.js';
 import { createAmbientLifeScheduler } from '../engine/AmbientLifeScheduler.js';
+import { createCameraFade } from '../engine/CameraFade.js';
 import { DynamicProxyGrid } from '../engine/DynamicProxyGrid.js';
 import { createDiscoveryJournal, createJournalStorage } from '../engine/DiscoveryJournal.js';
 import {
@@ -595,7 +597,17 @@ export class GeoWorld {
     });
     // VEG-09 already owns reduced motion for plants; ambient life reads the
     // same flag so one preference change covers every animated family.
+    // `LAY-06`: the camera-fade policy owns the one screen-door discard rule,
+    // and the ambient sprites are its explicitly eligible clutter. The dither
+    // mask is `MAT-02`'s shared one; the fade path creates no texture.
+    this.cameraFade = createCameraFade({ profile: 'low', reducedMotion });
+    const fadeDither = this.materialLibrary?.textures?.dither ?? null;
+    if (fadeDither) this.cameraFade.uniforms.dither.value = fadeDither;
+    this.ambientLifeMaterial = fadeDither
+      ? createAmbientLifeMaterial({ ditherUniform: this.cameraFade.uniforms.dither })
+      : null;
     this.ambientLifePools = new AmbientLifePools(this.root, {
+      material: this.ambientLifeMaterial ?? null,
       ledger: this.lifecycle,
       terrainSeed: this.terrainSeed,
       renderOrder: GEO_LAYER.ambience.renderBand,
@@ -603,6 +615,8 @@ export class GeoWorld {
       reducedMotion,
       resolveGroundHeight: terrainHeightAt,
     });
+    this.lastAmbientFade = null;
+    this.lastCameraFadeMilliseconds = 0;
     // `LIF-02`: the explicit screen-space/activity scheduler on top of the
     // ambient pools. It reads the same camera the world already renders with.
     this.ambientScheduler = createAmbientLifeScheduler({ profile: 'low', ledger: this.lifecycle });
@@ -1412,6 +1426,23 @@ export class GeoWorld {
     this.waterMaterial.uniforms.uTime.value = time;
     this.ambientLifePools.update(nowMilliseconds);
     this.scheduleAmbientLife(nowMilliseconds);
+    // `LAY-06`: the fade decision runs on the same camera and avatar the frame
+    // uses, after the scheduler has parked what it cannot afford, so a parked
+    // sprite never costs a fade upload.
+    if (this.cameraFade && !this.cameraFade.disposed && this.viewCamera) {
+      const fadeStep = Number.isFinite(this.lastCameraFadeMilliseconds)
+        ? nowMilliseconds - this.lastCameraFadeMilliseconds : 0;
+      this.lastCameraFadeMilliseconds = nowMilliseconds;
+      this.lastAmbientFade = this.ambientLifePools.applyCameraFade(this.cameraFade, {
+        cameraX: this.viewCamera.position.x,
+        cameraY: this.viewCamera.position.y,
+        cameraZ: this.viewCamera.position.z,
+        avatarX: position.x,
+        avatarY: position.y,
+        avatarZ: position.z,
+        dtMilliseconds: fadeStep,
+      });
+    }
     this.observeDiscovery(position.x, position.z, nowMilliseconds);
     const fractionalX = this.reference.originX + position.x / this.reference.tileSize;
     const fractionalY = this.reference.originY + position.z / this.reference.tileSize;

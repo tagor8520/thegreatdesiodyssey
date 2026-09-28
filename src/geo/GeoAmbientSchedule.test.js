@@ -127,3 +127,102 @@ test('the scheduler refuses malformed frames instead of guessing', () => {
     world.dispose();
   }
 });
+
+test('the world fades only the clutter that blocks the camera-avatar span', () => {
+  const { world, camera } = createWorld();
+  try {
+    const pools = world.ambientLifePools;
+    const fade = world.cameraFade;
+    assert.equal(fade.namespace, 'gdo:cameraFade:v1');
+    assert.equal(fade.diagnostics.createdTextures, 0, 'the fade path shares MAT-02\'s mask');
+    assert.equal(fade.diagnostics.ditherSource, 'gdo:dither');
+    // The ambient material carries the screen-door record and stays opaque.
+    const record = pools.material.userData.gdoAmbientCameraFade;
+    assert.equal(record.blended, false);
+    assert.equal(record.depthWriting, true);
+    assert.equal(record.ditherSize, 8);
+    assert.equal(pools.material.transparent, false);
+    assert.equal(pools.material.depthWrite, true);
+    assert.equal(pools.geometries[0].getAttribute('gdoAmbientFade').itemSize, 1);
+    assert.equal(fade.diagnostics.patchedMaterials, 0, 'sprites fade per instance, not per material');
+
+    // A stand of birds directly between the camera and the avatar, plus a second
+    // stand far behind the avatar where it cannot possibly occlude.
+    pools.addOwner('tile:fade:between', decorationStream([
+      { x: -.4, z: -3, type: BIRD_SOURCE_TYPE },
+      { x: 0, z: -3, type: BIRD_SOURCE_TYPE },
+      { x: .4, z: -3, type: BIRD_SOURCE_TYPE },
+    ]), 6);
+    pools.addOwner('tile:fade:behind', decorationStream([
+      { x: 0, z: 60, type: BEE_SOURCE_TYPE },
+    ]), 6);
+    assert.equal(pools.entries, 4);
+
+    // The world drives the fade from its own camera and the avatar position. The
+    // camera sits above and behind the avatar, as a close third-person view does,
+    // and the birds hover around three units up — so the span passes through the
+    // stand. The decision reads the record's anchor and hover height, which is
+    // where the pool says the stand is; the shader's own path offset is motion.
+    camera.position.set(0, 4.2, 0);
+    const position = new THREE.Vector3(0, .9, -6);
+    let last = null;
+    for (let frame = 0; frame < 20; frame++) {
+      world.ambientLifePools.update(frame * 16.7);
+      last = pools.applyCameraFade(fade, {
+        cameraX: camera.position.x, cameraY: camera.position.y, cameraZ: camera.position.z,
+        avatarX: position.x, avatarY: position.y, avatarZ: position.z,
+        dtMilliseconds: 16.7,
+      });
+    }
+    assert.ok(last, 'the fade pass ran');
+    assert.equal(last.offered, 4, 'every resident sprite is offered to the policy');
+    assert.ok(last.faded >= 3, `the birds in the span fade (${last.faded})`);
+    assert.equal(last.rejected, 0, 'ambient life is fade-eligible by construction');
+    assert.ok(pools.diagnostics.fadeUploads > 0, 'a changed level uploads its slice');
+    assert.ok(pools.diagnostics.fadeUploads < 20 * 4, 'and only a changed level uploads');
+    assert.equal(pools.diagnostics.steadyFrameAllocations, 0);
+
+    // The per-instance levels land in the attribute stream the shader reads.
+    const birdFamily = pools.geometries[0].getAttribute('gdoAmbientFade');
+    const levels = [...birdFamily.array.slice(0, 3)];
+    assert.equal(levels.filter(level => level > 0).length, 3, `birds fade (${levels})`);
+    assert.equal(levels.every(level => level === levels[0] ? true : level >= 0), true);
+    const beeFamily = pools.geometries[1].getAttribute('gdoAmbientFade');
+    assert.equal(beeFamily.array[0], 0, 'the bee behind the avatar stays opaque');
+    // A settled frame stops uploading.
+    const uploads = pools.diagnostics.fadeUploads;
+    for (let frame = 0; frame < 5; frame++) {
+      pools.applyCameraFade(fade, {
+        cameraX: 0, cameraY: 4.2, cameraZ: 0, avatarX: 0, avatarY: .9, avatarZ: -6, dtMilliseconds: 16.7,
+      });
+    }
+    assert.equal(pools.diagnostics.fadeUploads, uploads, 'settled levels stop uploading');
+    assert.equal(fade.diagnostics.steadyFrameAllocations, 0);
+
+    // Turn the avatar around: the span no longer contains the birds, so they
+    // return to opaque without a single new draw call.
+    for (let frame = 0; frame < 80; frame++) {
+      pools.applyCameraFade(fade, {
+        cameraX: 0, cameraY: 4.2, cameraZ: 0, avatarX: 0, avatarY: .9, avatarZ: 6, dtMilliseconds: 16.7,
+      });
+    }
+    assert.equal([...birdFamily.array.slice(0, 3)].every(level => level === 0), true);
+    assert.equal(fade.diagnostics.faded, 0);
+
+    // The patch really discards: compile the ambient material's shader and read it.
+    const shader = {
+      uniforms: {},
+      vertexShader: '#include <common>\n#include <begin_vertex>\n#include <project_vertex>\n',
+      fragmentShader: '#include <common>\n#include <color_fragment>\n',
+    };
+    pools.material.onBeforeCompile(shader);
+    assert.match(shader.fragmentShader, /if \(vGdoAmbientFade > 0\.001\)/);
+    assert.match(shader.fragmentShader, /texture2D\(gdoCameraDither/);
+    assert.match(shader.fragmentShader, /discard;/);
+    assert.match(shader.vertexShader, /attribute float gdoAmbientFade;/);
+    assert.match(shader.vertexShader, /vGdoAmbientFade = clamp/);
+    assert.equal(shader.uniforms.gdoCameraDither.value.name, 'gdo:dither');
+  } finally {
+    world.dispose();
+  }
+});

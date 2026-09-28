@@ -202,6 +202,9 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     cameraButton.setAttribute('aria-label', `Switch to ${firstPerson ? 'third' : 'first'}-person camera`);
   };
   player = new GeoPlayer(scene, camera, canvas, world, { onCameraModeChange: updateCameraUI });
+  // `LAY-06`: the avatar fades through the same policy the world's ambient
+  // clutter does, so a close third-person camera dithers it once.
+  if (world.cameraFade) player.attachCameraFade(world.cameraFade);
   let debugOverlay = null, debugRequested = false, debugLoad = null, debugLoadFailed = false;
   const updateDebugButton = () => {
     debugButton.setAttribute('aria-pressed', String(debugRequested && Boolean(debugOverlay)));
@@ -655,6 +658,9 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       // contributor can paste a pack or a landmark recipe and read the same
       // verdict the CLI prints.
       ...createContentValidatorExtras({ providers: providers ?? null, profile: profile ?? 'low' }),
+      // `LAY-06`: the fade policy is reachable from a debug session, and the
+      // avatar shares it.
+      cameraFade: world.cameraFade?.diagnostics ?? null,
     },
   });
   if (debugHooks) logger.info('debug', 'hook installed', { key: '__gdo', audits: ['movement', 'silhouette', 'timeOfDay'] });

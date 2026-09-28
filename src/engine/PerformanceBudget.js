@@ -102,6 +102,7 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   // list, so a content recipe can never expand without limit.
   contentRecipeModules: 4_096,
   contentRecipeModulesPerRecipe: 512,
+  cameraFadeCandidates: 48,
   // `COL-06`: the curated island's structural sweep answers the declared
   // `dynamicSweep` member with the same bounded candidate work the coordinate
   // sweep declares.
@@ -222,6 +223,7 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'maxSupportCandidates', budget: 'maxSupportCandidates', label: 'support candidates' }),
   Object.freeze({ metric: 'contentRecipeModules', budget: 'contentRecipeModules', label: 'compiled content modules per pack' }),
   Object.freeze({ metric: 'contentRecipeModulesPerRecipe', budget: 'contentRecipeModulesPerRecipe', label: 'compiled content modules per recipe' }),
+  Object.freeze({ metric: 'cameraFadeCandidates', budget: 'cameraFadeCandidates', label: 'camera-fade eligible candidates per frame' }),
   Object.freeze({ metric: 'curatedSweepCandidates', budget: 'curatedSweepCandidates', label: 'curated structural sweep candidates' }),
   Object.freeze({ metric: 'curatedSweepSteadyFrameAllocations', budget: 'curatedSweepSteadyFrameAllocations', label: 'curated sweep steady-frame allocations' }),
   Object.freeze({ metric: 'discoveryRecords', budget: 'discoveryRecords', label: 'discovery journal records' }),

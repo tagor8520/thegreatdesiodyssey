@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { featureNamespace } from './FeatureVersions.js';
 import { adoptPoolResources } from './LifecycleContract.js';
+import { GEO_QUERY_MASK } from '../geo/GeoCollision.js';
+import { GDO_CAMERA_FADE_DITHER_SIZE } from './CameraFade.js';
 
 /**
  * `gdo:ambientLifeMotion:v1` replaces the coordinate bird/bee orbit-and-bob
@@ -366,6 +368,13 @@ export function createAmbientSpriteData(family) {
   });
 }
 
+function ambientFadeDiscard() {
+  return `
+  if (vGdoAmbientFade > 0.001) {
+    if (texture2D(gdoCameraDither, gl_FragCoord.xy / ${GDO_CAMERA_FADE_DITHER_SIZE}.0).r < vGdoAmbientFade) discard;
+  }`;
+}
+
 const VERTEX_DECLARATIONS = `
 attribute vec3 gdoAmbientAnchor;
 attribute vec4 gdoAmbientPath;
@@ -374,6 +383,8 @@ attribute vec4 gdoAmbientForm;
 attribute vec4 gdoAmbientSprite;
 attribute vec2 gdoAmbientRange;
 attribute float gdoAmbientPart;
+attribute float gdoAmbientFade;
+varying float vGdoAmbientFade;
 uniform vec2 gdoAmbientClock;
 uniform float gdoAmbientReduced;
 float gdoAmbientHash(vec2 p) {
@@ -438,6 +449,7 @@ function solverBody() {
   float gdoAmbientCameraDistance = distance(cameraPosition, gdoAmbientCenter);
   float gdoAmbientVisibility = 1.0 - smoothstep(gdoAmbientRange.x * 0.62, gdoAmbientRange.x, gdoAmbientCameraDistance);
   vec2 gdoAmbientViewOffset = gdoAmbientOffset * gdoAmbientSprite.x * gdoAmbientExistence * gdoAmbientVisibility;
+  vGdoAmbientFade = clamp(gdoAmbientFade, 0.0, 1.0) * gdoAmbientVisibility;
 `;
 }
 
@@ -453,11 +465,12 @@ const PROJECT_VERTEX = `
  * view space (always facing the camera), never read `instanceMatrix`, and take
  * every pose value from the instanced streams plus one clock uniform.
  */
-export function createAmbientLifeMaterial() {
+export function createAmbientLifeMaterial({ ditherUniform = null } = {}) {
   const material = new THREE.MeshBasicMaterial({
     vertexColors: true,
     side: THREE.DoubleSide,
     fog: true,
+    // `LAY-06`: fading a sprite is a screen-door *discard*, never a blend.
     transparent: false,
   });
   material.name = `${GDO_AMBIENT_LIFE_NAMESPACE}:sprite`;
@@ -465,6 +478,9 @@ export function createAmbientLifeMaterial() {
     clock: Object.seal({ value: new THREE.Vector2() }),
     reduced: Object.seal({ value: 0 }),
   });
+  if (ditherUniform != null && !ditherUniform.value?.isTexture) {
+    throw new TypeError('Ambient life needs the shared camera-fade dither texture');
+  }
   material.userData.gdoAmbientLife = Object.freeze({
     namespace: GDO_AMBIENT_LIFE_NAMESPACE,
     billboard: 'view-plane-2d',
@@ -476,12 +492,28 @@ export function createAmbientLifeMaterial() {
       gdoAmbientClock: uniforms.clock,
       gdoAmbientReduced: uniforms.reduced,
     });
+    if (ditherUniform) shader.uniforms.gdoCameraDither = ditherUniform;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>\n${VERTEX_DECLARATIONS}`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>\n${solverBody()}`)
       .replace('#include <project_vertex>', PROJECT_VERTEX);
+    if (ditherUniform) {
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>\nvarying float vGdoAmbientFade;\nuniform sampler2D gdoCameraDither;`)
+        .replace('#include <color_fragment>', `#include <color_fragment>\n${ambientFadeDiscard()}`);
+    }
   };
-  material.customProgramCacheKey = () => `${GDO_AMBIENT_LIFE_NAMESPACE}:sprite`;
+  material.customProgramCacheKey = () =>
+    `${GDO_AMBIENT_LIFE_NAMESPACE}:sprite${ditherUniform ? ':camera-fade' : ''}`;
+  material.userData.gdoAmbientCameraFade = ditherUniform
+    ? Object.freeze({
+      namespace: GDO_AMBIENT_LIFE_NAMESPACE,
+      ditherSize: GDO_CAMERA_FADE_DITHER_SIZE,
+      blended: false,
+      depthWriting: true,
+      discard: 'screen-door',
+    })
+    : null;
   return material;
 }
 
@@ -544,6 +576,10 @@ export class AmbientLifePools {
       geometry.setAttribute('gdoAmbientForm', instanceAttribute(new Float32Array(limits.maxInstancesPerFamily * 4), 4));
       geometry.setAttribute('gdoAmbientSprite', instanceAttribute(new Float32Array(limits.maxInstancesPerFamily * 4), 4));
       geometry.setAttribute('gdoAmbientRange', instanceAttribute(new Float32Array(limits.maxInstancesPerFamily * 2), 2));
+      // `LAY-06`: one screen-door fade level per instance, zero by default, so
+      // the stream exists (and the shader reads a defined value) even when no
+      // camera-fade policy is attached.
+      geometry.setAttribute('gdoAmbientFade', instanceAttribute(new Float32Array(limits.maxInstancesPerFamily), 1));
       geometry.instanceCount = 0;
       geometry.userData.gdoAmbientSprite = Object.freeze({
         family, triangles: data.triangles, flat: true, runtimeCsgOperations: 0, collisionProxies: 0,
@@ -556,7 +592,8 @@ export class AmbientLifePools {
         geometry.getAttribute('gdoAmbientCycle').array.byteLength +
         geometry.getAttribute('gdoAmbientForm').array.byteLength +
         geometry.getAttribute('gdoAmbientSprite').array.byteLength +
-        geometry.getAttribute('gdoAmbientRange').array.byteLength, 0);
+        geometry.getAttribute('gdoAmbientRange').array.byteLength +
+        geometry.getAttribute('gdoAmbientFade').array.byteLength, 0);
     if (fixedInstanceBytes > limits.maxInstanceBytes) {
       for (const geometry of this.geometries) geometry.dispose();
       throw new RangeError('Ambient-life fixed instance bytes exceed the low-profile cap');
@@ -597,6 +634,18 @@ export class AmbientLifePools {
     this.totalClockWrites = 0;
     this.malformedInputs = 0;
     this.contextRestorations = 0;
+    // `LAY-06` bookkeeping: the cached per-instance levels, the uploads they
+    // cost, and the policy that decided them.
+    this.fadeLevels = GDO_AMBIENT_LIFE_FAMILY_ORDER.map(() =>
+      new Float32Array(limits.maxInstancesPerFamily).fill(-1));
+    this.fadeSlots = GDO_AMBIENT_LIFE_FAMILY_ORDER.map(() =>
+      new Int32Array(limits.maxInstancesPerFamily).fill(-1));
+    this.fadeUploadFamilies = 0;
+    this.cameraFade = null;
+    this.fadeUploads = 0;
+    this.lastFade = null;
+    this.fadeDecisions = 0;
+    this.fadeRejected = 0;
     // `LIF-02` scheduling counters: parked instances and the attribute uploads
     // they caused, so churn stays a measured number.
     this.visibilityUploads = 0;
@@ -690,9 +739,11 @@ export class AmbientLifePools {
         range.set([record.viewDistance, record.climb], cursor * 2);
       }
       for (const name of ['gdoAmbientAnchor', 'gdoAmbientPath', 'gdoAmbientCycle', 'gdoAmbientForm',
-        'gdoAmbientSprite', 'gdoAmbientRange']) {
+        'gdoAmbientSprite', 'gdoAmbientRange', 'gdoAmbientFade']) {
         geometry.getAttribute(name).needsUpdate = true;
       }
+      // A fresh instance stream starts opaque; the next fade pass re-derives it.
+      this.fadeLevels?.[familyIndex]?.fill(-1);
       geometry.instanceCount = kept.length;
       packedByFamily.set(family, kept);
       // The repack just rewrote the authored scales; drop the cached verdicts so
@@ -795,6 +846,78 @@ export class AmbientLifePools {
     return this.lastSchedule;
   }
 
+  /**
+   * `LAY-06`: one camera-fade pass over the resident sprites.
+   *
+   * Every resident sprite is offered to the policy as an *eligible* candidate
+   * (ambient life is exactly the clutter the research allows to fade), the
+   * policy decides the verdicts for this frame, the levels are stepped once, and
+   * only instances whose level actually changed re-upload their slice of the
+   * fade stream. A sprite that is not fading costs nothing.
+   */
+  applyCameraFade(cameraFade, {
+    cameraX = 0, cameraY = 0, cameraZ = 0,
+    avatarX = 0, avatarY = 0, avatarZ = 0,
+    dtMilliseconds = 16.7,
+  } = {}) {
+    if (this.disposed || !cameraFade?.beginFrame || !cameraFade?.consider) return null;
+    this.cameraFade = cameraFade;
+    cameraFade.beginFrame({ cameraX, cameraY, cameraZ, avatarX, avatarY, avatarZ });
+    let offered = 0, rejected = 0;
+    for (let familyIndex = 0; familyIndex < GDO_AMBIENT_LIFE_FAMILY_ORDER.length; familyIndex++) {
+      const records = this.packedRecords[familyIndex];
+      const slots = this.fadeSlots[familyIndex];
+      for (let index = 0; index < records.length; index++) {
+        const record = records[index];
+        const slot = cameraFade.consider({
+          id: record.id,
+          // Ambient life is clutter: explicitly eligible, and never a camera
+          // blocker, so it can fade where a structural mass would compress.
+          mask: GEO_QUERY_MASK.FADE_ELIGIBLE,
+          x: record.x,
+          y: record.groundY + record.hover,
+          z: record.z,
+          radius: Math.max(record.spriteWidth, record.spriteHeight) * record.scale * .5,
+        });
+        slots[index] = slot;
+        if (slot < 0) { rejected++; this.fadeRejected++; continue; }
+        offered++;
+        this.fadeDecisions++;
+      }
+    }
+    // One step per frame, after every candidate has stated its case, so a frame's
+    // verdict depends on that frame's inputs alone.
+    const stepped = cameraFade.advanceFrame(dtMilliseconds);
+    let changed = 0, faded = 0;
+    for (let familyIndex = 0; familyIndex < GDO_AMBIENT_LIFE_FAMILY_ORDER.length; familyIndex++) {
+      const records = this.packedRecords[familyIndex];
+      const slots = this.fadeSlots[familyIndex];
+      const attribute = this.geometries[familyIndex].getAttribute('gdoAmbientFade');
+      const cache = this.fadeLevels[familyIndex];
+      let familyUploads = 0;
+      for (let index = 0; index < records.length; index++) {
+        const slot = slots[index];
+        const level = slot >= 0 ? cameraFade.levelAt(slot) : 0;
+        if (level > 0) faded++;
+        if (cache[index] === level) continue;
+        cache[index] = level;
+        attribute.array[index] = level;
+        attribute.needsUpdate = true;
+        this.fadeUploads++;
+        familyUploads++;
+        changed++;
+      }
+      if (familyUploads > 0) this.fadeUploadFamilies++;
+    }
+    this.lastFade = Object.freeze({
+      offered, rejected, changed, faded, stepped,
+      avatarLevel: cameraFade.diagnostics.avatarLevel,
+      levels: cameraFade.levels,
+      ditherSize: cameraFade.ditherSize,
+    });
+    return this.lastFade;
+  }
+
   setReducedMotion(value) {
     if (this.disposed) return false;
     const next = Boolean(value);
@@ -808,7 +931,7 @@ export class AmbientLifePools {
     if (this.disposed) return false;
     for (const geometry of this.geometries) {
       for (const name of ['gdoAmbientAnchor', 'gdoAmbientPath', 'gdoAmbientCycle', 'gdoAmbientForm',
-        'gdoAmbientSprite', 'gdoAmbientRange']) {
+        'gdoAmbientSprite', 'gdoAmbientRange', 'gdoAmbientFade']) {
         geometry.getAttribute(name).needsUpdate = true;
       }
       for (const name of ['position', 'color', 'gdoAmbientPart']) geometry.getAttribute(name).needsUpdate = true;
@@ -835,6 +958,9 @@ export class AmbientLifePools {
         form: Object.freeze(slice('gdoAmbientForm')),
         sprite: Object.freeze(slice('gdoAmbientSprite')),
         range: Object.freeze(slice('gdoAmbientRange')),
+        // `LAY-06`: the screen-door levels are frame state, not authored data, so
+        // they travel beside the snapshot instead of inside it.
+        fade: Object.freeze(slice('gdoAmbientFade')),
       });
     }));
   }
@@ -853,6 +979,7 @@ export class AmbientLifePools {
   get diagnostics() {
     const visibleTriangles = this.familyCounts.reduce((total, count, familyIndex) =>
       total + count * this.geometries[familyIndex].userData.gdoAmbientSprite.triangles, 0);
+    const fadeLevels = [...this.fadeLevels[0], ...this.fadeLevels[1]].filter(level => level > 0).length;
     const geometryBytesTotal = this.geometries.reduce((total, geometry) => total + geometryBytes(geometry), 0);
     return Object.freeze({
       namespace: GDO_AMBIENT_LIFE_NAMESPACE,
@@ -879,6 +1006,15 @@ export class AmbientLifePools {
       visibilityUploads: this.visibilityUploads,
       lastSchedule: this.lastSchedule,
       capEvents: Object.freeze({ ...this.capEvents, families: Object.freeze([...this.capEvents.families]) }),
+      // `LAY-06`: how many resident sprites are mid-fade, what the pass cost,
+      // and which policy decided it.
+      fadeLevels,
+      fadeUploads: this.fadeUploads,
+      fadeUploadFamilies: this.fadeUploadFamilies,
+      fadeDecisions: this.fadeDecisions,
+      fadeRejected: this.fadeRejected,
+      lastFade: this.lastFade,
+      cameraFade: this.cameraFade?.diagnostics ?? null,
       reducedMotion: this.reducedMotion,
       malformedInputs: this.malformedInputs,
       contextRestorations: this.contextRestorations,

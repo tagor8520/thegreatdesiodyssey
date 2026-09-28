@@ -145,6 +145,11 @@ export class GeoPlayer {
     this.root = new THREE.Group();
     this.root.name = 'coordinate-explorer';
     this.avatar = createAvatar();
+    // `LAY-06`: the avatar's own material is patched with the shared screen-door
+    // discard, so a pathologically close third-person camera dithers the avatar
+    // instead of letting the near plane slice through it. The level is the fade
+    // policy's avatar level, so the two stay in step.
+    this.cameraFade = null;
     this.avatar.visible = false;
     this.root.add(this.avatar);
     this.root.scale.setScalar(MODEL_SCALE);
@@ -555,6 +560,17 @@ export class GeoPlayer {
     this.lookDirection.copy(this.cameraIdeal).sub(this.cameraTarget).normalize();
     this.camera.position.copy(this.cameraTarget).addScaledVector(this.lookDirection, this.cameraResolvedDistance);
     this.camera.lookAt(this.cameraTarget);
+  }
+
+  /**
+   * `LAY-06`: adopt the world's camera-fade policy. The avatar keeps its opaque,
+   * depth-writing material — only its patch and level uniform change.
+   */
+  attachCameraFade(cameraFade) {
+    if (!cameraFade?.patchMaterial) throw new TypeError('Camera fade needed to fade the avatar');
+    const record = cameraFade.patchMaterial(this.avatar.material);
+    this.cameraFade = cameraFade;
+    return record;
   }
 
   update(dt) {
