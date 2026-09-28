@@ -7,6 +7,7 @@ import { BridgePools } from './GeoBridgePools.js';
 import { LandmarkPools } from './GeoLandmarkPools.js';
 import { GEO_TILE_CACHE_LIMITS } from './GeoTileCache.js';
 import { LifecycleLedger } from '../engine/LifecycleContract.js';
+import { defineWorldDomain } from '../engine/DomainInterface.js';
 import {
   AmbientLifePools,
   GDO_AMBIENT_LIFE_SOURCE_TYPES,
@@ -411,6 +412,23 @@ function prefersReducedPlantMotion(environment = globalThis) {
   catch { return false; }
 }
 
+/**
+ * `FND-08`: the coordinate world declares the same world-domain interface as the
+ * curated island, at its own scale (0.1 world units per metre), with the
+ * capabilities it actually has: coordinates, streamed residency, terrain
+ * support, a dynamic camera sweep, place labels, and graded bridges.
+ */
+export const GDO_COORDINATE_WORLD_DOMAIN = defineWorldDomain({
+  id: 'coordinate',
+  label: 'Coordinate explorer',
+  unitsPerMetre: .1,
+  streaming: { chunkSize: 2048, residentLimit: 4 },
+  capabilities: {
+    coordinates: true, terrainSupport: true, dynamicSweep: true,
+    labels: true, streamed: true, verticalGrades: true,
+  },
+});
+
 export class GeoWorld {
   constructor(scene, {
     latitude,
@@ -426,6 +444,11 @@ export class GeoWorld {
     ledger = null,
   }) {
     this.scene = scene;
+    // `FND-08`: one shared domain descriptor, so shared consumers can query this
+    // world exactly like the curated island without assuming either scale.
+    this.domain = GDO_COORDINATE_WORLD_DOMAIN;
+    this.unitsPerMetreScale = this.domain.unitsPerMetre;
+    this.domainBounds = null;
     // `FND-07`: the world owns one ledger scope. Every worker, listener, timer,
     // material, tile geometry, and pool resource below registers in it, so
     // `dispose()` is auditable and a remount provably returns to baseline.
@@ -1843,6 +1866,36 @@ export class GeoWorld {
       }
     }
     return { x, z };
+  }
+
+  /** Shared world interface: support height in world units at any x/z. */
+  querySupport(x, z, out = this.supportCandidate) {
+    const support = this.supportAt(x, z, out);
+    return support;
+  }
+
+  /** Shared world interface: bounded diagnostic record for logs and the HUD. */
+  querySnapshot() {
+    return {
+      domain: this.domain.id,
+      resident: this.tiles.size,
+      queued: this.queue.length,
+      activeRequests: this.activeRequests,
+      provider: this.provider,
+      labels: this.visibleLabels.length,
+      lifecycle: this.lifecycle?.snapshot?.().total ?? 0,
+      queries: {
+        sweeps: this.queryDiagnostics.sweeps,
+        sphereSweeps: this.queryDiagnostics.sphereSweeps,
+        maxCandidates: this.queryDiagnostics.maxCandidates,
+        maxSupportCandidates: this.queryDiagnostics.maxSupportCandidates,
+      },
+    };
+  }
+
+  /** Shared world interface: the dynamic sweep, already role-aware. */
+  querySweep(x, y, z, dx, dy, dz, radius, out = {}) {
+    return this.sweepSphere(x, y, z, dx, dy, dz, radius, out);
   }
 
   coordinateAt(x, z) {

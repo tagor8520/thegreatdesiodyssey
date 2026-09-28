@@ -2,9 +2,21 @@ import * as THREE from 'three';
 import { terrainHeight } from './BiomeManager.js';
 import { VoxelBatch, disposeGroup } from './VoxelBatch.js';
 import { ThirdPersonCamera } from './ThirdPersonCamera.js';
+import { definePlayerDomain } from '../engine/DomainInterface.js';
 
 // Match the rendered four-unit tile centers, including shoreline steps.
 export function tileHeight(x, z) { return terrainHeight(Math.floor(x / 4) * 4 + 2, Math.floor(z / 4) * 4 + 2); }
+
+/** `FND-08`: the curated avatar declares the shared player interface. Keyboard
+ * input stays its primary path, but analog move input and camera-mode switching
+ * are part of the same contract the coordinate avatar implements. */
+export const GDO_CURATED_PLAYER_DOMAIN = definePlayerDomain({
+  id: 'curated-player',
+  label: 'Curated adventurer',
+  worldId: 'curated',
+  cameraModes: ['third-person', 'map'],
+  capabilities: { analogInput: true, jump: true, pointerLook: true },
+});
 
 export class Player {
   constructor(scene, camera, bridges, {
@@ -19,6 +31,9 @@ export class Player {
     this.enabled = true;
     this.spawn = spawn.clone(); this.position = spawn.clone(); this.velocity = new THREE.Vector3();
     this.keys = new Set(); this.grounded = true; this.jumpQueued = false; this.disposed = false; this.mapMode = false;
+    this.playerDomain = GDO_CURATED_PLAYER_DOMAIN;
+    this.analogMove = { x: 0, z: 0 };
+    this.unitsPerMetreScale = this.playerDomain.capabilities ? 1 : 1;
     this.bounds = new THREE.Box3(); this.scratchBounds = new THREE.Box3();
     this.root = new THREE.Group(); this.root.name = 'adventurer'; this.root.position.copy(spawn);
     this.geometry = new THREE.BoxGeometry(1, 1, 1); this.materials = new Map(); this.phase = 0;
@@ -92,10 +107,32 @@ export class Player {
       this.position[axis] = old; this.velocity[axis] = 0;
     } else if (this.grounded && floor > this.position.y) this.position.y = floor;
   }
+  /** Shared player interface: normalized analog move input (touch/UI/gamepad). */
+  setMoveInput(x, z) {
+    const length = Math.hypot(x, z);
+    const scale = length > 1 ? 1 / length : 1;
+    this.analogMove.x = x * scale;
+    this.analogMove.z = z * scale;
+  }
+  /** Shared player interface: teleport to a ground-supported point. */
+  setPosition(x, z) {
+    const ground = this.groundAt(x, z);
+    this.position.set(x, ground, z);
+    this.velocity.set(0, 0, 0);
+    this.grounded = true;
+    this.root.position.copy(this.position);
+    this.updateBounds();
+  }
+  get cameraMode() { return this.mapMode ? 'map' : 'third-person'; }
+  toggleCameraMode() {
+    this.mapMode = !this.mapMode;
+    this.orbit.mapMode = this.mapMode;
+    return this.cameraMode;
+  }
   step(dt) {
     const held = (...codes) => codes.some(code => this.keys.has(code));
-    let x = Number(held('KeyD','ArrowRight')) - Number(held('KeyA','ArrowLeft'));
-    let z = Number(held('KeyS','ArrowDown')) - Number(held('KeyW','ArrowUp'));
+    let x = this.analogMove.x + Number(held('KeyD','ArrowRight')) - Number(held('KeyA','ArrowLeft'));
+    let z = this.analogMove.z + Number(held('KeyS','ArrowDown')) - Number(held('KeyW','ArrowUp'));
     const length = Math.hypot(x, z); if (length) { x /= length; z /= length; }
     const yaw = this.mapMode ? 0 : this.orbit.yaw;
     const localX = x;
@@ -131,8 +168,16 @@ export class Player {
     while (remaining > 1e-8) { const step = Math.min(remaining, 1 / 120); this.step(step); remaining -= step; }
     this.orbit.mapMode = this.mapMode; this.orbit.update(dt, this.position);
   }
+  querySnapshot() {
+    return {
+      domain: this.playerDomain.id,
+      mode: this.cameraMode,
+      position: { x: this.position.x, y: this.position.y, z: this.position.z },
+      grounded: this.grounded,
+    };
+  }
   dispose() {
-    if (this.disposed) return; this.disposed = true; this.blur();
+    if (this.disposed) return; this.disposed = true; this.analogMove.x = 0; this.analogMove.z = 0; this.blur();
     this.inputTarget.removeEventListener('keydown', this.keydown); this.inputTarget.removeEventListener('keyup', this.keyup); this.inputTarget.removeEventListener('blur', this.blur);
     this.orbit.dispose();
     disposeGroup(this.root);

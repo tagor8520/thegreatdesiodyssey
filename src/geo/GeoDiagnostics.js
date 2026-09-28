@@ -1,5 +1,6 @@
 import { GEO_QUERY_MASK } from './GeoCollision.js';
 import { GEO_SUPPORT_SLOT_FIELD, GEO_SUPPORT_SLOT_STRIDE } from './GeoSupportSlots.js';
+import { describeDomain, describeDomainCompliance } from '../engine/DomainInterface.js';
 
 export const GEO_DEBUG_LIMITS = Object.freeze({
   maxLineSegments: 6_000,
@@ -414,6 +415,15 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
       bridges: world?.bridgePools?.diagnostics ?? null,
       landmarks: world?.landmarkPools?.diagnostics ?? null,
       tileCache: world?.tileCacheDiagnostics ?? null,
+      // `FND-08`: the shared world domain, its scale and live compliance verdict,
+      // so one consumer can prove it is talking to the interface it expects.
+      domain: world?.domain ? Object.freeze({
+        id: world.domain.id,
+        summary: describeDomain(world.domain),
+        unitsPerMetre: world.domain.unitsPerMetre,
+        capabilities: world.domain.capabilities,
+        compliant: describeDomainCompliance(world, world.domain).ok,
+      }) : null,
       // `FND-07`: the live ownership ledger and the last movement-audit verdict
       // are part of the debug surface, not a separate tool.
       lifecycle: world?.lifecycle?.snapshot?.() ?? null,

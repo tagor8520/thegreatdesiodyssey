@@ -7,6 +7,7 @@ import { validateCoordinate } from './GeoMath.js';
 import { LifecycleLedger } from '../engine/LifecycleContract.js';
 import { createDebugLogger, installDebugHooks } from '../engine/DebugHooks.js';
 import { createMovementAuditRunner } from '../engine/MovementAudit.js';
+import { createSupportQuery, describeDomainCompliance } from '../engine/DomainInterface.js';
 import './geo.css';
 
 function formatBytes(bytes) {
@@ -472,6 +473,14 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
         plantLod: snapshot.lod,
         residentTiles: snapshot.residentTiles.length,
         query: world.queryDiagnostics,
+        // `FND-08`: both live domains, so a debug session shows which interface
+        // and scale the world and avatar are answering on.
+        domains: {
+          world: { id: world.domain.id, compliant: describeDomainCompliance(world, world.domain).ok },
+          player: { id: player.playerDomain.id, compliant: describeDomainCompliance(player, player.playerDomain).ok },
+          queries: world.domain.capabilities.coordinates ? 1 : 0,
+        },
+        support: createSupportQuery(world, world.domain).support(player.position.x, player.position.z),
         movementAudit: movementAudit.summary(),
         profile: world.profile,
       };

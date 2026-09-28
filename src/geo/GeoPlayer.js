@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GEO_PLAYER_COLLISION_PROFILE } from './GeoCollision.js';
+import { definePlayerDomain } from '../engine/DomainInterface.js';
 
 // Horizontal source geometry is 1:10, so a roughly 1.8 m avatar is 0.18 units.
 // The movement shape and its skin together remain inside the measured profile;
@@ -42,6 +43,18 @@ function createAvatar() {
   return mesh;
 }
 
+/**
+ * `FND-08`: the coordinate avatar implements the same player-domain contract as
+ * the curated adventurer (analog input, jump, pointer look, camera modes).
+ */
+export const GDO_COORDINATE_PLAYER_DOMAIN = definePlayerDomain({
+  id: 'coordinate-player',
+  label: 'Coordinate explorer avatar',
+  worldId: 'coordinate',
+  cameraModes: ['first-person', 'third-person'],
+  capabilities: { analogInput: true, jump: true, pointerLook: true, touch: true },
+});
+
 export class GeoPlayer {
   constructor(scene, camera, canvas, world, { onCameraModeChange = () => {} } = {}) {
     this.scene = scene;
@@ -64,6 +77,8 @@ export class GeoPlayer {
     this.distance = 2.6;
     this.cameraResolvedDistance = this.distance;
     this.cameraMode = 'first-person';
+    this.playerDomain = GDO_COORDINATE_PLAYER_DOMAIN;
+    this.unitsPerMetreScale = this.world?.domain?.unitsPerMetre ?? .1;
     this.lookPointerId = null;
     this.lastPointerX = 0;
     this.lastPointerY = 0;
@@ -181,6 +196,16 @@ export class GeoPlayer {
     this.camera.updateProjectionMatrix();
     this.updateCamera(0, snap);
     this.onCameraModeChange(mode);
+  }
+
+  querySnapshot() {
+    return {
+      domain: this.playerDomain.id,
+      mode: this.cameraMode,
+      position: { x: this.position.x, y: this.position.y, z: this.position.z },
+      grounded: this.grounded,
+      distance: this.cameraResolvedDistance,
+    };
   }
 
   toggleCameraMode() {

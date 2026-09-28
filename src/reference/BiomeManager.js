@@ -1,8 +1,20 @@
 import * as THREE from 'three';
 import { VoxelBatch, disposeGroup, randomFor } from './VoxelBatch.js';
 import { isGameplayClearance } from './GameplayLayout.js';
+import { defineWorldDomain } from '../engine/DomainInterface.js';
 
 export const WORLD = Object.freeze({ min: -128, max: 128, chunkSize: 32, tileSize: 4, waterY: 0 });
+export const GDO_CURATED_DOMAIN_ID = 'curated';
+/** `FND-08`: the curated island declares the same interface as the coordinate
+ * world at its own scale — one world unit per metre, a fixed 256 × 256 island,
+ * graded bridge/vault structures, and no coordinate or streamed capability. */
+export const GDO_CURATED_WORLD_DOMAIN = defineWorldDomain({
+  id: GDO_CURATED_DOMAIN_ID,
+  label: 'Curated island',
+  unitsPerMetre: 1,
+  bounds: { minX: WORLD.min, maxX: WORLD.max, minZ: WORLD.min, maxZ: WORLD.max },
+  capabilities: { terrainSupport: true, verticalGrades: true },
+});
 export const LANDMARKS = Object.freeze({ gateway: [-66, -44], chariot: [62, -44] });
 
 function cameraBox(x, y, z, sizeX, sizeY, sizeZ, id) {
@@ -205,6 +217,10 @@ export class BiomeManager {
     this.scene = scene; this.seed = seed; this.loadRadius = loadRadius;
     this.unloadRadius = unloadRadius; this.budgetMs = budgetMs; this.decorationDensity = decorationDensity;
     this.chunks = new Map(); this.disposed = false; this.actors = new Map();
+    this.domain = GDO_CURATED_WORLD_DOMAIN;
+    this.unitsPerMetreScale = this.domain.unitsPerMetre;
+    this.domainBounds = this.domain.bounds;
+    this.bounds = this.domain.bounds;
     this.cameraBlockers = [
       ...createLandmarkCameraBlockers(),
       ...createOrdinaryStructureCameraBlockers(seed, decorationDensity),
@@ -262,6 +278,25 @@ export class BiomeManager {
     }
     yield;
     return batch.build();
+  }
+  /** Shared support query: the island's analytic terrain height at any x/z. */
+  querySupport(x, z, out = {}) {
+    const y = terrainHeight(x, z);
+    out.x = x; out.z = z; out.y = y;
+    out.kind = y < WORLD.waterY ? 'water' : 'ground';
+    out.slopeRadians = 0;
+    return out;
+  }
+  /** Shared diagnostic record: bounded numbers only, never live objects. */
+  querySnapshot() {
+    return {
+      domain: this.domain.id,
+      chunks: this.chunks.size,
+      loading: this.loadingCount,
+      actors: this.actors.size,
+      decorations: this.decorationDensity,
+      seed: this.seed,
+    };
   }
   distance(descriptor, focus) {
     // Distance to chunk AABB, so boundary cells don't pop prematurely.
