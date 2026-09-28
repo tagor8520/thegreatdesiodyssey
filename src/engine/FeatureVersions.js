@@ -22,6 +22,7 @@ export const GDO_FEATURE_VERSIONS = Object.freeze({
   lifecycleContract: 1,
   debugHooks: 1,
   movementAudit: 1,
+  auditMatrix: 1,
   domainInterface: 1,
   mapSemantics: 1,
   labelLos: 1,

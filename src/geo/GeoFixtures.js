@@ -23,6 +23,9 @@ export const GEO_FIXTURE_MATRIX = Object.freeze([
   Object.freeze({ id: 'courtyard-hole', category: 'hole', variants: Object.freeze(['openmaptiles']) }),
   Object.freeze({ id: 'stacked-bridge', category: 'bridge', variants: Object.freeze(['openmaptiles']) }),
   Object.freeze({ id: 'mapped-coast', category: 'coast', variants: Object.freeze(['openmaptiles']) }),
+  Object.freeze({ id: 'wetland-basin', category: 'wetland', variants: Object.freeze(['openmaptiles']) }),
+  Object.freeze({ id: 'mountain-terrace', category: 'mountain', variants: Object.freeze(['openmaptiles']) }),
+  Object.freeze({ id: 'arid-basin', category: 'arid', variants: Object.freeze(['openmaptiles']) }),
   Object.freeze({ id: 'provider-equivalence', category: 'provider-schema', variants: Object.freeze(['openmaptiles', 'shortbread']) }),
   Object.freeze({ id: 'provider-semantics', category: 'provider-semantics', variants: Object.freeze(['openmaptiles', 'shortbread']) }),
 ]);
@@ -130,6 +133,81 @@ function coastLayers() {
   };
 }
 
+/**
+ * `QLT-06`: the three canonical biomes the roster was missing. Each is real OSM
+ * vocabulary for that landscape, so the same worker phases, terrain field, and
+ * hydrology compile them exactly like a live tile.
+ */
+function wetlandLayers() {
+  return {
+    transportation: [
+      line(90, [[0, 1500], [1400, 1450], [2900, 1560], [4096, 1520]], { class: 'unclassified', name: 'Bund Road' }),
+      line(91, [[2048, 0], [2048, 430]], { class: 'service', service: 'driveway', name: 'Jetty Track' }),
+      // A boardwalk that stays inside the basin: real wetland access, no deck.
+      line(92, [[900, 2300], [1500, 2750], [2200, 2900], [3100, 2820]], { class: 'path', name: 'Reed Boardwalk' }),
+    ],
+    building: [polygon(93, [[[420, 1060], [900, 1060], [900, 1360], [420, 1360]]], { class: 'building', render_height: 7 })],
+    landuse: [
+      polygon(94, [[[0, 1700], [4096, 1700], [4096, 4096], [0, 4096]]], { class: 'wetland', name: 'Fixture Marsh' }),
+      polygon(95, [[[0, 0], [4096, 0], [4096, 1700], [0, 1700]]], { class: 'grass' }),
+    ],
+    water: [
+      polygon(96, [[[300, 2100], [1700, 2100], [1700, 3400], [300, 3400]]], { class: 'lake', name: 'Fixture Beel' }),
+      polygon(97, [[[2200, 2450], [3500, 2450], [3500, 3800], [2200, 3800]]], { class: 'wetland', name: 'Fixture Reedbed' }),
+    ],
+    waterway: [line(98, [[2048, 430], [2048, 1700], [2000, 2600]], { class: 'stream', name: 'Fixture Khāl' })],
+    place: [marker(99, [1000, 1150], { class: 'hamlet', name: 'Fixture Daha' })],
+  };
+}
+
+function mountainLayers() {
+  const switchbacks = [];
+  for (let index = 0; index < 4; index++) {
+    const z = 700 + index * 800;
+    switchbacks.push([0, z], [1100, z - 260], [2200, z + 240], [3300, z - 200], [4096, z + 120]);
+  }
+  return {
+    transportation: [
+      line(100, switchbacks.map(([x, z]) => [x, z]), { class: 'track', tracktype: 'grade3', name: 'Ridge Track' }),
+      line(101, [[0, 2050], [4096, 2050]], { class: 'primary', name: 'Valley Highway' }),
+      line(102, [[2400, 0], [2400, 4096]], { class: 'rail', name: 'Hill Rail' }),
+    ],
+    building: [
+      polygon(103, [[[560, 660], [880, 660], [880, 880], [560, 880]]], { class: 'building', render_height: 9 }),
+      polygon(104, [[[560, 1460], [900, 1460], [900, 1700], [560, 1700]]], { class: 'building', render_height: 11 }),
+      polygon(105, [[[3200, 3060], [3620, 3060], [3620, 3340], [3200, 3340]]], { class: 'building', render_height: 8 }),
+    ],
+    landuse: [
+      polygon(106, [[[0, 0], [4096, 0], [4096, 4096], [0, 4096]]], { class: 'grass' }),
+      polygon(107, [[[2600, 2200], [3900, 2200], [3900, 3500], [2600, 3500]]], { class: 'rock', name: 'Fixture Crag' }),
+      polygon(108, [[[200, 2100], [1500, 2100], [1500, 3400], [200, 3400]]], { class: 'wood' }),
+    ],
+    place: [marker(109, [3300, 3200], { class: 'village', name: 'Fixture Dhārā' })],
+  };
+}
+
+function aridLayers() {
+  return {
+    transportation: [
+      line(110, [[0, 1180], [1500, 1240], [2900, 1160], [4096, 1230]], { class: 'trunk', name: 'Desert Highway' }),
+      line(111, [[1230, 0], [1270, 4096]], { class: 'unclassified', surface: 'unpaved', name: 'Kaccha Road' }),
+    ],
+    building: [
+      polygon(112, [[[2400, 2600], [2760, 2600], [2760, 2900], [2400, 2900]]], { class: 'building', render_height: 6 }),
+      polygon(113, [[[2850, 2620], [3180, 2620], [3180, 2880], [2850, 2880]]], { class: 'building', render_height: 5 }),
+    ],
+    landuse: [
+      polygon(114, [[[0, 0], [4096, 0], [4096, 4096], [0, 4096]]], { class: 'sand', name: 'Fixture Thar' }),
+      polygon(115, [[[1900, 1600], [3300, 1600], [3300, 2900], [1900, 2900]]], { class: 'scrub' }),
+    ],
+    // An intermittent wadi: a real arid waterway that carries no standing water.
+    waterway: [line(116, [[700, 4096], [900, 3100], [1300, 2300], [1500, 1400], [1900, 420]], {
+      class: 'stream', intermittent: true, name: 'Fixture Wadi',
+    })],
+    place: [marker(117, [2700, 2750], { class: 'hamlet', name: 'Fixture Dhānī' })],
+  };
+}
+
 function providerLayers(variant) {
   const roadLayer = variant === 'shortbread' ? 'streets' : 'transportation';
   const buildingLayer = variant === 'shortbread' ? 'buildings' : 'building';
@@ -194,6 +272,9 @@ function fixtureLayers(id, variant) {
   if (id === 'courtyard-hole') return courtyardLayers();
   if (id === 'stacked-bridge') return bridgeLayers();
   if (id === 'mapped-coast') return coastLayers();
+  if (id === 'wetland-basin') return wetlandLayers();
+  if (id === 'mountain-terrace') return mountainLayers();
+  if (id === 'arid-basin') return aridLayers();
   if (id === 'provider-equivalence') return providerLayers(variant);
   if (id === 'provider-semantics') return providerSemanticsLayers(variant);
   throw new RangeError(`Unknown geographic fixture: ${id}`);
@@ -234,9 +315,15 @@ export function createGeoFixture(id, variant = 'openmaptiles') {
 export function geoFixtureRequest(id, variant = 'openmaptiles') {
   const descriptor = FIXTURE_BY_ID.get(id);
   if (!descriptor || !descriptor.variants.includes(variant)) throw new RangeError(`Invalid fixture request: ${id}/${variant}`);
-  const coordinate = id === 'mapped-coast'
-    ? { latitude: 15.2993, longitude: 74.1240 }
-    : { latitude: 28.9845, longitude: 77.7064 };
+  // `QLT-06`: each canonical biome sits at the coordinate whose terrain seed and
+  // latitude drive its own deterministic ground field.
+  const coordinates = {
+    'mapped-coast': { latitude: 15.2993, longitude: 74.1240 },
+    'wetland-basin': { latitude: 24.6980, longitude: 93.8750 },
+    'mountain-terrace': { latitude: 30.4598, longitude: 78.0664 },
+    'arid-basin': { latitude: 26.8850, longitude: 70.9120 },
+  };
+  const coordinate = coordinates[id] ?? { latitude: 28.9845, longitude: 77.7064 };
   return Object.freeze({
     requestId: 1,
     key: `fixture:${id}:${variant}`,

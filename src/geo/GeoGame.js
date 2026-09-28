@@ -7,7 +7,7 @@ import {
 } from '../engine/ProceduralEngine.js';
 import { createTimeOfDayState, luminance, nightReadability } from '../engine/TimeOfDaySky.js';
 import { GeoWorld } from './GeoWorld.js';
-import { GeoPlayer, cameraNearPlaneSweepRadius } from './GeoPlayer.js';
+import { GeoPlayer, probeAuditedCameraClearance } from './GeoPlayer.js';
 import { FlexibleJoystick, shouldUseTouchControls } from './GeoControls.js';
 import { validateCoordinate } from './GeoMath.js';
 import { LifecycleLedger } from '../engine/LifecycleContract.js';
@@ -484,8 +484,10 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     world.update(player.position, camera, renderer.domElement.height, auditClock);
   };
   const auditProbe = info => {
-    const clearanceProbe = world.probeCameraClearance(
-      player.cameraTarget, camera.position, cameraNearPlaneSweepRadius(camera), {},
+    // `QLT-06`: first-person clearance means "the eye is inside a blocker", not
+    // "a facade is a metre ahead of the eye it is facing".
+    const clearanceProbe = probeAuditedCameraClearance(
+      world, player.cameraTarget, camera, player.cameraMode === 'first-person',
     );
     return world.movementSnapshot({
       camera, renderer, cameraMode: player.cameraMode,

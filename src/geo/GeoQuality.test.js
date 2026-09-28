@@ -96,8 +96,11 @@ function assertMountedSnapshotsEqual(first, second) {
 }
 
 test('canonical geographic fixture matrix covers every required topology and provider schema', () => {
+  // `QLT-06`: the matrix also carries the three canonical biomes the movement
+  // audit sweeps — wetland, mountain, and arid.
   assert.deepEqual(GEO_FIXTURE_MATRIX.map(item => item.category),
-    ['dense', 'sparse', 'concave', 'hole', 'bridge', 'coast', 'provider-schema', 'provider-semantics']);
+    ['dense', 'sparse', 'concave', 'hole', 'bridge', 'coast',
+      'wetland', 'mountain', 'arid', 'provider-schema', 'provider-semantics']);
   assert.equal(new Set(GEO_FIXTURE_MATRIX.map(item => item.id)).size, GEO_FIXTURE_MATRIX.length);
 
   const dense = compileGeoFixture('dense-urban');
@@ -107,6 +110,20 @@ test('canonical geographic fixture matrix covers every required topology and pro
   const bridge = compileGeoFixture('stacked-bridge');
   const coast = compileGeoFixture('mapped-coast');
   assert.ok(dense.buildings.meta.features > 80);
+  // The new biomes compile their own land, water, and relief rather than reuse.
+  const wetland = compileGeoFixture('wetland-basin');
+  const mountain = compileGeoFixture('mountain-terrace');
+  const arid = compileGeoFixture('arid-basin');
+  assert.notEqual(wetland.terrain.positions[1], mountain.terrain.positions[1],
+    'the wetland and the mountain compile different ground');
+  assert.equal(wetland.context.waterDomain.waterPolygonOffsets.length - 1, 2,
+    'the wetland basin carries two mapped water bodies');
+  assert.ok(wetland.context.waterDomain.waterClasses.some(waterClass => waterClass !== 0),
+    'and at least one of them is a real water class');
+  assert.equal(arid.context.waterDomain.waterPolygonOffsets.length - 1, 0,
+    'the arid basin carries no standing water polygon');
+  assert.ok(arid.context.waterDomain.waterways.length > 0,
+    'only its intermittent wadi is mapped, as a waterway');
   assert.equal(dense.buildings.meta.buildingGrammar.namespace, 'gdo:objectGrammar:v2');
   assert.equal(dense.buildings.meta.buildingGrammar.selectedBuildings, 8);
   assert.equal(dense.buildings.meta.buildingGrammar.capEvents.selectedBuildings, true);

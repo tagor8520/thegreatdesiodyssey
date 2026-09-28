@@ -28,6 +28,37 @@ export function cameraNearPlaneSweepRadius(camera, skin = .006) {
   return THREE.MathUtils.clamp(Math.hypot(halfWidth, halfHeight) + skin, .03, .04);
 }
 
+const auditedCameraProbeTarget = new THREE.Vector3();
+
+/**
+ * `QLT-06`: the clearance a movement audit reports for a live camera.
+ *
+ * First-person: a zero-length near-plane probe *at the eye*, so the verdict means
+ * what it says — the camera ended up inside a blocker — instead of firing whenever
+ * the avatar stands within a metre of a facade it is facing. Third-person: the
+ * shared sweep from the player target to the resolved camera, because that camera
+ * must never sit behind geometry.
+ */
+export function probeAuditedCameraClearance(world, cameraTarget, camera, firstPerson = true, out = {}) {
+  if (typeof world?.probeCameraClearance !== 'function') return null;
+  const radius = cameraNearPlaneSweepRadius(camera);
+  if (!firstPerson) return world.probeCameraClearance(cameraTarget, camera.position, radius, out);
+  // Second-person camera: one near-plane-sized step from the eye along the view
+  // direction. An eye inside a blocker (or clipping into one) reports a negative
+  // clearance; an avatar standing beside a facade reports zero, which is what the
+  // verdict means. A zero-length sweep is degenerate and would report free even
+  // from inside a wall, so the step is never zero.
+  const eye = camera.position;
+  auditedCameraProbeTarget.set(
+    Number(cameraTarget?.x ?? eye.x) - eye.x,
+    Number(cameraTarget?.y ?? eye.y) - eye.y,
+    Number(cameraTarget?.z ?? eye.z) - eye.z,
+  );
+  if (auditedCameraProbeTarget.lengthSq() < 1e-12) auditedCameraProbeTarget.set(0, 0, -1);
+  auditedCameraProbeTarget.normalize().multiplyScalar(radius).add(eye);
+  return world.probeCameraClearance(eye, auditedCameraProbeTarget, radius, out);
+}
+
 function createAvatar() {
   const parts = [
     [-.38,.65,0,.58,1.3,.62,'#253c60'], [.38,.65,0,.58,1.3,.62,'#253c60'],
