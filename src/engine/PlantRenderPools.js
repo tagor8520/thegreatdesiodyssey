@@ -179,6 +179,9 @@ export function uploadPlantGeometryTier({ family, lod, sources } = {}) {
   box.getBoundingSphere(geometry.boundingSphere);
   const fingerprints = Object.freeze(validated.map(plantGeometryFingerprint));
   const sourceTriangles = Object.freeze(validated.map(source => source.indices.length / 3));
+  // `VEG-02`: the compiled box-module count travels with the upload so the live
+  // silhouette cost of every resident tier is measurable, not estimated.
+  const sourceBoxes = Object.freeze(validated.map(source => source.diagnostics?.boxesEmitted ?? 0));
   const staticBytes = staticGeometryBytes(geometry);
   geometry.name = `plant-tier:${family}:${lod}`;
   geometry.userData.gdoPlantUpload = Object.freeze({
@@ -189,6 +192,9 @@ export function uploadPlantGeometryTier({ family, lod, sources } = {}) {
     variants: validated.length,
     fingerprints,
     sourceTriangles,
+    sourceBoxes,
+    /** Worst-case box modules one instance of this tier draws after LOD. */
+    drawBoxes: Math.max(...sourceBoxes),
     drawTriangles: vertexCount / 3,
     staticBytes,
     windDisplacementMargin,
@@ -454,6 +460,12 @@ export class PlantRenderPools {
       get legacyEquivalentDraws() { return pools.#legacyEquivalentDraws(); },
       get addedDrawCalls() { return Math.max(0, pools.#activeDrawPools() - pools.#legacyEquivalentDraws()); },
       get byLod() { return pools.#lodCounts(); },
+      // `VEG-02`: silhouette/LOD cost of what is resident right now — box modules
+      // and triangles weighted by the tier each instance actually draws.
+      get boxModules() { return pools.#liveTierCost('drawBoxes'); },
+      /** `VEG-02`: instances actually inside an active draw bucket this frame. */
+      get drawnInstances() { return pools.#drawnInstances(); },
+      get tierTriangles() { return pools.#liveTierCost('drawTriangles'); },
       get repacks() { return pools.repacks; },
       get ownerAdds() { return pools.ownerAdds; },
       get ownerRemovals() { return pools.ownerRemovals; },
@@ -509,6 +521,21 @@ export class PlantRenderPools {
       triangles += bucket.ids.size * bucket.geometry.userData.gdoPlantUpload.drawTriangles;
     }
     return triangles;
+  }
+
+  #drawnInstances() {
+    let count = 0;
+    for (const bucket of this.buckets.values()) count += bucket.ids.size;
+    return count;
+  }
+
+  /** `VEG-02`: live instance count times one tier's declared per-instance cost. */
+  #liveTierCost(metric) {
+    let total = 0;
+    for (const bucket of this.buckets.values()) {
+      total += bucket.ids.size * (bucket.geometry.userData.gdoPlantUpload[metric] ?? 0);
+    }
+    return total;
   }
 
   #legacyEquivalentDraws() {

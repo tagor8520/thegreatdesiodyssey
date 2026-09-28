@@ -28,6 +28,10 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   plantRenderSourceGeometries: 48,
   plantRenderGpuBytes: 1.5 * MEBIBYTE,
   plantRenderVisibleTriangles: 75_000,
+  // `VEG-02`: research §17.2 low-profile silhouette ceilings — box modules after
+  // LOD and the minimum far-tier silhouette retention (§19.2.5).
+  plantBoxModulesAfterLod: 6_000,
+  plantFarSilhouetteRetention: .9,
   plantRenderAddedDrawCalls: 8,
   plantWindUniformWritesPerFrame: 1,
   plantWindCpuMatrixUpdatesPerFrame: 0,
@@ -134,6 +138,8 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'plantRenderSourceGeometries', budget: 'plantRenderSourceGeometries', label: 'plant render source geometries' }),
   Object.freeze({ metric: 'plantRenderGpuBytes', budget: 'plantRenderGpuBytes', label: 'plant render GPU geometry bytes' }),
   Object.freeze({ metric: 'plantRenderVisibleTriangles', budget: 'plantRenderVisibleTriangles', label: 'visible plant triangles' }),
+  Object.freeze({ metric: 'plantBoxModules', budget: 'plantBoxModulesAfterLod', label: 'plant box modules after LOD' }),
+  Object.freeze({ metric: 'plantFarSilhouetteRetention', budget: 'plantFarSilhouetteRetention', label: 'plant far silhouette retention' }),
   Object.freeze({ metric: 'plantRenderAddedDrawCalls', budget: 'plantRenderAddedDrawCalls', label: 'added plant draw calls' }),
   Object.freeze({ metric: 'plantWindUniformWritesPerFrame', budget: 'plantWindUniformWritesPerFrame', label: 'plant wind uniform writes/frame' }),
   Object.freeze({ metric: 'plantWindCpuMatrixUpdatesPerFrame', budget: 'plantWindCpuMatrixUpdatesPerFrame', label: 'plant wind CPU matrix updates/frame' }),

@@ -9,6 +9,7 @@ import { createDebugLogger, installDebugHooks } from '../engine/DebugHooks.js';
 import { createMovementAuditRunner } from '../engine/MovementAudit.js';
 import { createSupportQuery, describeDomainCompliance } from '../engine/DomainInterface.js';
 import { createLabelLosTester } from './GeoLabelLos.js';
+import { createPlantSilhouetteAuditRunner } from '../engine/PlantSilhouetteAudit.js';
 import { actionCapabilitiesForDomain, createActionRegistry } from '../engine/ActionRegistry.js';
 import { createTouchActionControls, touchActionMarkup } from './GeoActionControls.js';
 import './geo.css';
@@ -235,7 +236,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   const losVisibleLabels = [];
   const losAnchor = new THREE.Vector3();
   world.labelLosDiagnostics = labelLos.diagnostics();
-  let displayedLabels = [], nextLabelRefresh = 0, lastLosTests = 0;
+  let displayedLabels = [], nextLabelRefresh = 0, lastLosTests = 0, silhouetteClock = 0;
   const updateMapLabels = now => {
     if (now >= nextLabelRefresh) {
       displayedLabels = world.visibleLabels;
@@ -464,6 +465,36 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   const movementAudit = createMovementAuditRunner({
     step: auditStep, probe: auditProbe, reset: auditReset, label: 'coordinate-movement',
   });
+  // `VEG-02`: the same scripted-walk approach measures the vegetation silhouette
+  // and its LOD cost against the declared low-profile ceilings.
+  const silhouetteAudit = createPlantSilhouetteAuditRunner({
+    step: info => {
+      const yaw = (info.yawTurns ?? 0) * Math.PI * 2;
+      const distance = (info.forward ?? 0) * .85;
+      player.position.x += Math.sin(yaw) * distance;
+      player.position.z += Math.cos(yaw) * distance;
+      silhouetteClock += 1000 / 30;
+      player.update(info.dt ?? 1 / 30);
+      world.update(player.position, camera, renderer.domElement.height, silhouetteClock);
+    },
+    probe: () => world.plantSilhouetteSample(),
+    reset: () => {
+      silhouetteClock = 0;
+      player.setPosition(0, 0);
+      world.plantLodSelector.clear();
+    },
+    warmup: true,
+    label: 'coordinate-silhouette',
+  });
+  const runSilhouetteAudit = options => {
+    const report = silhouetteAudit.run(options);
+    world.plantSilhouetteSummary = silhouetteAudit.summary();
+    logger.info('audit', 'plant silhouette audit complete', {
+      ok: report.ok, samples: report.samples, fingerprint: report.fingerprint,
+      failed: report.verdicts.filter(verdict => !verdict.ok).map(verdict => verdict.id),
+    });
+    return report;
+  };
   const runMovementAudit = options => {
     const report = movementAudit.run(options);
     // The debug panel and the world snapshot read the same verdict summary.
@@ -501,6 +532,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
         dispatched: player.actionDiagnostics().recent,
         support: createSupportQuery(world, world.domain).support(player.position.x, player.position.z),
         movementAudit: movementAudit.summary(),
+        plantSilhouette: silhouetteAudit.summary(),
         profile: world.profile,
       };
     },
@@ -509,7 +541,10 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       player.update(dt);
       world.update(player.position, camera, renderer.domElement.height, auditClock + index * dt * 1000);
     },
-    audits: { movement: options => runMovementAudit(options) },
+    audits: {
+      movement: options => runMovementAudit(options),
+      silhouette: options => runSilhouetteAudit(options),
+    },
     extras: {
       world, player, camera, renderer,
       movementAudit,

@@ -135,6 +135,10 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
     ),
     plantRenderEntries: plantRenderDiagnostics?.entries ?? 0,
     plantRenderPools: plantRenderDiagnostics?.activeDrawPools ?? 0,
+    // `VEG-02`: silhouette cost after LOD and the LOD switching behaviour.
+    plantBoxModules: plantRenderDiagnostics?.boxModules ?? 0,
+    plantLodSwitches: world?.plantLodSelector?.diagnostics?.switches ?? 0,
+    plantLodHysteresisHolds: world?.plantLodSelector?.diagnostics?.hysteresisHolds ?? 0,
     plantRenderSourceGeometries: plantRenderDiagnostics?.sourceGeometries ?? 0,
     plantRenderGpuBytes: plantRenderDiagnostics?.gpuGeometryBytes ?? 0,
     plantRenderVisibleTriangles: plantRenderDiagnostics?.visibleTriangles ?? 0,
@@ -421,6 +425,8 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
       plantLods: world?.plantLods?.diagnostics ?? null,
       plantLodSelector: world?.plantLodSelector?.diagnostics ?? null,
       plantRender: world?.plantRenderPools?.diagnostics ?? null,
+      // `VEG-02`: the last silhouette/cost audit verdict for this world.
+      plantSilhouette: world?.plantSilhouetteSummary ?? null,
       streetFurniture: world?.streetFurniturePools?.diagnostics ?? null,
       ambientLife: world?.ambientLifePools?.diagnostics ?? null,
       bridges: world?.bridgePools?.diagnostics ?? null,

@@ -1228,6 +1228,11 @@ export class GeoWorld {
       plantRenderEntries: this.plantRenderPools.diagnostics.entries,
       plantRenderPools: this.plantRenderPools.diagnostics.activeDrawPools,
       plantRenderTriangles: this.plantRenderPools.diagnostics.visibleTriangles,
+      // `VEG-02`: the live silhouette cost after LOD, not an estimate.
+      plantBoxModules: this.plantRenderPools.diagnostics.boxModules,
+      plantDrawnInstances: this.plantRenderPools.diagnostics.drawnInstances,
+      plantLodSwitches: this.plantLodSelector.diagnostics.switches,
+      plantLodHysteresisHolds: this.plantLodSelector.diagnostics.hysteresisHolds,
       plantWindUniformWrites: this.plantRenderPools.diagnostics.windUniformWrites,
       plantWindCpuMatrixUpdates: this.plantRenderPools.diagnostics.windCpuMatrixUpdates,
       plantWindReducedMotion: this.plantRenderPools.diagnostics.reducedMotion,
@@ -1986,6 +1991,63 @@ export class GeoWorld {
     out.clearance = hit.hit ? -(1 - hit.time) * distance : 0;
     out.blocked = Boolean(hit.hit && hit.time < 1);
     out.distance = distance;
+    return out;
+  }
+
+  /**
+   * `VEG-02`: one live silhouette/LOD sample of the resident vegetation, in the
+   * shape `PlantSilhouetteAudit` consumes. Reuses one record per call site.
+   */
+  plantSilhouetteSample(out = this.silhouetteSample ??= {}) {
+    const pools = this.plantRenderPools;
+    const selector = this.plantLodSelector;
+    const families = out.families ??= [];
+    const familySets = this.silhouetteFamilySets ??= new Map();
+    const placements = out.placements ??= [];
+    families.length = 0;
+    placements.length = 0;
+    familySets.clear();
+    this.silhouetteFamilyEntries ??= new Map();
+    let next = 0;
+    for (const record of pools.records.values()) {
+      const family = record.placement.family;
+      if (!familySets.has(family)) {
+        families.push(family);
+        // The compiled levels of a family are immutable, so the descriptor is
+        // cached instead of rebuilt on every audit sample.
+        let entry = this.silhouetteFamilyEntries.get(family);
+        if (!entry) {
+          const set = pools.library.getForPlacement(record.placement);
+          entry = { levels: set.diagnostics.levels, boundsSize: set.bounds.size };
+          this.silhouetteFamilyEntries.set(family, entry);
+        }
+        familySets.set(family, entry);
+      }
+      const slot = placements[next] ??= { family: '', expectedFamily: null, lod: null };
+      next++;
+      slot.family = family;
+      slot.expectedFamily = GEO_PLANT_TYPE_FAMILIES[record.sourceType] ?? null;
+      slot.lod = record.lod;
+    }
+    placements.length = next;
+    out.profile = this.profile;
+    out.entries = pools.diagnostics.entries;
+    out.instances = pools.diagnostics.entries;
+    out.drawnInstances = pools.diagnostics.drawnInstances;
+    out.boxModules = pools.diagnostics.boxModules;
+    out.triangles = pools.diagnostics.tierTriangles;
+    out.drawPools = pools.diagnostics.activeDrawPools;
+    out.sourceGeometries = pools.diagnostics.sourceGeometries;
+    out.byLod = pools.diagnostics.byLod;
+    out.switches = selector.diagnostics.switches;
+    out.hysteresisHolds = selector.diagnostics.hysteresisHolds;
+    out.evaluations = selector.diagnostics.evaluations;
+    // The audit reads the family table by key, so expose the cached map as a
+    // plain record view without rebuilding the descriptors themselves.
+    const view = out.familySetsView ??= {};
+    for (const key of Object.keys(view)) if (!familySets.has(key)) delete view[key];
+    for (const [key, entry] of familySets) view[key] = entry;
+    out.familySets = view;
     return out;
   }
 
