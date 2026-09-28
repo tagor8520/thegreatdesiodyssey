@@ -107,6 +107,7 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
   const bridgeDiagnostics = world?.bridgePools?.diagnostics;
   const landmarkDiagnostics = world?.landmarkPools?.diagnostics;
   const tileCache = world?.tileCacheDiagnostics ?? null;
+  const dynamicProxyDiagnostics = world?.dynamicProxies?.diagnostics?.() ?? null;
   estimatedGpuBytes += materialTextureBytes;
   return Object.freeze({
     view,
@@ -142,6 +143,12 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
     plantRenderSourceGeometries: plantRenderDiagnostics?.sourceGeometries ?? 0,
     plantRenderGpuBytes: plantRenderDiagnostics?.gpuGeometryBytes ?? 0,
     plantRenderVisibleTriangles: plantRenderDiagnostics?.visibleTriangles ?? 0,
+    // `COL-09`: the capped moving-solid hash the collision queries merge.
+    dynamicProxies: dynamicProxyDiagnostics?.activeProxies ?? 0,
+    dynamicProxyCells: dynamicProxyDiagnostics?.cells ?? 0,
+    dynamicProxyCapSkips: dynamicProxyDiagnostics?.capSkips ?? 0,
+    dynamicProxyReinserts: dynamicProxyDiagnostics?.reinserts ?? 0,
+    dynamicProxySteadyFrameAllocations: dynamicProxyDiagnostics?.steadyFrameAllocations ?? 0,
     plantRenderAddedDrawCalls: plantRenderDiagnostics?.addedDrawCalls ?? 0,
     plantWindUniformWritesPerFrame: plantRenderDiagnostics?.windUniformWrites ?? 0,
     plantWindCpuMatrixUpdatesPerFrame: plantRenderDiagnostics?.windCpuMatrixUpdates ?? 0,
@@ -425,6 +432,14 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
       plantLods: world?.plantLods?.diagnostics ?? null,
       plantLodSelector: world?.plantLodSelector?.diagnostics ?? null,
       plantRender: world?.plantRenderPools?.diagnostics ?? null,
+      // `COL-09`: the capped moving-solid hash behind every merged query. The
+      // numeric counters also travel with the runtime budget metrics.
+      dynamicProxyState: world?.dynamicProxies?.diagnostics?.() ?? null,
+      dynamicProxies: world?.dynamicProxies?.diagnostics?.().activeProxies ?? 0,
+      dynamicProxyCells: world?.dynamicProxies?.diagnostics?.().cells ?? 0,
+      dynamicProxyCapSkips: world?.dynamicProxies?.diagnostics?.().capSkips ?? 0,
+      dynamicProxyReinserts: world?.dynamicProxies?.diagnostics?.().reinserts ?? 0,
+      dynamicProxySteadyFrameAllocations: world?.dynamicProxies?.diagnostics?.().steadyFrameAllocations ?? 0,
       // `VEG-02`: the last silhouette/cost audit verdict for this world.
       plantSilhouette: world?.plantSilhouetteSummary ?? null,
       streetFurniture: world?.streetFurniturePools?.diagnostics ?? null,

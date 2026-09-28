@@ -308,3 +308,60 @@ test('the richer map readout names the mapped surface, water, and nearest place'
     fixture.dispose();
   }
 });
+
+test('COL-09: the world merges moving solids into the same collision queries', () => {
+  const fixture = createFixtureWorld('provider-semantics');
+  try {
+    const { world } = fixture;
+    const grid = world.dynamicProxies;
+    const { namespace } = grid.diagnostics();
+    assert.equal(namespace, 'gdo:dynamicProxy:v1');
+    // A parked car on an otherwise clear lane blocks the player sweep.
+    const clear = world.sweepCircle(12, 12, 6, 0, .055, {});
+    assert.equal(clear.hit, false, 'the lane starts clear');
+    assert.ok(grid.insert('car', {
+      kind: 'box', minX: 16, minZ: 10.5, maxX: 18, maxZ: 13.5, ySpan: [0, 1.6], owner: 'test',
+    }));
+    const blocked = world.sweepCircle(12, 12, 6, 0, .055, {});
+    assert.equal(blocked.hit, true);
+    assert.equal(blocked.dynamicId, 'car');
+    assert.equal(blocked.dynamicKind, 'box');
+    assert.equal(blocked.tileKey, null);
+    assert.ok(blocked.time > 0 && blocked.time < 1);
+    // The overlap query agrees, and the semantic mask still gates it.
+    assert.equal(world.collidesCircle(17, 12, .055, 1, 0, 1.6), true);
+    assert.equal(world.collidesCircle(17, 12, .055, 4, 0, 1.6), false, 'a mask the proxy does not carry is skipped');
+    assert.equal(world.collidesCircle(17, 12, .055, 1, 5, 6), false, 'a body above the proxy passes');
+    // The camera/LOS sphere sweep sees the same authority.
+    const camera = world.sweepSphere(12, 1, 12, 6, 0, 0, .02, {}, 4 | 1);
+    assert.equal(camera.hit, true);
+    assert.equal(camera.dynamicId, 'car');
+
+    // Moving the car away opens the lane again without touching the static tiles.
+    const staticCandidates = world.queryDiagnostics.candidates;
+    assert.equal(grid.move('car', 0, 40), true);
+    assert.equal(world.sweepCircle(12, 12, 6, 0, .055, {}).hit, false, 'the lane is clear once the car leaves');
+    assert.equal(world.queryDiagnostics.candidates, staticCandidates,
+      'the dynamic half never inflates the static candidate accounting');
+    assert.equal(grid.remove('car'), true);
+    assert.equal(grid.activeProxies, 0);
+
+    // The capped hash is reported through the debug snapshot with the rest.
+    grid.insert('boat', { kind: 'circle', x: 40, z: 40, radius: 2, ySpan: [-1, 1], mask: 2 });
+    const snapshot = buildGeoDebugSnapshot(world, { x: 12, z: 12 });
+    assert.equal(snapshot.summary.dynamicProxies, 1);
+    assert.equal(snapshot.summary.dynamicProxyCells > 0, true);
+    assert.equal(snapshot.summary.dynamicProxyCapSkips, 0);
+    assert.equal(snapshot.summary.dynamicProxySteadyFrameAllocations, 0);
+    assert.equal(snapshot.summary.dynamicProxyReinserts >= 1, true, 'the moved car was reinserted once');
+    assert.equal(typeof snapshot.summary.dynamicProxyState.activeProxies, 'number');
+    assert.equal(snapshot.summary.dynamicProxyState.namespace, 'gdo:dynamicProxy:v1');
+
+    // The lifecycle ledger owns the grid: disposing the world disposes the hash.
+    world.dispose();
+    assert.equal(grid.diagnostics().disposed, true);
+    assert.throws(() => grid.insert('late', { kind: 'circle', x: 0, z: 0, radius: 1, ySpan: [0, 1] }), /disposed/);
+  } finally {
+    fixture.dispose();
+  }
+});

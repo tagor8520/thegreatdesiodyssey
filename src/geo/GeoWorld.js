@@ -14,6 +14,7 @@ import {
   AmbientLifePools,
   GDO_AMBIENT_LIFE_SOURCE_TYPES,
 } from '../engine/AmbientLifeMotion.js';
+import { DynamicProxyGrid } from '../engine/DynamicProxyGrid.js';
 import {
   acquireProceduralMaterialLibrary,
   configureSemanticMaterial,
@@ -602,6 +603,12 @@ export class GeoWorld {
     // pool becomes the lifecycle authority.
     this.plantLods = this.plantRenderPools.library;
     this.plantLodSelector = this.plantRenderPools.selector;
+    // `COL-09`: the capped moving-solid hash. It shares the semantic masks with
+    // the static tiles, so `collidesCircle`/`sweepCircle`/`sweepSphere` merge one
+    // contact set for the player, the camera, and future agents.
+    this.dynamicProxies = new DynamicProxyGrid({ profile: 'low', ledger: this.lifecycle });
+    this.dynamicCandidateIds = [];
+    this.dynamicWindow = { x: 0, z: 0, radius: 0 };
     this.activeBiome = { id: 'temperate', label: 'Reading map landscape…', ground: [.16, .30, .10] };
 
     this.worker = new Worker(new URL('./GeoTileWorker.js', import.meta.url), { type: 'module', name: 'map-tile-generator' });
@@ -1411,6 +1418,8 @@ export class GeoWorld {
     maxY = Infinity,
   ) {
     this.queryDiagnostics.overlaps++;
+    // `COL-09`: moving solids answer the same query as the static tiles.
+    if (this.dynamicOverlapsCircle(x, z, radius, queryMask, minY, maxY)) return true;
     for (const tile of this.tiles.values()) {
       if (!tile.collisionGrid || x + radius < tile.bounds.minX || x - radius > tile.bounds.maxX ||
           z + radius < tile.bounds.minZ || z - radius > tile.bounds.maxZ) continue;
@@ -1446,11 +1455,26 @@ export class GeoWorld {
     out.startedOverlapping = false;
     out.tileKey = null;
     out.polygonIndex = -1;
+    out.dynamicId = null;
+    out.dynamicKind = null;
 
     const sweepMinX = Math.min(x, x + dx) - radius;
     const sweepMaxX = Math.max(x, x + dx) + radius;
     const sweepMinZ = Math.min(z, z + dz) - radius;
     const sweepMaxZ = Math.max(z, z + dz) + radius;
+    // `COL-09`: the merged moving-solid hit competes with the static hit on time.
+    const dynamicHit = this.dynamicSweepCircle(x, z, dx, dz, radius, queryMask, minY, maxY);
+    if (dynamicHit && dynamicHit.time <= out.time) {
+      out.hit = true;
+      out.time = dynamicHit.time;
+      out.normalX = 0;
+      out.normalZ = 0;
+      out.startedOverlapping = dynamicHit.time === 0;
+      out.tileKey = null;
+      out.polygonIndex = -1;
+      out.dynamicId = dynamicHit.id;
+      out.dynamicKind = dynamicHit.kind;
+    }
     for (const tile of this.tiles.values()) {
       if (!tile.collisionGrid || sweepMaxX < tile.bounds.minX || sweepMinX > tile.bounds.maxX ||
           sweepMaxZ < tile.bounds.minZ || sweepMinZ > tile.bounds.maxZ) continue;
@@ -1489,6 +1513,32 @@ export class GeoWorld {
       }
     }
     return out;
+  }
+
+  /**
+   * `COL-09`: exact overlap against the merged moving solids. Mirrors the static
+   * path's role/Y filtering so a proxy cannot bypass the semantic masks.
+   */
+  dynamicOverlapsCircle(x, z, radius, queryMask, minY, maxY) {
+    const grid = this.dynamicProxies;
+    if (!grid || !grid.activeProxies) return null;
+    const record = grid.overlapsCircle(x, z, radius, { queryMask, minY, maxY, out: this.dynamicCandidateIds ??= [] });
+    if (!record) return null;
+    for (const primitive of record.primitives) {
+      if ((record.mask & queryMask) === 0) continue;
+      if (maxY < primitive.ySpan[0] || minY > primitive.ySpan[1]) continue;
+      return record;
+    }
+    return null;
+  }
+
+  /** `COL-09`: earliest continuous hit against the merged moving solids. */
+  dynamicSweepCircle(x, z, dx, dz, radius, queryMask, minY, maxY) {
+    const grid = this.dynamicProxies;
+    if (!grid || !grid.activeProxies) return null;
+    return grid.sweepCircle(x, z, dx, dz, radius, {
+      queryMask, minY, maxY, out: this.dynamicCandidateIds ??= [],
+    });
   }
 
   /** Recover a circle from bounded startup/streaming/numeric overlap. */
@@ -1641,6 +1691,22 @@ export class GeoWorld {
     const sweepMaxZ = Math.max(z, z + dz) + radius;
     const sweepMinY = Math.min(y, y + dy) - radius;
     const sweepMaxY = Math.max(y, y + dy) + radius;
+
+    // `COL-09`: a moving solid competes with the static hit on time here too, so
+    // the camera, LOS and interaction sweeps share one authority.
+    const dynamicHit = this.dynamicSweepCircle(x, z, dx, dz, radius, queryMask, sweepMinY, sweepMaxY);
+    if (dynamicHit && dynamicHit.time <= out.time) {
+      out.hit = true;
+      out.time = dynamicHit.time;
+      out.normalX = 0;
+      out.normalY = 0;
+      out.normalZ = 0;
+      out.startedOverlapping = dynamicHit.time === 0;
+      out.tileKey = null;
+      out.polygonIndex = -1;
+      out.dynamicId = dynamicHit.id;
+      out.dynamicKind = dynamicHit.kind;
+    }
 
     for (const tile of this.tiles.values()) {
       if (!tile.collisionGrid || sweepMaxX < tile.bounds.minX || sweepMinX > tile.bounds.maxX ||

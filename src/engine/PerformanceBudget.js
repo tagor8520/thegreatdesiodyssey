@@ -31,6 +31,8 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   // `VEG-02`: research §17.2 low-profile silhouette ceilings — box modules after
   // LOD and the minimum far-tier silhouette retention (§19.2.5).
   plantBoxModulesAfterLod: 6_000,
+  // `COL-09`: research §5.1 dynamic-proxy cap for the low profile.
+  dynamicProxies: 64,
   plantFarSilhouetteRetention: .9,
   plantRenderAddedDrawCalls: 8,
   plantWindUniformWritesPerFrame: 1,
@@ -139,6 +141,7 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'plantRenderGpuBytes', budget: 'plantRenderGpuBytes', label: 'plant render GPU geometry bytes' }),
   Object.freeze({ metric: 'plantRenderVisibleTriangles', budget: 'plantRenderVisibleTriangles', label: 'visible plant triangles' }),
   Object.freeze({ metric: 'plantBoxModules', budget: 'plantBoxModulesAfterLod', label: 'plant box modules after LOD' }),
+  Object.freeze({ metric: 'dynamicProxies', budget: 'dynamicProxies', label: 'active dynamic proxies' }),
   Object.freeze({ metric: 'plantFarSilhouetteRetention', budget: 'plantFarSilhouetteRetention', label: 'plant far silhouette retention' }),
   Object.freeze({ metric: 'plantRenderAddedDrawCalls', budget: 'plantRenderAddedDrawCalls', label: 'added plant draw calls' }),
   Object.freeze({ metric: 'plantWindUniformWritesPerFrame', budget: 'plantWindUniformWritesPerFrame', label: 'plant wind uniform writes/frame' }),
