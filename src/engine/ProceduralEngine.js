@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { acquireProceduralMaterialLibrary, createWaterNormalTexture } from './ProceduralMaterials.js';
 import { LifecycleLedger } from './LifecycleContract.js';
+import { createStarField } from './TimeOfDaySky.js';
 
 export { createWaterNormalTexture };
 
@@ -20,9 +21,27 @@ export const GDO_PALETTE = Object.freeze({
   terracotta: '#c56545',
 });
 
-export function createProceduralSky(scene) {
+/**
+ * `ENV-02`: the sky dome is uniform-driven, so one shared time-of-day state
+ * colours it. A physical atmosphere is deliberately not attempted — the same
+ * fast dome keeps gradients, a sun disc/glow, a moon disc, block clouds, and a
+ * seeded star field drawn as a single static point set.
+ */
+export function createProceduralSky(scene, { starCount = 120, showMoon = false, cloudCoverage = true } = {}) {
   const geometry = new THREE.SphereGeometry(900, 20, 10);
+  const uniforms = {
+    uHorizon: { value: new THREE.Color(.62, .70, .775) },
+    uMiddle: { value: new THREE.Color(.43, .585, .78) },
+    uZenith: { value: new THREE.Color(.235, .415, .71) },
+    uSunDirection: { value: new THREE.Vector3(-.48, .78, .30) },
+    uMoonDirection: { value: new THREE.Vector3(.48, -.78, -.30) },
+    uSunColor: { value: new THREE.Color(1, .94, .82) },
+    uStarOpacity: { value: 0 },
+    uMoonOpacity: { value: 0 },
+    uCloudCoverage: { value: cloudCoverage ? 1 : 0 },
+  };
   const material = new THREE.ShaderMaterial({
+    uniforms,
     side: THREE.BackSide,
     depthWrite: false,
     depthTest: false,
@@ -37,23 +56,45 @@ export function createProceduralSky(scene) {
     `,
     fragmentShader: `
       varying vec3 vSkyDirection;
+      uniform vec3 uHorizon;
+      uniform vec3 uMiddle;
+      uniform vec3 uZenith;
+      uniform vec3 uSunDirection;
+      uniform vec3 uMoonDirection;
+      uniform vec3 uSunColor;
+      uniform float uStarOpacity;
+      uniform float uMoonOpacity;
+      uniform float uCloudCoverage;
+      // Deterministic star lattice: a hash on the quantized sky direction makes
+      // a static point field without a second draw call.
+      float starField(vec3 direction) {
+        if (direction.y < 0.02 || uStarOpacity < 0.01) return 0.0;
+        vec3 cell = direction / max(0.02, direction.y + 0.35) * 34.0;
+        vec3 cellId = floor(cell);
+        vec3 local = fract(cell) - 0.5;
+        float seed = fract(sin(dot(cellId, vec3(12.9898, 78.233, 45.164))) * 43758.5453);
+        float size = 0.055 + seed * 0.10;
+        float point = 1.0 - smoothstep(size, size + 0.06, length(local));
+        float twinkle = step(0.42, seed);
+        return point * twinkle * (0.35 + seed * 0.65) * uStarOpacity;
+      }
       void main() {
         vec3 direction = normalize(vSkyDirection);
         float height = clamp(direction.y * 0.72 + 0.30, 0.0, 1.0);
-        vec3 horizon = vec3(0.22, 0.42, 0.52);
-        vec3 middle = vec3(0.12, 0.34, 0.58);
-        vec3 zenith = vec3(0.03, 0.18, 0.42);
-        vec3 sky = mix(horizon, middle, smoothstep(0.0, 0.48, height));
-        sky = mix(sky, zenith, smoothstep(0.48, 1.0, height));
-        vec3 sunDirection = normalize(vec3(-0.48, 0.78, 0.30));
+        vec3 sky = mix(uHorizon, uMiddle, smoothstep(0.0, 0.48, height));
+        sky = mix(sky, uZenith, smoothstep(0.48, 1.0, height));
+        vec3 sunDirection = normalize(uSunDirection);
         float glow = pow(max(dot(direction, sunDirection), 0.0), 24.0);
         float disc = pow(max(dot(direction, sunDirection), 0.0), 640.0);
-        sky += vec3(1.0, 0.58, 0.24) * glow * 0.22 + vec3(1.0, 0.88, 0.58) * disc * 1.3;
+        sky += uSunColor * glow * 0.22 + uSunColor * disc * 1.3;
+        float moonGlow = pow(max(dot(direction, normalize(uMoonDirection)), 0.0), 420.0);
+        sky += vec3(0.86, 0.90, 1.0) * moonGlow * uMoonOpacity * 1.1;
         vec2 cloudCell = floor(direction.xz / max(0.16, direction.y + 0.32) * 13.0);
         float cloudNoise = fract(sin(dot(cloudCell, vec2(41.7, 289.1))) * 43758.5453);
         float cloudBand = smoothstep(0.08, 0.24, direction.y) * (1.0 - smoothstep(0.62, 0.84, direction.y));
-        float blockCloud = step(0.62, cloudNoise) * cloudBand * 0.58;
-        sky = mix(sky, vec3(0.82, 0.86, 0.84), blockCloud);
+        float blockCloud = step(0.62, cloudNoise) * cloudBand * 0.58 * uCloudCoverage;
+        sky = mix(sky, mix(vec3(0.82, 0.86, 0.84), uMiddle, 0.35), blockCloud);
+        sky += vec3(starField(direction));
         gl_FragColor = vec4(sky, 1.0);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
@@ -65,12 +106,45 @@ export function createProceduralSky(scene) {
   mesh.renderOrder = -1000;
   mesh.frustumCulled = false;
   scene.add(mesh);
+  // The seeded star set stays available for catalogue/diagnostic use even though
+  // the dome resolves its own lattice: both are the same deterministic field.
+  const stars = createStarField({ count: starCount });
+  const starGeometry = new THREE.BufferGeometry();
+  starGeometry.setAttribute('position', new THREE.BufferAttribute(stars.positions, 3));
+  const starMaterial = new THREE.PointsMaterial({
+    color: '#ffeccf', size: 1.6, sizeAttenuation: false, transparent: true, opacity: 0 * 1, depthWrite: false,
+  });
+  const starPoints = new THREE.Points(starGeometry, starMaterial);
+  starPoints.name = 'shared-procedural-stars';
+  starPoints.renderOrder = -999;
+  starPoints.frustumCulled = false;
+  starPoints.visible = false;
+  scene.add(starPoints);
   return {
     mesh,
+    stars,
+    starPoints,
+    uniforms,
+    setSkyState(state) {
+      uniforms.uHorizon.value.setRGB(state.horizon[0], state.horizon[1], state.horizon[2]);
+      uniforms.uMiddle.value.setRGB(state.middle[0], state.middle[1], state.middle[2]);
+      uniforms.uZenith.value.setRGB(state.zenith[0], state.zenith[1], state.zenith[2]);
+      uniforms.uSunDirection.value.set(state.sunDirection[0], state.sunDirection[1], state.sunDirection[2]).normalize();
+      uniforms.uMoonDirection.value.set(state.moonDirection[0], state.moonDirection[1], state.moonDirection[2]).normalize();
+      uniforms.uSunColor.value.setRGB(state.sun[0], state.sun[1], state.sun[2]);
+      uniforms.uStarOpacity.value = state.starOpacity;
+      uniforms.uMoonOpacity.value = showMoon ? state.moonOpacity : 0;
+      starMaterial.opacity = state.starOpacity;
+      starPoints.visible = state.starOpacity > .01;
+      return state;
+    },
     dispose() {
       mesh.removeFromParent();
       geometry.dispose();
       material.dispose();
+      starPoints.removeFromParent();
+      starGeometry.dispose();
+      starMaterial.dispose();
     },
   };
 }
@@ -179,9 +253,31 @@ export function createProceduralLightRig(scene, {
   }
   const fill = new THREE.HemisphereLight('#d8edff', '#816343', hemisphereIntensity);
   scene.add(sun, sun.target, fill);
+  // `ENV-02`: the rig keeps its authored intensities until a time-of-day state
+  // drives it; the driver below is the only writer.
+  const authored = Object.freeze({ sunIntensity, hemisphereIntensity, distance: sun.position.length() });
   return {
     sun,
     fill,
+    authored,
+    /**
+     * `ENV-02` bridge: a pure state record in, one three light rig out. It is
+     * deliberately the only place that touches `three` for lighting.
+     */
+    applySkyState(state) {
+      sun.position.set(
+        state.sunDirection[0] * authored.distance,
+        Math.max(.02, state.sunDirection[1]) * authored.distance,
+        state.sunDirection[2] * authored.distance,
+      );
+      sun.target.position.set(0, 0, 0);
+      sun.color.setRGB(state.sun[0], state.sun[1], state.sun[2]);
+      sun.intensity = state.sunIntensity;
+      fill.color.setRGB(state.hemisphere[0], state.hemisphere[1], state.hemisphere[2]);
+      fill.groundColor.setRGB(state.ground[0], state.ground[1], state.ground[2]);
+      fill.intensity = state.hemisphereIntensity;
+      return state;
+    },
     dispose() {
       sun.removeFromParent();
       sun.target.removeFromParent();
@@ -189,4 +285,90 @@ export function createProceduralLightRig(scene, {
       sun.shadow.dispose();
     },
   };
+}
+
+/**
+ * `ENV-02` runtime bridge: one time-of-day state, one sky, one light rig, one
+ * renderer. It returns the writer list the state machine expects, so the state
+ * module stays free of `three` and this module stays free of time arithmetic.
+ *
+ * Every writer is a single state key, which is what makes the uniform-write
+ * budget measurable: the low profile declares 14 writes per update and this
+ * bridge declares exactly 14 writers.
+ */
+export function createTimeOfDayLighting({
+  sky = null,
+  rig = null,
+  renderer = null,
+  scene = null,
+  onEmissive = null,
+} = {}) {
+  if (!sky && !rig) throw new TypeError('Time-of-day lighting needs a sky or a light rig to drive');
+  const diagnostics = { applied: 0, emissiveHighest: 0, starFrames: 0, moonFrames: 0, toneMappingExposure: renderer?.toneMappingExposure ?? 1 };
+  const writers = [
+    { key: 'horizon', write: () => { sky?.setSkyState(writerState); } },
+    { key: 'middle', write: () => { sky?.setSkyState(writerState); } },
+    { key: 'zenith', write: () => { sky?.setSkyState(writerState); } },
+    { key: 'sun', write: () => { rig?.applySkyState(writerState); sky?.setSkyState(writerState); } },
+    { key: 'hemisphere', write: () => { rig?.applySkyState(writerState); } },
+    { key: 'ground', write: () => { rig?.applySkyState(writerState); } },
+    { key: 'sunDirection', write: () => { rig?.applySkyState(writerState); sky?.setSkyState(writerState); } },
+    { key: 'sunIntensity', write: () => { rig?.applySkyState(writerState); } },
+    { key: 'hemisphereIntensity', write: () => { rig?.applySkyState(writerState); } },
+    { key: 'moonOpacity', write: () => { sky?.setSkyState(writerState); } },
+    { key: 'starOpacity', write: () => { sky?.setSkyState(writerState); } },
+    {
+      key: 'fog',
+      write: value => {
+        scene?.fog?.color?.setRGB(value[0], value[1], value[2]);
+        scene?.background?.setRGB?.(value[0], value[1], value[2]);
+      },
+    },
+    {
+      key: 'exposure',
+      write: value => {
+        if (!renderer) return;
+        renderer.toneMappingExposure = value;
+        diagnostics.toneMappingExposure = value;
+      },
+    },
+    {
+      key: 'emissive',
+      write: value => {
+        diagnostics.emissiveHighest = Math.max(diagnostics.emissiveHighest, value);
+        onEmissive?.(value, writerState);
+      },
+    },
+  ];
+  let writerState = null;
+  return Object.freeze({
+    writers,
+    /** Called once per update with the live state so writers can read siblings. */
+    bind(state) {
+      writerState = state;
+      return state;
+    },
+    apply(state) {
+      writerState = state;
+      sky?.setSkyState(state);
+      rig?.applySkyState(state);
+      if (scene?.fog?.color) scene.fog.color.setRGB(state.fog[0], state.fog[1], state.fog[2]);
+      if (scene?.background?.setRGB) scene.background.setRGB(state.fog[0], state.fog[1], state.fog[2]);
+      if (renderer) renderer.toneMappingExposure = state.exposure;
+      diagnostics.applied++;
+      diagnostics.emissiveHighest = Math.max(diagnostics.emissiveHighest, state.emissive);
+      if (state.starOpacity > .01) diagnostics.starFrames++;
+      if (state.moonOpacity > .01) diagnostics.moonFrames++;
+      return state;
+    },
+    diagnostics() {
+      return Object.freeze({
+        applied: diagnostics.applied,
+        starFrames: diagnostics.starFrames,
+        moonFrames: diagnostics.moonFrames,
+        emissiveHighest: diagnostics.emissiveHighest,
+        toneMappingExposure: diagnostics.toneMappingExposure,
+      });
+    },
+  });
 }

@@ -5,7 +5,12 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { SSAOPass } from 'three/addons/postprocessing/SSAOPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { WORLD } from './BiomeManager.js';
-import { createProceduralLightRig, createWaterNormalTexture } from '../engine/ProceduralEngine.js';
+import {
+  createProceduralLightRig,
+  createTimeOfDayLighting,
+  createWaterNormalTexture,
+} from '../engine/ProceduralEngine.js';
+import { createTimeOfDayState } from '../engine/TimeOfDaySky.js';
 import { configureSemanticMaterial } from '../engine/ProceduralMaterials.js';
 
 /** Owns lighting, optional sky IBL/postprocessing, water, and render sizing. */
@@ -55,6 +60,19 @@ export class Environment {
     });
     this.sun = this.lightRig.sun;
     this.fill = this.lightRig.fill;
+    // `ENV-02`: the curated island runs the same geographic day cycle as the
+    // coordinate world — one clock, one sky model, both modes.
+    this.timeOfDayLighting = createTimeOfDayLighting({
+      rig: this.lightRig, renderer, scene,
+    });
+    this.timeOfDay = createTimeOfDayState({
+      // The curated island is authored as the Maharashtra coast.
+      latitude: 19.076,
+      longitude: 72.8777,
+      profile: materialDetail === 'low' ? 'low' : 'balanced',
+      writers: this.timeOfDayLighting.writers,
+    });
+    this.timeOfDayLighting.apply(this.timeOfDay.state);
 
     this.skyTarget = null;
     if (environmentMap) {
@@ -130,8 +148,12 @@ export class Environment {
     this.resize(width, height, devicePixelRatio);
   }
 
-  update(seconds) {
+  update(seconds, delta = 0) {
     this.normals.offset.set((seconds * .012) % 1, (seconds * .007) % 1);
+    // `ENV-02`: the island clock advances like the coordinate one, on the same
+    // bounded writer, so a night playthrough is lit rather than black.
+    this.timeOfDay?.advance(Math.max(0, delta) * 1000);
+    this.timeOfDay?.update(performance.now());
   }
 
   render(deltaSeconds) {
@@ -145,6 +167,7 @@ export class Environment {
     this.disposed = true;
     this.water.removeFromParent(); this.water.geometry.dispose(); this.water.material.dispose();
     if (this.ownsNormals) this.normals.dispose();
+    this.timeOfDay?.dispose();
     this.lightRig.dispose();
     if (this.composer) {
       this.composer.passes.forEach(pass => pass.dispose?.());

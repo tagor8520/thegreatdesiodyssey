@@ -33,6 +33,12 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   plantBoxModulesAfterLod: 6_000,
   // `COL-09`: research §5.1 dynamic-proxy cap for the low profile.
   dynamicProxies: 64,
+  // `ENV-02`: research §9.1 low-profile sky model — one static seeded star set
+  // and a bounded uniform writer so a day cycle cannot storm the renderer.
+  skyStars: 120,
+  skyUniformWritesPerUpdate: 14,
+  skyUniformWritesPerFrame: 14,
+  skySteadyFrameAllocations: 0,
   plantFarSilhouetteRetention: .9,
   plantRenderAddedDrawCalls: 8,
   plantWindUniformWritesPerFrame: 1,

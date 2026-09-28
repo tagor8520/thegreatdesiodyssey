@@ -108,6 +108,7 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
   const landmarkDiagnostics = world?.landmarkPools?.diagnostics;
   const tileCache = world?.tileCacheDiagnostics ?? null;
   const dynamicProxyDiagnostics = world?.dynamicProxies?.diagnostics?.() ?? null;
+  const timeOfDayDiagnostics = world?.timeOfDayState?.diagnostics?.() ?? null;
   estimatedGpuBytes += materialTextureBytes;
   return Object.freeze({
     view,
@@ -149,6 +150,11 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
     dynamicProxyCapSkips: dynamicProxyDiagnostics?.capSkips ?? 0,
     dynamicProxyReinserts: dynamicProxyDiagnostics?.reinserts ?? 0,
     dynamicProxySteadyFrameAllocations: dynamicProxyDiagnostics?.steadyFrameAllocations ?? 0,
+    // `ENV-02`: the day-cycle clock behind the sky, lights, fog, and exposure.
+    timeOfDayPhase: timeOfDayDiagnostics?.phase ?? null,
+    timeOfDayElevationDegrees: timeOfDayDiagnostics?.elevationDegrees ?? 0,
+    timeOfDayUniformWrites: timeOfDayDiagnostics?.uniformWrites ?? 0,
+    timeOfDayStarCount: timeOfDayDiagnostics?.limits?.maxStars ?? 0,
     plantRenderAddedDrawCalls: plantRenderDiagnostics?.addedDrawCalls ?? 0,
     plantWindUniformWritesPerFrame: plantRenderDiagnostics?.windUniformWrites ?? 0,
     plantWindCpuMatrixUpdatesPerFrame: plantRenderDiagnostics?.windCpuMatrixUpdates ?? 0,
@@ -435,6 +441,9 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
       // `COL-09`: the capped moving-solid hash behind every merged query. The
       // numeric counters also travel with the runtime budget metrics.
       dynamicProxyState: world?.dynamicProxies?.diagnostics?.() ?? null,
+      // `ENV-02`: the live day-cycle phase and its verdict summary.
+      timeOfDay: world?.timeOfDayState?.diagnostics?.() ?? null,
+      timeOfDayAudit: world?.timeOfDaySummary ?? null,
       dynamicProxies: world?.dynamicProxies?.diagnostics?.().activeProxies ?? 0,
       dynamicProxyCells: world?.dynamicProxies?.diagnostics?.().cells ?? 0,
       dynamicProxyCapSkips: world?.dynamicProxies?.diagnostics?.().capSkips ?? 0,

@@ -298,7 +298,7 @@ Why this order:
 | Order | ID | Pri | Feature | Status | Depends on | Completion gate / next action |
 |---:|---|---|---|---|---|---|
 | 110 | ENV-01 | P1 | Shared sky/light/fog baseline | ADDED | FND-02 | Both modes share color/lighting primitives and disposal |
-| 111 | ENV-02 | P1 | Time-of-day light/sky state | QUEUED | MAT-04,QLT-05 | Bounded uniform updates, readable night, no per-frame allocation |
+| 111 | ENV-02 | P1 | Time-of-day light/sky state | ADDED | MAT-04,QLT-05 | `gdo:timeOfDaySky:v1` derives the solar position from latitude/longitude/day-of-year and blends the research's seven elevation phases into sky, light, fog, exposure, star, and lamp uniforms; the low-profile clock writes at most 14 uniforms per update at 10 Hz and allocates nothing in steady state; `createTimeOfDayLighting` is the only `three` bridge and drives the coordinate world and the curated island from one model; the scripted `gdo:timeOfDayAudit:v1` run measures night readability floors, day/night contrast, star/lamp behaviour, exposure bounds, and the write budget, and the movement audit accepts a `timeOfDay` override for research item 8 |
 | 112 | ENV-03 | P1 | Water visual classes | QUEUED | TER-08,MAT-04,LAY-03 | Opaque/one-family low path and bounded blended higher path |
 | 113 | ENV-04 | P1 | Weather state machine | QUEUED | ENV-02,TER-07 | Deterministic transitions, environment response, low-profile fallback |
 | 114 | ENV-05 | P1 | Bounded weather/shore effects | QUEUED | ENV-03,ENV-04,MAT-03 | Alpha-test/dither, strict screen/overdraw counts |

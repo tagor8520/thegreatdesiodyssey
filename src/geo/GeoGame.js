@@ -1,5 +1,11 @@
 import * as THREE from 'three';
-import { createProceduralEngine, createProceduralLightRig, GDO_PALETTE } from '../engine/ProceduralEngine.js';
+import {
+  createProceduralEngine,
+  createProceduralLightRig,
+  createTimeOfDayLighting,
+  GDO_PALETTE,
+} from '../engine/ProceduralEngine.js';
+import { createTimeOfDayState, luminance, nightReadability } from '../engine/TimeOfDaySky.js';
 import { GeoWorld } from './GeoWorld.js';
 import { GeoPlayer, cameraNearPlaneSweepRadius } from './GeoPlayer.js';
 import { FlexibleJoystick, shouldUseTouchControls } from './GeoControls.js';
@@ -10,6 +16,7 @@ import { createMovementAuditRunner } from '../engine/MovementAudit.js';
 import { createSupportQuery, describeDomainCompliance } from '../engine/DomainInterface.js';
 import { createLabelLosTester } from './GeoLabelLos.js';
 import { createPlantSilhouetteAuditRunner } from '../engine/PlantSilhouetteAudit.js';
+import { createTimeOfDayAuditRunner } from '../engine/TimeOfDayAudit.js';
 import { actionCapabilitiesForDomain, createActionRegistry } from '../engine/ActionRegistry.js';
 import { createTouchActionControls, touchActionMarkup } from './GeoActionControls.js';
 import './geo.css';
@@ -121,6 +128,24 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     hemisphereIntensity: 1.0,
     scale: .32,
   });
+  // `ENV-02`: one geographic clock drives the sky dome, the light rig, the fog,
+  // the exposure, the star field, and the lamp/window emissive level. The world
+  // only reads the numbers it already had; the suntime is the only new input.
+  const timeOfDayLighting = createTimeOfDayLighting({
+    sky: engine.sky,
+    rig: lightRig,
+    renderer,
+    scene,
+  });
+  const timeOfDay = createTimeOfDayState({
+    latitude: coordinate.latitude,
+    longitude: coordinate.longitude,
+    profile: 'low',
+    writers: timeOfDayLighting.writers,
+    ledger: lifecycle,
+  });
+  timeOfDayLighting.apply(timeOfDay.state);
+  world.timeOfDayState = timeOfDay;
 
   let disposed = false, lost = false, animationFrame = 0, initialReady = false;
   let player;
@@ -340,6 +365,10 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     const dt = Math.min(frameGap / 1000, .1);
     const cpuStart = performance.now();
     lastFrame = now;
+    // `ENV-02`: the world clock advances with real time, and the bounded writer
+    // only touches the sky/light/fog/exposure when a value actually changed.
+    timeOfDay.advance(frameGap);
+    timeOfDay.update(now);
     player.update(dt);
     world.update(player.position, camera, renderer.domElement.height, now);
     debugOverlay?.update(world, player.position, renderer, now);
@@ -495,10 +524,68 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     });
     return report;
   };
+  // `ENV-02`: the same scripted-audit shape the movement and silhouette audits
+  // use, with the day cycle's named overrides. Every recorded number is read
+  // back off the live `three` objects, so the audit proves the sky and the rig
+  // really moved — not merely that the state object changed.
+  const timeOfDayAudit = createTimeOfDayAuditRunner({
+    label: 'coordinate-time-of-day',
+    reset: () => { timeOfDay.override(null); },
+    sample: name => {
+      timeOfDay.override(name);
+      timeOfDay.advance(1000);
+      timeOfDay.update(timeOfDay.clockMilliseconds);
+      timeOfDayLighting.apply(timeOfDay.state);
+      const state = timeOfDay.state;
+      return {
+        phase: state.phase,
+        elevationDegrees: state.elevationDegrees,
+        nightFactor: state.nightFactor,
+        starOpacity: state.starOpacity,
+        moonOpacity: state.moonOpacity,
+        emissive: state.emissive,
+        sunIntensity: lightRig.sun.intensity,
+        hemisphereIntensity: lightRig.fill.intensity,
+        exposure: state.exposure,
+        horizonLuminance: luminance(state.horizon),
+        zenithLuminance: luminance(state.zenith),
+        fogLuminance: luminance(state.fog),
+        readabilityOk: nightReadability(state).ok,
+        starGeometryCount: engine.sky?.starPoints?.geometry?.attributes?.position?.count ?? 0,
+        starVisible: engine.sky?.starPoints?.visible ?? false,
+        sunHeight: lightRig.sun.position.y,
+        toneMappingExposure: renderer.toneMappingExposure,
+        writesThisUpdate: timeOfDay.diagnostics().writesThisUpdate,
+        overBudgetUpdates: timeOfDay.diagnostics().overBudgetUpdates,
+      };
+    },
+  });
+  const runTimeOfDayAudit = options => {
+    const report = timeOfDayAudit.run(options);
+    world.timeOfDaySummary = timeOfDayAudit.summary();
+    logger.info('audit', 'time-of-day audit complete', {
+      ok: report.ok, samples: report.samples, fingerprint: report.fingerprint,
+      failed: report.verdicts.filter(verdict => !verdict.ok).map(verdict => verdict.id),
+    });
+    return report;
+  };
   const runMovementAudit = options => {
+    // `ENV-02`: research item 8 runs the movement script at dawn/noon/sunset/night
+    // through exactly this audit, with a time-of-day override.
+    const override = options?.timeOfDay ?? null;
+    if (override) {
+      timeOfDay.override(override);
+      timeOfDay.advance(1000);
+      timeOfDay.update(timeOfDay.clockMilliseconds);
+      timeOfDayLighting.apply(timeOfDay.state);
+    }
     const report = movementAudit.run(options);
     // The debug panel and the world snapshot read the same verdict summary.
     world.movementAuditSummary = movementAudit.summary();
+    if (override) {
+      timeOfDay.override(null);
+      timeOfDayLighting.apply(timeOfDay.state);
+    }
     logger.info('audit', 'movement audit complete', {
       ok: report.ok, samples: report.samples, fingerprint: report.fingerprint,
       failed: report.verdicts.filter(verdict => !verdict.ok).map(verdict => verdict.id),
@@ -533,6 +620,9 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
         support: createSupportQuery(world, world.domain).support(player.position.x, player.position.z),
         movementAudit: movementAudit.summary(),
         plantSilhouette: silhouetteAudit.summary(),
+        // `ENV-02`: the live phase, sun elevation, and the day verdict summary.
+        timeOfDay: timeOfDay.diagnostics(),
+        timeOfDayAudit: timeOfDayAudit.summary(),
         profile: world.profile,
       };
     },
@@ -544,6 +634,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     audits: {
       movement: options => runMovementAudit(options),
       silhouette: options => runSilhouetteAudit(options),
+      timeOfDay: options => runTimeOfDayAudit(options),
     },
     extras: {
       world, player, camera, renderer,
@@ -551,7 +642,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       snapshot: () => world.movementSnapshot({ camera, renderer, cameraMode: player.cameraMode }),
     },
   });
-  if (debugHooks) logger.info('debug', 'hook installed', { key: '__gdo', audits: ['movement'] });
+  if (debugHooks) logger.info('debug', 'hook installed', { key: '__gdo', audits: ['movement', 'silhouette', 'timeOfDay'] });
 
   return {
     scene, camera, renderer, world, player,
