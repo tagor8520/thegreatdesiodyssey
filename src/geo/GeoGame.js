@@ -15,6 +15,7 @@ import { createDebugLogger, installDebugHooks } from '../engine/DebugHooks.js';
 import { createMovementAuditRunner } from '../engine/MovementAudit.js';
 import { createSupportQuery, describeDomainCompliance } from '../engine/DomainInterface.js';
 import { createLabelLosTester } from './GeoLabelLos.js';
+import { createMapLabelLayer } from './GeoMapLabels.js';
 import { createPlantSilhouetteAuditRunner } from '../engine/PlantSilhouetteAudit.js';
 import { createTimeOfDayAuditRunner } from '../engine/TimeOfDayAudit.js';
 import { actionCapabilitiesForDomain, createActionRegistry } from '../engine/ActionRegistry.js';
@@ -253,14 +254,28 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   setDebugEnabled(initialDebug);
 
   const projectedLabel = new THREE.Vector3();
-  const labelElements = [];
   // `GME-04`: labels are occlusion-tested through the shared `LOS_BLOCKER` sweep
   // at a bounded rate, so a name behind a building is hidden instead of drawn on
   // top of it, and the DOM/HUD read the same verdicts the tests assert.
   const labelLos = createLabelLosTester({ world, profile: world.profile });
-  const losVisibleLabels = [];
   const losAnchor = new THREE.Vector3();
   world.labelLosDiagnostics = labelLos.diagnostics();
+  // `LAY-05`: the placement decision — LOS verdict, screen margin, range, sparse
+  // no-overlap layout, and the capped element pool — lives in one tested module.
+  const labels = createMapLabelLayer({
+    profile: world.profile,
+    layer: mapLabelLayer,
+    tester: labelLos,
+    world,
+    camera,
+    createElement: () => {
+      const element = document.createElement('span');
+      element.className = 'geo-map-label';
+      return element;
+    },
+  });
+  // `FND-07`: the label pool is owned like every other runtime resource.
+  lifecycle.own('node', 'map-labels', labels, layer => layer.dispose());
   let displayedLabels = [], nextLabelRefresh = 0, lastLosTests = 0, silhouetteClock = 0;
   const updateMapLabels = now => {
     if (now >= nextLabelRefresh) {
@@ -269,35 +284,14 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     }
     // The tester probes from the live camera eye to each label anchor.
     losAnchor.copy(camera.position);
-    const labels = labelLos.visibleLabels(displayedLabels, { position: losAnchor }, now, losVisibleLabels);
+    labels.layout(displayedLabels, {
+      camera: { position: losAnchor },
+      nowMilliseconds: now,
+      screen: { width: container.clientWidth, height: container.clientHeight },
+      project: (x, y, z, out) => out.copy(projectedLabel.set(x, y, z).project(camera)),
+    });
     world.labelLosDiagnostics = labelLos.diagnostics();
-    while (labelElements.length < labels.length) {
-      const element = document.createElement('span');
-      element.className = 'geo-map-label';
-      mapLabelLayer.append(element);
-      labelElements.push(element);
-    }
-    const occupied = [];
-    const width = Math.max(1, container.clientWidth), height = Math.max(1, container.clientHeight);
-    for (let index = 0; index < labelElements.length; index++) {
-      const element = labelElements[index], label = labels[index];
-      if (!label) { element.hidden = true; continue; }
-      const distance = Math.hypot(label.x - player.position.x, label.z - player.position.z);
-      const labelOffset = label.kind === 'place' ? 1.25 : label.kind === 'poi' ? .72 : label.kind === 'water' ? .28 : .42;
-      projectedLabel.set(label.x, (label.y ?? 0) + labelOffset, label.z).project(camera);
-      const screenX = (projectedLabel.x * .5 + .5) * width;
-      const screenY = (-projectedLabel.y * .5 + .5) * height;
-      let visible = projectedLabel.z > -1 && projectedLabel.z < 1 &&
-        Math.abs(projectedLabel.x) < 1.06 && Math.abs(projectedLabel.y) < 1.06 && distance < 72;
-      if (visible && occupied.some(position => Math.abs(position.x - screenX) < 96 && Math.abs(position.y - screenY) < 28)) visible = false;
-      element.hidden = !visible;
-      if (!visible) continue;
-      occupied.push({ x: screenX, y: screenY });
-      element.textContent = label.name;
-      element.dataset.kind = label.kind;
-      element.style.transform = `translate3d(${screenX}px, ${screenY}px, 0) translate(-50%, -50%)`;
-      element.style.opacity = String(Math.min(1, Math.max(.35, 1 - distance / 90)));
-    }
+    world.mapLabelDiagnostics = labels.diagnostics();
   };
 
   const joystick = new FlexibleJoystick(
@@ -630,6 +624,9 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
         water: { ...player.waterDiagnostics() },
         // `LIF-02`: what the screen-space scheduler drew and parked last frame.
         ambientSchedule: world.ambientSchedule ? { ...world.ambientSchedule } : null,
+        // `LAY-05`: how many names the DOM layer is showing and why the rest
+        // are hidden.
+        mapLabels: world.mapLabelDiagnostics ?? null,
         timeOfDayAudit: timeOfDayAudit.summary(),
         profile: world.profile,
       };
