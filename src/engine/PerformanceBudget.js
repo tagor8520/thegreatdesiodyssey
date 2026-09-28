@@ -103,6 +103,10 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   contentRecipeModules: 4_096,
   contentRecipeModulesPerRecipe: 512,
   cameraFadeCandidates: 48,
+  // `MAT-05`: research §5 — one generated detail pattern per surface on the low
+  // profile, one texture read per fragment, and no per-pattern texture at all.
+  surfaceDetailPatterns: 8,
+  surfaceDetailSamplesPerSurface: 1,
   // `COL-06`: the curated island's structural sweep answers the declared
   // `dynamicSweep` member with the same bounded candidate work the coordinate
   // sweep declares.
@@ -139,6 +143,17 @@ export const GDO_LIFECYCLE_CEILINGS = Object.freeze({
     worker: 3, listener: 48, observer: 4, timer: 4, frame: 1,
     geometry: 640, material: 48, texture: 24, mesh: 320, node: 64, pool: 12, handle: 12,
   }),
+});
+
+/**
+ * `MAT-05`: how many catalogue patterns each detail profile rolls out, and how
+ * many generated samples a single surface may spend. The low profile's pattern
+ * count is the shipped budget key, so the catalogue and the budget cannot drift.
+ */
+export const GDO_SURFACE_DETAIL_CAPS = Object.freeze({
+  low: Object.freeze({ patterns: 8, samplesPerSurface: 1 }),
+  balanced: Object.freeze({ patterns: 16, samplesPerSurface: 2 }),
+  high: Object.freeze({ patterns: 24, samplesPerSurface: 4 }),
 });
 
 /** Unknown or hostile profile names resolve to the low ceilings. */
@@ -224,6 +239,8 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'contentRecipeModules', budget: 'contentRecipeModules', label: 'compiled content modules per pack' }),
   Object.freeze({ metric: 'contentRecipeModulesPerRecipe', budget: 'contentRecipeModulesPerRecipe', label: 'compiled content modules per recipe' }),
   Object.freeze({ metric: 'cameraFadeCandidates', budget: 'cameraFadeCandidates', label: 'camera-fade eligible candidates per frame' }),
+  Object.freeze({ metric: 'surfaceDetailPatterns', budget: 'surfaceDetailPatterns', label: 'rolled-out surface detail patterns' }),
+  Object.freeze({ metric: 'surfaceDetailSamplesPerSurface', budget: 'surfaceDetailSamplesPerSurface', label: 'generated detail samples per surface' }),
   Object.freeze({ metric: 'curatedSweepCandidates', budget: 'curatedSweepCandidates', label: 'curated structural sweep candidates' }),
   Object.freeze({ metric: 'curatedSweepSteadyFrameAllocations', budget: 'curatedSweepSteadyFrameAllocations', label: 'curated sweep steady-frame allocations' }),
   Object.freeze({ metric: 'discoveryRecords', budget: 'discoveryRecords', label: 'discovery journal records' }),

@@ -23,6 +23,10 @@ import {
 } from '../engine/AmbientLifeMotion.js';
 import { createAmbientLifeScheduler } from '../engine/AmbientLifeScheduler.js';
 import { createCameraFade } from '../engine/CameraFade.js';
+import {
+  applySurfaceDetail, describeSurfaceDetailCatalogue, rolloutSurfaceDetails,
+  selectSurfaceDetail, surfaceDetailOf,
+} from '../engine/SurfaceDetailCatalogue.js';
 import { DynamicProxyGrid } from '../engine/DynamicProxyGrid.js';
 import { createDiscoveryJournal, createJournalStorage } from '../engine/DiscoveryJournal.js';
 import {
@@ -561,6 +565,43 @@ export class GeoWorld {
       new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .84, metalness: 0 }),
       'decoration', this.materialLibrary, 'low',
     );
+    // `MAT-05`: the catalogue decides which generated detail pattern each surface
+    // wears at this profile. Patterns are applied in catalogue priority order, one
+    // per live material — a surface whose material already carries a pattern (the
+    // roof rides the building material) or whose material is bespoke (the water
+    // shader owns its own surface) is reported as skipped with its reason instead
+    // of silently overwriting a neighbour. The key is the world's own terrain seed
+    // plus the profile, so the same coordinate and quality always roll out the
+    // same set.
+    this.surfaceDetailRollout = rolloutSurfaceDetails(profile ?? 'low');
+    this.surfaceDetailKey = `${this.terrainSeed}:${profile ?? 'low'}`;
+    const detailMaterials = new Map([
+      ['ground', this.groundMaterial], ['land', this.landMaterial], ['road', this.roadMaterial],
+      ['facade', this.buildingMaterial], ['roof', this.buildingMaterial], ['water', this.waterMaterial],
+      ['decoration', this.decorationMaterial],
+    ]);
+    const applied = {}, skipped = [], assigned = new Set();
+    for (const entry of this.surfaceDetailRollout.entries) {
+      const material = detailMaterials.get(entry.surface);
+      if (!material) { skipped.push(Object.freeze({ surface: entry.surface, pattern: entry.id, reason: 'no-material' })); continue; }
+      if (!material.userData?.gdoSemanticMaterial) {
+        skipped.push(Object.freeze({ surface: entry.surface, pattern: entry.id, reason: 'bespoke-shader' }));
+        continue;
+      }
+      if (assigned.has(material)) {
+        skipped.push(Object.freeze({ surface: entry.surface, pattern: entry.id, reason: 'material-shared' }));
+        continue;
+      }
+      applied[entry.surface] = applySurfaceDetail(material, entry, this.materialLibrary, profile ?? 'low').id;
+      assigned.add(material);
+    }
+    this.surfaceDetailSurfaces = Object.freeze({
+      namespace: this.surfaceDetailRollout.namespace,
+      profile: profile ?? 'low',
+      applied: Object.freeze(applied),
+      appliedCount: assigned.size,
+      skipped: Object.freeze(skipped),
+    });
     this.decorationGeometries = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
       .map(type => GEO_PLANT_TYPES.has(type) || GDO_AMBIENT_LIFE_SOURCE_TYPES[type]
         ? null : createDecorationGeometry(type));
@@ -1288,6 +1329,12 @@ export class GeoWorld {
       timings: this.timings,
       materialLibrary: this.materialLibrary.diagnostics,
       materialTextureBytes: this.materialLibrary.diagnostics.estimatedBytes,
+      // `MAT-05`: the generated detail patterns this world rolled out per surface,
+      // and the surfaces it deliberately left alone with the reason.
+      surfaceDetailPatterns: this.surfaceDetailRollout?.patterns ?? 0,
+      surfaceDetailApplied: this.surfaceDetailSurfaces?.appliedCount ?? 0,
+      surfaceDetailSurfaces: this.surfaceDetailSurfaces?.applied ?? null,
+      surfaceDetailSkipped: this.surfaceDetailSurfaces?.skipped ?? null,
       plantRenderEntries: this.plantRenderPools.diagnostics.entries,
       plantRenderPools: this.plantRenderPools.diagnostics.activeDrawPools,
       plantRenderTriangles: this.plantRenderPools.diagnostics.visibleTriangles,
@@ -2418,8 +2465,13 @@ export class GeoWorld {
       const footprintVisibility = 1 - smoothstep(0.42, 1, footprint);
       const distanceVisibility = 1 - smoothstep(fadeNear, state.uniforms.gdoDetailFade.value.y, distance);
       const visibility = footprintVisibility * distanceVisibility;
+      const detail = surfaceDetailOf(material);
       output.push({
         key,
+        // `MAT-05`: which catalogue pattern this surface wears, and its source.
+        detail: detail?.id ?? null,
+        detailSource: detail?.source ?? null,
+        detailStyle: detail?.style ?? null,
         pixels,
         minimumPixels,
         footprint,
