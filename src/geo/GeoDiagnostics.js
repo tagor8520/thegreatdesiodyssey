@@ -104,6 +104,7 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
   const plantRenderDiagnostics = world?.plantRenderPools?.diagnostics;
   const streetFurnitureDiagnostics = world?.streetFurniturePools?.diagnostics;
   const ambientLifeDiagnostics = world?.ambientLifePools?.diagnostics;
+  const ambientScheduleDiagnostics = world?.ambientScheduler?.diagnostics?.() ?? null;
   const bridgeDiagnostics = world?.bridgePools?.diagnostics;
   const landmarkDiagnostics = world?.landmarkPools?.diagnostics;
   const tileCache = world?.tileCacheDiagnostics ?? null;
@@ -221,6 +222,14 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
     ambientLifeUniformWritesPerFrame: ambientLifeDiagnostics?.uniformWrites ?? 0,
     ambientLifeCpuMatrixUpdatesPerFrame: ambientLifeDiagnostics?.cpuMatrixUpdates ?? 0,
     ambientLifeSteadyFrameAllocations: ambientLifeDiagnostics?.steadyFrameAllocations ?? 0,
+    // `LIF-02`: what the screen-space scheduler drew and parked last frame.
+    ambientLifeDrawn: ambientScheduleDiagnostics?.active ?? 0,
+    ambientLifeParked: ambientScheduleDiagnostics?.parkedThisFrame ?? 0,
+    ambientLifePrunedByBudget: ambientScheduleDiagnostics?.prunedBudget ?? 0,
+    ambientLifeTinySources: ambientScheduleDiagnostics?.tiny ?? 0,
+    ambientLifeOffscreenSources: ambientScheduleDiagnostics?.offscreen ?? 0,
+    ambientLifeVisibilityUploads: ambientLifeDiagnostics?.visibilityUploads ?? 0,
+    ambientLifeScheduleSteadyFrameAllocations: ambientScheduleDiagnostics?.steadyFrameAllocations ?? 0,
     waterDomainBytesPerTile,
     // `FND-07`: live owned resources at this moment, so a mount that keeps
     // accumulating listeners/geometries/workers fails the same budget surface.
@@ -459,6 +468,9 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
       plantSilhouette: world?.plantSilhouetteSummary ?? null,
       streetFurniture: world?.streetFurniturePools?.diagnostics ?? null,
       ambientLife: world?.ambientLifePools?.diagnostics ?? null,
+      // `LIF-02`: the last screen-space scheduling verdict and its counters.
+      ambientSchedule: world?.ambientSchedule ?? null,
+      ambientScheduler: world?.ambientScheduler?.diagnostics?.() ?? null,
       bridges: world?.bridgePools?.diagnostics ?? null,
       landmarks: world?.landmarkPools?.diagnostics ?? null,
       tileCache: world?.tileCacheDiagnostics ?? null,

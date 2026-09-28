@@ -683,14 +683,23 @@ test('context phase mounts fallback ambience as shared 2D sprite pools without C
     assert.equal(sprites.length, 2);
     assert.equal(sprites.reduce((total, family) => total + family.count, 0), 2);
     assert.equal(world.stats.ambientLifeEntries, 2);
-    // Motion is one clock uniform per changed frame: instance data never moves.
+    // Motion is one clock uniform per changed frame: the motion channels never
+    // move on the CPU. `LIF-02` adds exactly one per-frame instance write — the
+    // screen-space scheduler's visibility scale — so the steady-state claim is
+    // measured after the first scheduled frame.
     world.update({ x: 0, z: 0 }, null, 720, 4_000);
     assert.equal(pool.diagnostics.uniformWrites, 1);
+    const scheduled = pool.spriteSnapshot();
+    const motionChannels = snapshot => snapshot.map(family =>
+      [family.anchor, family.path, family.cycle, family.form, family.range]);
+    assert.deepEqual(motionChannels(scheduled), motionChannels(sprites),
+      'scheduling never touches the motion channels');
     world.update({ x: 0, z: 0 }, null, 720, 4_000);
     assert.equal(pool.diagnostics.uniformWrites, 0, 'an unchanged clock writes nothing');
     assert.equal(pool.diagnostics.cpuMatrixUpdates, 0);
     assert.equal(pool.diagnostics.steadyFrameAllocations, 0);
-    assert.deepEqual(pool.spriteSnapshot(), sprites, 'a steady frame never rewrites sprite instances');
+    assert.deepEqual(pool.spriteSnapshot(), scheduled, 'a steady frame rewrites nothing at all');
+    assert.ok(pool.diagnostics.visibilityUploads > 0, 'the scheduler parked what the camera cannot see');
     assert.equal(world.stats.ambientLifeCpuMatrixUpdates, 0);
     assert.equal(pool.setReducedMotion(true), true);
     assert.equal(world.stats.ambientLifeReducedMotion, true);

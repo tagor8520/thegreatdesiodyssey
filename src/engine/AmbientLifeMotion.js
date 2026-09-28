@@ -587,6 +587,9 @@ export class AmbientLifePools {
       node: this.group,
     }) : null;
     this.familyCounts = GDO_AMBIENT_LIFE_FAMILY_ORDER.map(() => 0);
+    // `LIF-02`: the packed records, per family, so the screen-space scheduler
+    // reads the same instance stream the GPU draws.
+    this.packedRecords = GDO_AMBIENT_LIFE_FAMILY_ORDER.map(() => []);
     this.entries = 0;
     this.repacks = 0;
     this.instanceUploads = 0;
@@ -594,6 +597,12 @@ export class AmbientLifePools {
     this.totalClockWrites = 0;
     this.malformedInputs = 0;
     this.contextRestorations = 0;
+    // `LIF-02` scheduling counters: parked instances and the attribute uploads
+    // they caused, so churn stays a measured number.
+    this.visibilityUploads = 0;
+    this.visibleEntries = 0;
+    this.parkedEntries = 0;
+    this.lastSchedule = null;
     this.capEvents = { candidates: 0, kept: 0, pruned: 0, families: GDO_AMBIENT_LIFE_FAMILY_ORDER.map(() => 0) };
     this.reducedMotion = Boolean(reducedMotion);
     this.uniforms = this.material.userData.gdoAmbientLife?.uniforms ?? null;
@@ -650,6 +659,7 @@ export class AmbientLifePools {
     const stride = this.stride ?? 6;
     const cursors = GDO_AMBIENT_LIFE_FAMILY_ORDER.map(() => 0);
     const candidates = GDO_AMBIENT_LIFE_FAMILY_ORDER.map(() => 0);
+    const packedByFamily = this._packedByFamily ??= new Map();
     const families = GDO_AMBIENT_LIFE_FAMILY_ORDER.map((family, familyIndex) => {
       const records = [];
       for (const [owner, values] of [...this.owners.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
@@ -684,10 +694,15 @@ export class AmbientLifePools {
         geometry.getAttribute(name).needsUpdate = true;
       }
       geometry.instanceCount = kept.length;
+      packedByFamily.set(family, kept);
+      // The repack just rewrote the authored scales; drop the cached verdicts so
+      // the next scheduling pass re-derives every visibility.
+      this.scheduledVisibility = null;
       return family;
     });
     this.familyCounts = cursors;
     this.entries = cursors.reduce((total, value) => total + value, 0);
+    this.packedRecords = families.map(family => this._packedByFamily.get(family) ?? []);
     this.capEvents = {
       candidates: candidates.reduce((total, value) => total + value, 0),
       kept: this.entries,
@@ -716,6 +731,68 @@ export class AmbientLifePools {
     this.lastUniformWrites = 1;
     this.totalClockWrites++;
     return 1;
+  }
+
+  /**
+   * `LIF-02` screen-space/activity scheduling.
+   *
+   * The scheduler decides which resident sources are worth drawing (on screen,
+   * large enough to read, inside their appearance window, inside the per-frame
+   * budget). A parked source gets a zero scale in the very instance attribute the
+   * vertex program multiplies its offset by, so parking adds no draw call, no
+   * blend work and no shader branch, and the stream only re-uploads when a
+   * verdict actually changes.
+   */
+  scheduleVisibility(scheduler, view = {}) {
+    if (this.disposed || !scheduler?.begin) return null;
+    scheduler.begin(view);
+    const nowMilliseconds = Number.isFinite(view.nowMilliseconds) ? view.nowMilliseconds : 0;
+    let offered = 0;
+    // Pass one: every resident sprite states its case. The offer order is the
+    // packed instance order, so offer index `n` is instance `n` of its family.
+    for (let familyIndex = 0; familyIndex < GDO_AMBIENT_LIFE_FAMILY_ORDER.length; familyIndex++) {
+      const records = this.packedRecords[familyIndex];
+      for (let index = 0; index < records.length; index++) {
+        const record = records[index];
+        const cycle = Math.floor(nowMilliseconds / (record.cycleSeconds * 1_000));
+        const window = ambientLifeCycleWindow(record, cycle, this._schedulerWindow ??= {});
+        scheduler.evaluate({
+          id: record.id, familyIndex, x: record.x, y: record.groundY + record.hover, z: record.z,
+          radius: Math.max(record.spriteWidth, record.spriteHeight) * record.scale * .5,
+          viewDistance: record.viewDistance, priority: record.priority,
+          // The shader's own appearance envelope: a source is live between its
+          // window start and its live end, and dormant for the rest of the cycle.
+          windowLive: nowMilliseconds >= window.start && nowMilliseconds <= window.liveEnd,
+        });
+        offered++;
+      }
+    }
+    const summary = scheduler.finish();
+    // Pass two: the verdicts become the geometry. A parked sprite gets a zero
+    // scale in the attribute the vertex program multiplies its offset by, and a
+    // sprite that keeps its verdict keeps its bytes — uploads only on change.
+    const visibility = this.scheduledVisibility ??= GDO_AMBIENT_LIFE_FAMILY_ORDER.map(() =>
+      new Float32Array(this.limits.maxInstancesPerFamily).fill(-1));
+    let offer = 0;
+    for (let familyIndex = 0; familyIndex < GDO_AMBIENT_LIFE_FAMILY_ORDER.length; familyIndex++) {
+      const records = this.packedRecords[familyIndex];
+      const attribute = this.geometries[familyIndex].getAttribute('gdoAmbientSprite');
+      const scales = visibility[familyIndex];
+      for (let index = 0; index < records.length && offer < scheduler.decisionCount; index++, offer++) {
+        const next = scheduler.visibilityAt(offer);
+        if (scales[index] === next) continue;
+        scales[index] = next;
+        attribute.array[index * 4] = records[index].scale * next;
+        this.visibilityUploads++;
+        attribute.needsUpdate = true;
+      }
+    }
+    // `entries` stays the resident count the pools own; the scheduling verdicts
+    // live beside it so a reader can tell "resident" from "drawn".
+    this.visibleEntries = summary.active;
+    this.parkedEntries = summary.parked;
+    this.lastSchedule = Object.freeze({ ...summary, offered });
+    return this.lastSchedule;
   }
 
   setReducedMotion(value) {
@@ -795,6 +872,12 @@ export class AmbientLifePools {
       totalClockWrites: this.totalClockWrites,
       cpuMatrixUpdates: 0,
       steadyFrameAllocations: 0,
+      // `LIF-02`: screen-space scheduling — how many resident sprites are drawn,
+      // how many are parked, and how many attribute uploads that caused.
+      visibleEntries: this.visibleEntries,
+      parkedEntries: this.parkedEntries,
+      visibilityUploads: this.visibilityUploads,
+      lastSchedule: this.lastSchedule,
       capEvents: Object.freeze({ ...this.capEvents, families: Object.freeze([...this.capEvents.families]) }),
       reducedMotion: this.reducedMotion,
       malformedInputs: this.malformedInputs,

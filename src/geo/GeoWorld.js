@@ -20,6 +20,7 @@ import {
   AmbientLifePools,
   GDO_AMBIENT_LIFE_SOURCE_TYPES,
 } from '../engine/AmbientLifeMotion.js';
+import { createAmbientLifeScheduler } from '../engine/AmbientLifeScheduler.js';
 import { DynamicProxyGrid } from '../engine/DynamicProxyGrid.js';
 import {
   GDO_WATER_CONTACT_PROFILES,
@@ -601,6 +602,17 @@ export class GeoWorld {
       reducedMotion,
       resolveGroundHeight: terrainHeightAt,
     });
+    // `LIF-02`: the explicit screen-space/activity scheduler on top of the
+    // ambient pools. It reads the same camera the world already renders with.
+    this.ambientScheduler = createAmbientLifeScheduler({ profile: 'low', ledger: this.lifecycle });
+    this.ambientView = {
+      x: 0, y: 0, z: 0, forwardX: 0, forwardZ: -1, rightX: 1, rightZ: 0,
+      fovRadians: Math.PI / 3, viewportHeight: 720, aspect: 1,
+      cycleIndex: 0, nowMilliseconds: 0,
+    };
+    this.ambientSchedule = null;
+    this.ambientForward = new THREE.Vector3();
+    this.ambientRight = new THREE.Vector3();
     this.plantRenderPools = new PlantRenderPools(this.root, {
       profile: 'low',
       // Recipe geometry is global and versioned; geographic variation belongs
@@ -1297,6 +1309,43 @@ export class GeoWorld {
     return labels.sort((a, b) => b.priority - a.priority).slice(0, 14);
   }
 
+  /**
+   * `LIF-02`: one screen-space scheduling pass per frame. The camera's own basis
+   * and field of view are the inputs, so first- and third-person both work, and
+   * the pool parks what the budget cannot afford.
+   */
+  scheduleAmbientLife(nowMilliseconds = this.lastAmbientScheduleMilliseconds ?? 0) {
+    const pools = this.ambientLifePools, scheduler = this.ambientScheduler;
+    if (!pools || !scheduler || this.disposed) return null;
+    if ((pools.entries ?? 0) === 0 && (pools.packedRecords?.every(records => records.length === 0) ?? true)) {
+      return null;
+    }
+    const view = this.ambientView;
+    const camera = this.viewCamera;
+    if (camera) {
+      view.x = camera.position.x;
+      view.y = camera.position.y;
+      view.z = camera.position.z;
+      camera.getWorldDirection(this.ambientForward);
+      const horizontal = Math.hypot(this.ambientForward.x, this.ambientForward.z);
+      if (horizontal > 1e-4) {
+        view.forwardX = this.ambientForward.x / horizontal;
+        view.forwardZ = this.ambientForward.z / horizontal;
+        // The right vector is the horizontal forward turned 90°.
+        view.rightX = -view.forwardZ;
+        view.rightZ = view.forwardX;
+      }
+      view.fovRadians = (camera.fov ?? 60) * Math.PI / 180;
+      view.aspect = camera.aspect || 1;
+    }
+    view.viewportHeight = this.viewportHeight;
+    view.nowMilliseconds = Number.isFinite(nowMilliseconds) ? nowMilliseconds : 0;
+    view.cycleIndex = Math.floor(view.nowMilliseconds / 1_000);
+    this.lastAmbientScheduleMilliseconds = view.nowMilliseconds;
+    this.ambientSchedule = pools.scheduleVisibility(scheduler, view);
+    return this.ambientSchedule;
+  }
+
   // Ambient life motion now lives entirely in the shared vertex program; the
   // world only forwards the frame clock (one uniform write, zero matrices).
 
@@ -1314,6 +1363,7 @@ export class GeoWorld {
     const time = nowMilliseconds * .001;
     this.waterMaterial.uniforms.uTime.value = time;
     this.ambientLifePools.update(nowMilliseconds);
+    this.scheduleAmbientLife(nowMilliseconds);
     const fractionalX = this.reference.originX + position.x / this.reference.tileSize;
     const fractionalY = this.reference.originY + position.z / this.reference.tileSize;
     const x = Math.floor(fractionalX), y = Math.floor(fractionalY);

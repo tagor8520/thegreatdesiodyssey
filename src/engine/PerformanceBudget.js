@@ -33,6 +33,11 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   plantBoxModulesAfterLod: 6_000,
   // `COL-09`: research §5.1 dynamic-proxy cap for the low profile.
   dynamicProxies: 64,
+  // `LIF-02`: research §6.7/low-profile ambience — the explicit screen-space
+  // scheduler budgets how many ambient sprites are actually drawn per frame.
+  ambientActiveSources: 8,
+  ambientMinProjectedPixels: .6,
+  ambientSchedulerSteadyFrameAllocations: 0,
   // `COL-08`: research §5.7/§9.5 — one body-centre water sample per step and a
   // bounded four-sample footprint when a lookup needs an edge test.
   waterSamplesPerStep: 1,
