@@ -9,6 +9,8 @@ import { createDebugLogger, installDebugHooks } from '../engine/DebugHooks.js';
 import { createMovementAuditRunner } from '../engine/MovementAudit.js';
 import { createSupportQuery, describeDomainCompliance } from '../engine/DomainInterface.js';
 import { createLabelLosTester } from './GeoLabelLos.js';
+import { actionCapabilitiesForDomain, createActionRegistry } from '../engine/ActionRegistry.js';
+import { createTouchActionControls, touchActionMarkup } from './GeoActionControls.js';
 import './geo.css';
 
 function formatBytes(bytes) {
@@ -16,6 +18,12 @@ function formatBytes(bytes) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
+
+// `GME-03`/`GME-05`: the on-screen pad and the keyboard filter are generated from
+// one registry built on the coordinate player domain's declared capabilities.
+const coordinateActions = createActionRegistry({
+  capabilities: actionCapabilitiesForDomain(GDO_COORDINATE_PLAYER_DOMAIN),
+});
 
 function uiMarkup() {
   return `
@@ -36,7 +44,7 @@ function uiMarkup() {
         <div class="geo-loading-title">Downloading one small vector chunk…</div>
         <div class="geo-loading-detail">Roads are generated first. Landscape and buildings follow in a background worker.</div>
       </div>
-      <div class="geo-panel geo-help">WASD / arrows: move · Shift: faster · Space: jump · V: FPP/TPP · F3: debug · Click: look · Scroll: TPP zoom</div>
+      <div class="geo-panel geo-help">${coordinateActions.keyboardHint()} · F3: debug · Click: look · Scroll: TPP zoom</div>
       <div class="geo-attribution">Map data from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> ·
         <a href="https://www.openmaptiles.org/" target="_blank" rel="noreferrer">OpenMapTiles</a> ·
         tiles by <a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OpenFreeMap</a> ·
@@ -49,9 +57,7 @@ function uiMarkup() {
         </div>
         <div class="geo-look-hint">DRAG TO LOOK</div>
         <div class="geo-actions">
-          <button data-hold-action="run" aria-label="Hold to move faster">RUN</button>
-          <button data-tap-action="camera" aria-label="Switch to third-person camera">TPP</button>
-          <button class="geo-jump" data-hold-action="jump" aria-label="Jump">JUMP</button>
+          ${touchActionMarkup(coordinateActions.touchControls())}
         </div>
       </div>
     </div>
@@ -275,39 +281,24 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     (x, z) => player.setMoveInput(x, z),
   );
   const touchCleanups = [];
-  for (const button of overlay.querySelectorAll('[data-hold-action]')) {
-    const action = button.dataset.holdAction;
-    const activate = event => {
-      event.preventDefault();
-      event.stopPropagation();
-      button.classList.add('is-active');
-      player.setVirtualInput(action, true);
-      button.setPointerCapture?.(event.pointerId);
-    };
-    const deactivate = event => {
-      event.preventDefault();
-      event.stopPropagation();
-      button.classList.remove('is-active');
-      player.setVirtualInput(action, false);
-    };
-    button.addEventListener('pointerdown', activate);
-    button.addEventListener('pointerup', deactivate);
-    button.addEventListener('pointercancel', deactivate);
-    button.addEventListener('lostpointercapture', deactivate);
-    touchCleanups.push(() => {
-      button.removeEventListener('pointerdown', activate);
-      button.removeEventListener('pointerup', deactivate);
-      button.removeEventListener('pointercancel', deactivate);
-      button.removeEventListener('lostpointercapture', deactivate);
-    });
-  }
-  const toggleCamera = event => {
-    event.preventDefault();
-    event.stopPropagation();
-    player.toggleCameraMode();
-  };
-  cameraButton.addEventListener('pointerdown', toggleCamera);
-  touchCleanups.push(() => cameraButton.removeEventListener('pointerdown', toggleCamera));
+  // `GME-03`/`GME-05`: hold and tap controls are wired from the shared action
+  // registry, so a newly registered action needs no edit in this file.
+  const touchControls = createTouchActionControls({
+    container: overlay,
+    registry: coordinateActions,
+    lifecycle,
+    onAction: (id, phase) => {
+      const action = coordinateActions.action(id);
+      if (action?.kind === 'tap') {
+        if (id === 'camera') { player.toggleCameraMode(); return; }
+        player.setVirtualInput(id, true);
+        player.setVirtualInput(id, false);
+        return;
+      }
+      player.setVirtualInput(id, phase === 'hold');
+    },
+  });
+  touchCleanups.push(() => touchControls.dispose());
 
   const exit = () => onExitRequest?.();
   // The exit listener is owned by the lifecycle ledger below, together with the
@@ -505,6 +496,9 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
           player: { id: player.playerDomain.id, compliant: describeDomainCompliance(player, player.playerDomain).ok },
           queries: world.domain.capabilities.coordinates ? 1 : 0,
         },
+        // `GME-05`: which actions the live registry exposes and how they are bound.
+        actions: coordinateActions.diagnostics(),
+        dispatched: player.actionDiagnostics().recent,
         support: createSupportQuery(world, world.domain).support(player.position.x, player.position.z),
         movementAudit: movementAudit.summary(),
         profile: world.profile,

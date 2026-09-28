@@ -176,3 +176,58 @@ test('flexible joystick disposes listeners and resets movement', () => {
   joystick.dispose();
   assert.deepEqual(values.at(-1), [0, 0]);
 });
+
+test('a newly declared action auto-registers on the player without editing it', () => {
+  const oldWindow = globalThis.window;
+  const oldDocument = globalThis.document;
+  globalThis.window = new EventTarget();
+  globalThis.document = Object.assign(new EventTarget(), { pointerLockElement: null, exitPointerLock() {} });
+  const canvas = Object.assign(new EventTarget(), { setPointerCapture() {}, requestPointerLock() {} });
+  const world = { collidesCircle: () => false, clipCamera: (target, desired, radius, out = {}) => Object.assign(out, { blocked: false }) };
+  const player = new GeoPlayer(new THREE.Scene(), new THREE.PerspectiveCamera(52, 1, .02, 210), canvas, world, {});
+  try {
+    player.enabled = true;
+    // Declared through the shared registry only: no edit to GeoPlayer, no DOM.
+    player.actions.register({
+      id: 'interact', order: 60, kind: 'tap', label: 'Interact',
+      keyboard: ['KeyE'], touch: { control: 'button', label: 'USE' },
+    });
+    assert.equal(player.actions.keyboardBinding('KeyE'), 'interact');
+    assert.equal(player.actionDiagnostics().registered, 6);
+    assert.equal(player.actionDiagnostics().handlers, 0);
+    // Declared but unhandled: the key is recognised and does nothing else.
+    player.keydown({ code: 'KeyE', preventDefault() {}, repeat: false });
+    assert.equal(player.actionLog.length, 0);
+
+    const dispatches = [];
+    const remove = player.setActionHandler('interact', entry => dispatches.push(entry));
+    player.keydown({ code: 'KeyE', preventDefault() {}, repeat: false });
+    player.keydown({ code: 'KeyE', preventDefault() {}, repeat: true });
+    assert.deepEqual(dispatches, [{ id: 'interact', code: 'KeyE', phase: 'press' }], 'repeats do not re-fire a tap action');
+    assert.deepEqual(player.actionDiagnostics().recent, dispatches);
+    assert.equal(player.actionDiagnostics().handlers, 1);
+    remove();
+    player.keydown({ code: 'KeyE', preventDefault() {}, repeat: false });
+    assert.equal(dispatches.length, 1, 'the disposer unhooks the handler');
+    assert.throws(() => player.setActionHandler('missing', () => {}), /Unknown action: missing/);
+    assert.throws(() => player.setActionHandler('interact', null), /must be a function/);
+
+    // Held state and movement both read the registry's declared bindings.
+    assert.equal(player.held('run'), false);
+    player.keydown({ code: 'ShiftLeft', preventDefault() {}, repeat: false });
+    assert.equal(player.held('run'), true, 'run resolves its keys from the registry');
+    player.keydown({ code: 'KeyW', preventDefault() {}, repeat: false });
+    player.setMoveInput(0, 0);
+    const before = player.position.z;
+    player.step(.1);
+    assert.ok(player.position.z < before, 'forward still works through the move binding');
+    player.keyup({ code: 'KeyW' });
+    player.keyup({ code: 'ShiftLeft' });
+    assert.equal(player.held('run'), false);
+    assert.equal(player.actions.handlesKey('KeyQ'), false);
+  } finally {
+    player.dispose();
+    globalThis.window = oldWindow;
+    globalThis.document = oldDocument;
+  }
+});

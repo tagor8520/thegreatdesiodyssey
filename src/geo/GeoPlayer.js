@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GEO_PLAYER_COLLISION_PROFILE } from './GeoCollision.js';
 import { definePlayerDomain } from '../engine/DomainInterface.js';
+import { actionCapabilitiesForDomain, createActionRegistry } from '../engine/ActionRegistry.js';
 
 // Horizontal source geometry is 1:10, so a roughly 1.8 m avatar is 0.18 units.
 // The movement shape and its skin together remain inside the measured profile;
@@ -56,7 +57,7 @@ export const GDO_COORDINATE_PLAYER_DOMAIN = definePlayerDomain({
 });
 
 export class GeoPlayer {
-  constructor(scene, camera, canvas, world, { onCameraModeChange = () => {} } = {}) {
+  constructor(scene, camera, canvas, world, { onCameraModeChange = () => {}, actions } = {}) {
     this.scene = scene;
     this.camera = camera;
     this.canvas = canvas;
@@ -78,6 +79,13 @@ export class GeoPlayer {
     this.cameraResolvedDistance = this.distance;
     this.cameraMode = 'first-person';
     this.playerDomain = GDO_COORDINATE_PLAYER_DOMAIN;
+    // `GME-05`: the registry owns the action table, so this avatar accepts exactly
+    // the keys a registered action declares instead of a hand-maintained list.
+    this.actions = actions ?? createActionRegistry({ capabilities: actionCapabilitiesForDomain(GDO_COORDINATE_PLAYER_DOMAIN) });
+    // `GME-05`: gameplay verbs plug in here instead of editing the key filter, so a
+    // newly declared action is dispatchable the moment its handler is registered.
+    this.actionHandlers = new Map();
+    this.actionLog = [];
     this.unitsPerMetreScale = this.world?.domain?.unitsPerMetre ?? .1;
     this.lookPointerId = null;
     this.lastPointerX = 0;
@@ -107,15 +115,30 @@ export class GeoPlayer {
     this.keydown = event => {
       if (!this.enabled || event.ctrlKey || event.metaKey || event.altKey ||
           event.target?.closest?.('input,textarea,select,[contenteditable="true"]')) return;
-      if (event.code === 'KeyV' || event.code === 'KeyC') {
+      const action = this.actions.keyboardBinding(event.code) ?? (event.code === 'KeyV' ? 'camera' : null);
+      if (!action) return;
+      // `GME-05`: desktop input follows the registry too, so a future action is
+      // dispatchable from the keyboard the moment it is declared.
+      const descriptor = this.actions.action(action);
+      const handler = this.actionHandlers.get(action);
+      if (handler) {
         event.preventDefault();
-        if (!event.repeat) this.toggleCameraMode();
+        if (event.repeat) return;
+        const entry = Object.freeze({ id: action, code: event.code, phase: 'press' });
+        this.actionLog.push(entry);
+        if (this.actionLog.length > 8) this.actionLog.shift();
+        handler(entry);
         return;
       }
-      if (!['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','ShiftLeft','ShiftRight'].includes(event.code)) return;
+      if (descriptor?.kind === 'tap') {
+        event.preventDefault();
+        if (event.repeat) return;
+        if (action === 'camera') this.toggleCameraMode();
+        else if (action === 'jump') this.jumpQueued = true;
+        return;
+      }
       event.preventDefault();
       this.keys.add(event.code);
-      if (event.code === 'Space' && !event.repeat) this.jumpQueued = true;
     };
     this.keyup = event => this.keys.delete(event.code);
     this.blur = () => {
@@ -236,13 +259,40 @@ export class GeoPlayer {
     this.updateCamera(0, true);
   }
 
+  /**
+   * `GME-05`: an action's held state reads the registry binding unless the caller
+   * passes explicit codes, so a rebound or newly declared key needs no editor.
+   */
   held(action, ...codes) {
-    return this.virtual.has(action) || codes.some(code => this.keys.has(code));
+    const bound = codes.length ? codes : (this.actions.action(action)?.keyboard ?? []);
+    return this.virtual.has(action) || bound.some(code => this.keys.has(code));
+  }
+
+  /** Plug behaviour into a registered action; throws for an unknown action id. */
+  setActionHandler(id, handler) {
+    if (!this.actions.has(id)) throw new RangeError(`Unknown action: ${id}`);
+    if (typeof handler !== 'function') throw new TypeError(`Action handler for ${id} must be a function`);
+    this.actionHandlers.set(id, handler);
+    return () => { if (this.actionHandlers.get(id) === handler) this.actionHandlers.delete(id); };
+  }
+
+  /** Declared surfaces for the live action table, for the debug snapshot. */
+  actionDiagnostics() {
+    const diagnostics = this.actions.diagnostics();
+    return Object.freeze({
+      ...diagnostics,
+      handlers: this.actionHandlers.size,
+      recent: Object.freeze([...this.actionLog]),
+    });
   }
 
   step(dt) {
-    let inputX = this.analogMove.x + Number(this.held('right','KeyD','ArrowRight')) - Number(this.held('left','KeyA','ArrowLeft'));
-    let inputZ = this.analogMove.z + Number(this.held('back','KeyS','ArrowDown')) - Number(this.held('forward','KeyW','ArrowUp'));
+    // `GME-05`: direction keys are filtered through the move action's declared
+    // binding, so a rebind or a newly declared movement key needs no edit here.
+    const moveKeys = this.actions.action('move')?.keyboard ?? [];
+    const bound = codes => codes.filter(code => moveKeys.includes(code));
+    let inputX = this.analogMove.x + Number(this.held('right', ...bound(['KeyD', 'ArrowRight']))) - Number(this.held('left', ...bound(['KeyA', 'ArrowLeft'])));
+    let inputZ = this.analogMove.z + Number(this.held('back', ...bound(['KeyS', 'ArrowDown']))) - Number(this.held('forward', ...bound(['KeyW', 'ArrowUp'])));
     const inputLength = Math.hypot(inputX, inputZ);
     if (inputLength > 1) {
       inputX /= inputLength;
@@ -250,7 +300,7 @@ export class GeoPlayer {
     }
     const x = inputX * Math.cos(this.yaw) + inputZ * Math.sin(this.yaw);
     const z = inputZ * Math.cos(this.yaw) - inputX * Math.sin(this.yaw);
-    const running = this.held('run','ShiftLeft','ShiftRight');
+    const running = this.held('run');
     const speed = running ? 3.8 : 2.25;
     const alpha = 1 - Math.exp(-12 * dt);
     this.velocity.x = THREE.MathUtils.lerp(this.velocity.x, x * speed, alpha);
