@@ -65,6 +65,10 @@ function geometryTransfers(geometry, includeColliders = false) {
     geometry.indices.buffer,
   ];
   if (geometry.supportSegments instanceof Float32Array) transfers.push(geometry.supportSegments.buffer);
+  // `ENV-03`: the water vertex bake travels with the water geometry.
+  for (const key of ['shallow', 'deep', 'manner', 'flow', 'classCode']) {
+    if (geometry[key] instanceof Float32Array) transfers.push(geometry[key].buffer);
+  }
   if (geometry.detailPositions instanceof Float32Array) transfers.push(
     geometry.detailPositions.buffer,
     geometry.detailNormals.buffer,

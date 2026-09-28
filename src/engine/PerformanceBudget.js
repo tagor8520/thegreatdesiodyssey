@@ -107,6 +107,17 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   // profile, one texture read per fragment, and no per-pattern texture at all.
   surfaceDetailPatterns: 8,
   surfaceDetailSamplesPerSurface: 1,
+  // `ENV-03`: research §10 — the low path is one opaque water family, one
+  // overdraw layer, one generated wave scale, and a dithered (never blended)
+  // foam; higher profiles may blend but stay inside these ceilings.
+  waterVisualBlendedFamilies: 0,
+  waterVisualOverdrawLayers: 1,
+  waterVisualWaveScales: 1,
+  waterVisualMinimumAlpha: .8,
+  waterVisualBlendedCoveragePercent: 0,
+  waterVisualDitherSize: 8,
+  waterVisualUniformWritesPerFrame: 1,
+  waterVisualSteadyFrameAllocations: 0,
   // `COL-06`: the curated island's structural sweep answers the declared
   // `dynamicSweep` member with the same bounded candidate work the coordinate
   // sweep declares.
@@ -154,6 +165,21 @@ export const GDO_SURFACE_DETAIL_CAPS = Object.freeze({
   low: Object.freeze({ patterns: 8, samplesPerSurface: 1 }),
   balanced: Object.freeze({ patterns: 16, samplesPerSurface: 2 }),
   high: Object.freeze({ patterns: 24, samplesPerSurface: 4 }),
+});
+
+/**
+ * `ENV-03`: the per-class shape of the water appearance table, and the ceiling
+ * each render path is allowed to declare. The low profile's ceiling *is* the
+ * shipped low-profile budget — `validateWaterVisualClasses` proves the two agree,
+ * so a path cannot quietly widen behind the budget assertion's back.
+ */
+export const GDO_WATER_VISUAL_CAPS = Object.freeze({
+  waveScalesPerClass: 2,
+  profiles: Object.freeze({
+    low: Object.freeze({ blendedFamilies: 0, overdrawLayers: 1, waveScales: 1, minimumAlpha: 1, blendedCoveragePercent: 0 }),
+    balanced: Object.freeze({ blendedFamilies: 1, overdrawLayers: 2, waveScales: 2, minimumAlpha: .8, blendedCoveragePercent: 75 }),
+    high: Object.freeze({ blendedFamilies: 1, overdrawLayers: 3, waveScales: 2, minimumAlpha: .8, blendedCoveragePercent: 90 }),
+  }),
 });
 
 /** Unknown or hostile profile names resolve to the low ceilings. */
@@ -241,6 +267,11 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'cameraFadeCandidates', budget: 'cameraFadeCandidates', label: 'camera-fade eligible candidates per frame' }),
   Object.freeze({ metric: 'surfaceDetailPatterns', budget: 'surfaceDetailPatterns', label: 'rolled-out surface detail patterns' }),
   Object.freeze({ metric: 'surfaceDetailSamplesPerSurface', budget: 'surfaceDetailSamplesPerSurface', label: 'generated detail samples per surface' }),
+  Object.freeze({ metric: 'waterVisualBlendedFamilies', budget: 'waterVisualBlendedFamilies', label: 'blended water families' }),
+  Object.freeze({ metric: 'waterVisualOverdrawLayers', budget: 'waterVisualOverdrawLayers', label: 'water overdraw layers' }),
+  Object.freeze({ metric: 'waterVisualWaveScales', budget: 'waterVisualWaveScales', label: 'water wave scales' }),
+  Object.freeze({ metric: 'waterVisualUniformWrites', budget: 'waterVisualUniformWritesPerFrame', label: 'water uniform writes/frame' }),
+  Object.freeze({ metric: 'waterVisualSteadyFrameAllocations', budget: 'waterVisualSteadyFrameAllocations', label: 'water steady-frame allocations' }),
   Object.freeze({ metric: 'curatedSweepCandidates', budget: 'curatedSweepCandidates', label: 'curated structural sweep candidates' }),
   Object.freeze({ metric: 'curatedSweepSteadyFrameAllocations', budget: 'curatedSweepSteadyFrameAllocations', label: 'curated sweep steady-frame allocations' }),
   Object.freeze({ metric: 'discoveryRecords', budget: 'discoveryRecords', label: 'discovery journal records' }),

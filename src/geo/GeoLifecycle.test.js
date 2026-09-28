@@ -216,12 +216,19 @@ test('FND-07 the movement audit runs against the real world and reports measurab
     assert.equal(byId.ordering.ok, true, byId.ordering.detail);
     assert.equal(byId.shimmer.ok, true, byId.shimmer.detail);
     assert.equal(byId.stability.ok, true, byId.stability.detail);
-    // The bands are read from the live materials, so the water band must really
-    // sort above opaque geometry and really be blended.
+    // The bands are read from the live materials. `ENV-03` made the low water
+    // path opaque and single-family, so the live band reports what the material
+    // really is — and the blended path is the higher-profile case, proved here by
+    // switching the policy rather than by trusting the declaration.
     const snapshot = world.movementSnapshot({ camera, cameraMode: 'third-person' });
     const water = snapshot.bands.find(band => band.name === 'water');
-    assert.equal(water.transparent, true);
-    assert.ok(water.order > water.opaqueOrder);
+    assert.equal(water.transparent, false, 'the low water path is opaque');
+    assert.ok(water.order > water.opaqueOrder, 'water still renders in its own band');
+    world.waterVisual.setProfile('balanced');
+    const blended = world.movementSnapshot({ camera, cameraMode: 'third-person' }).bands.find(band => band.name === 'water');
+    assert.equal(blended.transparent, true, 'the higher water path is blended');
+    assert.ok(blended.order > blended.opaqueOrder);
+    world.waterVisual.setProfile('low');
     // Subpixel detail: every tracked surface reports the shader's own policy and
     // engages mip/fade instead of aliasing.
     assert.ok(snapshot.subpixel.length >= 4);

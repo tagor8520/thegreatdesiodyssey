@@ -42,11 +42,18 @@ export const GEO_WATER_FLOW_SOURCE = Object.freeze({
   POLYGON_WATERWAY: 2,
 });
 
-const FLOWING_CLASSES = new Set([
+/**
+ * `TER-08`'s flowing vocabulary: exactly these classes may carry a mapped flow
+ * tangent. `ENV-03`'s water appearance table is checked against this set, so the
+ * rendered classes that advect waves are the classes that actually have flow.
+ */
+export const GEO_WATER_FLOWING_CLASSES = Object.freeze([
   GEO_WATER_CLASS.STREAM,
   GEO_WATER_CLASS.CANAL,
   GEO_WATER_CLASS.RIVER,
 ]);
+
+const FLOWING_CLASSES = new Set(GEO_WATER_FLOWING_CLASSES);
 
 function pointInRing(x, z, ring) {
   let inside = false;

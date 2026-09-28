@@ -23,6 +23,10 @@ import {
 } from '../engine/AmbientLifeMotion.js';
 import { createAmbientLifeScheduler } from '../engine/AmbientLifeScheduler.js';
 import { createCameraFade } from '../engine/CameraFade.js';
+import { GDO_WATER_VISUAL_CLASSES } from '../engine/WaterVisualClasses.js';
+import {
+  createWaterVisualMaterial, createWaterVisualPolicy, waterVisualAppearance,
+} from '../engine/WaterVisualClasses.js';
 import {
   applySurfaceDetail, describeSurfaceDetailCatalogue, rolloutSurfaceDetails,
   selectSurfaceDetail, surfaceDetailOf,
@@ -176,6 +180,12 @@ function createBufferGeometry(data) {
   geometry.setAttribute('position', new THREE.BufferAttribute(data.positions, 3));
   if (data.normals?.length) geometry.setAttribute('normal', new THREE.BufferAttribute(data.normals, 3));
   if (data.colors?.length) geometry.setAttribute('color', new THREE.BufferAttribute(data.colors, 3));
+  // `ENV-03`: the water vertex bake — class tints, wave manner, flow, shore.
+  if (data.shallow?.length) geometry.setAttribute('gdoWaterShallow', new THREE.BufferAttribute(data.shallow, 3));
+  if (data.deep?.length) geometry.setAttribute('gdoWaterDeep', new THREE.BufferAttribute(data.deep, 3));
+  if (data.manner?.length) geometry.setAttribute('gdoWaterManner', new THREE.BufferAttribute(data.manner, 4));
+  if (data.flow?.length) geometry.setAttribute('gdoWaterFlow', new THREE.BufferAttribute(data.flow, 2));
+  if (data.classCode?.length) geometry.setAttribute('gdoWaterClass', new THREE.BufferAttribute(data.classCode, 1));
   geometry.setIndex(new THREE.BufferAttribute(data.indices, 1));
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
@@ -367,63 +377,6 @@ function createBuildingMaterial(library) {
   return configureSemanticMaterial(material, 'facade', library, 'low');
 }
 
-function createWaterMaterial(library) {
-  const material = new THREE.ShaderMaterial({
-    transparent: true,
-    depthWrite: false,
-    fog: true,
-    uniforms: {
-      uTime: { value: 0 },
-      uSurfaceNoise: { value: library.textures.surfaceNoise },
-      uWaterNormal: { value: library.textures.waterNormal },
-      uNormalFade: { value: new THREE.Vector2(10, 52) },
-      fogColor: { value: new THREE.Color() },
-      fogNear: { value: 1 },
-      fogFar: { value: 1000 },
-    },
-    vertexShader: `
-      #include <fog_pars_vertex>
-      varying vec3 vWorldPosition;
-      varying vec3 vColor;
-      void main() {
-        vColor = color;
-        vec3 transformed = position;
-        vec4 worldPosition = modelMatrix * vec4(transformed, 1.0);
-        vWorldPosition = worldPosition.xyz;
-        vec4 mvPosition = viewMatrix * worldPosition;
-        gl_Position = projectionMatrix * mvPosition;
-        #include <fog_vertex>
-      }
-    `,
-    fragmentShader: `
-      #include <fog_pars_fragment>
-      uniform float uTime;
-      uniform sampler2D uSurfaceNoise;
-      uniform sampler2D uWaterNormal;
-      uniform vec2 uNormalFade;
-      varying vec3 vWorldPosition;
-      varying vec3 vColor;
-      void main() {
-        vec3 eye = normalize(cameraPosition - vWorldPosition);
-        float distanceToEye = distance(cameraPosition, vWorldPosition);
-        float normalVisibility = 1.0 - smoothstep(uNormalFade.x, uNormalFade.y, distanceToEye);
-        vec2 normalUv = vWorldPosition.xz * 0.18 + vec2(uTime * 0.004, -uTime * 0.003);
-        vec3 waterNormal = texture2D(uWaterNormal, normalUv).xyz * 2.0 - 1.0;
-        waterNormal = normalize(vec3(waterNormal.xy * normalVisibility, max(0.2, waterNormal.z)));
-        float macro = texture2D(uSurfaceNoise, vWorldPosition.xz * 0.035).r;
-        float fresnel = pow(1.0 - max(dot(eye, waterNormal.xzy), 0.0), 2.0);
-        vec3 color = mix(vColor * mix(0.88, 1.04, macro), vec3(0.42, 0.73, 0.82), fresnel * 0.52);
-        gl_FragColor = vec4(color, 0.90);
-        #include <tonemapping_fragment>
-        #include <colorspace_fragment>
-        #include <fog_fragment>
-      }
-    `,
-    vertexColors: true,
-  });
-  return material;
-}
-
 /** GLSL-style smoothstep, used by the CPU mirror of generated-material fades. */
 function smoothstep(edge0, edge1, value) {
   if (!(edge1 > edge0)) return value < edge0 ? 0 : 1;
@@ -560,7 +513,10 @@ export class GeoWorld {
     this.roadMaterial = createRoadMaterial(this.materialLibrary);
     this.landMaterial = createTerrainMaterial(true, this.materialLibrary, 'land');
     this.buildingMaterial = createBuildingMaterial(this.materialLibrary);
-    this.waterMaterial = createWaterMaterial(this.materialLibrary);
+    // `ENV-03`: the water material and its class/profile policy. The low path is
+    // opaque and single-family; higher profiles are the bounded blended path.
+    this.waterMaterial = createWaterVisualMaterial({ library: this.materialLibrary, profile });
+    this.waterVisual = createWaterVisualPolicy({ material: this.waterMaterial, library: this.materialLibrary, profile });
     this.decorationMaterial = configureSemanticMaterial(
       new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .84, metalness: 0 }),
       'decoration', this.materialLibrary, 'low',
@@ -1329,6 +1285,14 @@ export class GeoWorld {
       timings: this.timings,
       materialLibrary: this.materialLibrary.diagnostics,
       materialTextureBytes: this.materialLibrary.diagnostics.estimatedBytes,
+      // `ENV-03`: the water path, its class table, and the per-frame counters.
+      waterVisualPath: this.waterVisual?.appearance.path ?? null,
+      waterVisualClasses: Object.keys(GDO_WATER_VISUAL_CLASSES).length,
+      waterVisualBlendedFamilies: this.waterVisual?.appearance.blendedFamilies ?? 0,
+      waterVisualOverdrawLayers: this.waterVisual?.appearance.overdrawLayers ?? 0,
+      waterVisualWaveScales: this.waterVisual?.appearance.waveScales ?? 0,
+      waterVisualUniformWrites: this.waterVisual?.diagnostics.steadyFrameWrites ?? 0,
+      waterVisualSteadyFrameAllocations: this.waterVisual?.diagnostics.steadyFrameAllocations ?? 0,
       // `MAT-05`: the generated detail patterns this world rolled out per surface,
       // and the surfaces it deliberately left alone with the reason.
       surfaceDetailPatterns: this.surfaceDetailRollout?.patterns ?? 0,
@@ -1470,7 +1434,7 @@ export class GeoWorld {
     this.plantRenderPools.update(this._plantView(nowMilliseconds));
     this._blendEnvironmentGround(nowMilliseconds);
     const time = nowMilliseconds * .001;
-    this.waterMaterial.uniforms.uTime.value = time;
+    this.waterVisual.beginFrame(time);
     this.ambientLifePools.update(nowMilliseconds);
     this.scheduleAmbientLife(nowMilliseconds);
     // `LAY-06`: the fade decision runs on the same camera and avatar the frame

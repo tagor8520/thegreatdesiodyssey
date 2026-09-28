@@ -12,10 +12,13 @@ import { compileBridges } from './GeoBridgeGrammar.js';
 import {
   GEO_WATER_CLASS,
   GEO_WATER_DOMAIN_LIMITS,
+  GEO_WATER_FLOW_QUANTIZATION,
+  GEO_WATERWAY_STRIDE,
   createWaterDomain,
   queryWaterDomain,
   waterwayRibbonIntersectsPolygons,
 } from './GeoWaterDomains.js';
+import { waterVisualVertexAppearance } from '../engine/WaterVisualClasses.js';
 import {
   GEO_DEFAULT_CROWN_ADAPTATION,
   GEO_PLANT_CLEARANCE_STRIDE,
@@ -74,12 +77,15 @@ const MAX_GROUND_COVER = 1_100;
 const MAX_AMBIENT_LIFE = 30;
 const MAX_LABEL_CANDIDATES = 64;
 
-function geometryResult(positions, normals, colors, indices, meta = {}) {
+function geometryResult(positions, normals, colors, indices, meta = {}, attributes = null) {
   return {
     positions: new Float32Array(positions),
     normals: new Float32Array(normals),
     colors: new Float32Array(colors),
     indices: new Uint32Array(indices),
+    ...(attributes
+      ? Object.fromEntries(Object.entries(attributes).map(([key, value]) => [key, new Float32Array(value)]))
+      : null),
     meta,
   };
 }
@@ -597,7 +603,12 @@ function addLegacyParkedCars(vectorTile, request, decorations, seed) {
 export function buildContextData(vectorTile, request) {
   const terrainSeed = Number.isFinite(request.terrainSeed) ? request.terrainSeed : 0;
   const land = { positions: [], normals: [], colors: [], indices: [] };
-  const water = { positions: [], normals: [], colors: [], indices: [] };
+  const water = {
+    positions: [], normals: [], colors: [], indices: [],
+    // `ENV-03`: per-vertex class appearance, flow tangent, and shore factor.
+    shallow: [], deep: [], manner: [], flow: [], classCode: [],
+  };
+  const waterPolygonSpans = [], waterRibbonSpans = [];
   const polygonRecords = [], waterPolygons = [], waterways = [];
   let landFeatures = 0, waterFeatures = 0, waterwaySegmentsSuppressed = 0;
   let waterwaySegmentsTruncated = false, truncated = false;
@@ -636,7 +647,22 @@ export function buildContextData(vectorTile, request) {
         const rings = polygon.map(withoutClosingPoint).filter(ring => ring.length >= 3)
           .map(ring => ring.map(point => pointToWorld(point, feature.extent, request)));
         if (!rings.length || water.positions.length / 3 > MAX_SURFACE_VERTICES) continue;
+        const startVertex = water.positions.length / 3;
         appendPolygon(water, rings, GEO_SURFACE_Y.WATER, WATER_COLOR);
+        // `ENV-03`: the class appearance is baked per vertex from the same class
+        // code `TER-08` will store in the domain, so the shader indexes nothing.
+        const polygonClass = resolveMapWaterClass(feature.properties, request.schema);
+        const appearance = waterVisualVertexAppearance(polygonClass);
+        const ringVertices = rings.reduce((total, ring) => total + ring.length, 0);
+        for (let vertex = 0; vertex < ringVertices; vertex++) {
+          water.shallow.push(appearance.shallow[0], appearance.shallow[1], appearance.shallow[2]);
+          water.deep.push(appearance.deep[0], appearance.deep[1], appearance.deep[2]);
+          water.manner.push(appearance.manner[0], appearance.manner[1], appearance.manner[2], appearance.manner[3]);
+          // Flow is patched below from the domain's own resolved tangent.
+          water.flow.push(0, 0);
+          water.classCode.push(polygonClass);
+        }
+        waterPolygonSpans.push({ startVertex, vertexCount: ringVertices, polygonIndex: waterPolygons.length });
         // `MAP-08`: the water domain receives a canonical class name, so a
         // Shortbread `kind:'water'` is the same lake as an OpenMapTiles one.
         waterPolygons.push({
@@ -666,10 +692,24 @@ export function buildContextData(vectorTile, request) {
           segment, halfWidth: width / 2, properties: feature.properties,
           kind: resolveMapWaterKind(feature.properties, request.schema),
         });
+        const segmentIndex = waterways.length - 1;
         if (waterwayRibbonIntersectsPolygons(segment, width, waterPolygons)) {
           waterwaySegmentsSuppressed++;
         } else {
-          appendWorldRibbonSegment(water, segment, width, GEO_SURFACE_Y.WATER, WATER_COLOR);
+          const startVertex = water.positions.length / 3;
+          if (appendWorldRibbonSegment(water, segment, width, GEO_SURFACE_Y.WATER, WATER_COLOR)) {
+            // A waterway ribbon is shallow by construction: it is a narrow
+            // mapped line, so its class palette is the shallow tint throughout.
+            const appearance = waterVisualVertexAppearance(waterClassCode);
+            for (let vertex = 0; vertex < 4; vertex++) {
+              water.shallow.push(appearance.shallow[0], appearance.shallow[1], appearance.shallow[2]);
+              water.deep.push(appearance.deep[0], appearance.deep[1], appearance.deep[2]);
+              water.manner.push(appearance.manner[0], appearance.manner[1], appearance.manner[2], appearance.manner[3]);
+              water.flow.push(0, 0);
+              water.classCode.push(waterClassCode);
+            }
+            waterRibbonSpans.push({ startVertex, vertexCount: 4, segmentIndex });
+          }
         }
       }
       waterFeatures++;
@@ -684,6 +724,35 @@ export function buildContextData(vectorTile, request) {
       .filter(record => ['wetland', 'swamp', 'marsh'].some(kind => record.kind.includes(kind)))
       .map(record => record.rings),
   });
+  // `ENV-03`: the rendered flow tangents are the domain's own resolved ones, so a
+  // still lake or an unmatched polygon cannot gain a fabricated direction.
+  let flowingVertices = 0;
+  for (const span of waterPolygonSpans) {
+    const flowX = waterDomain.waterFlowDirections?.[span.polygonIndex * 2] ?? 0;
+    const flowZ = waterDomain.waterFlowDirections?.[span.polygonIndex * 2 + 1] ?? 0;
+    const classCode = waterDomain.waterClasses?.[span.polygonIndex] ?? 0;
+    for (let vertex = 0; vertex < span.vertexCount; vertex++) {
+      const index = (span.startVertex + vertex) * 2;
+      water.flow[index] = flowX / GEO_WATER_FLOW_QUANTIZATION;
+      water.flow[index + 1] = flowZ / GEO_WATER_FLOW_QUANTIZATION;
+      water.classCode[span.startVertex + vertex] = classCode;
+      if (flowX || flowZ) flowingVertices++;
+    }
+  }
+  for (const span of waterRibbonSpans) {
+    const offset = span.segmentIndex * GEO_WATERWAY_STRIDE;
+    const classCode = Math.round(waterDomain.waterways?.[offset + 5] ?? 0);
+    const flowX = waterDomain.waterways?.[offset + 6] ?? 0;
+    const flowZ = waterDomain.waterways?.[offset + 7] ?? 0;
+    for (let vertex = 0; vertex < span.vertexCount; vertex++) {
+      const index = (span.startVertex + vertex) * 2;
+      water.flow[index] = flowX / GEO_WATER_FLOW_QUANTIZATION;
+      water.flow[index + 1] = flowZ / GEO_WATER_FLOW_QUANTIZATION;
+      water.classCode[span.startVertex + vertex] = classCode;
+      if (flowX || flowZ) flowingVertices++;
+    }
+  }
+
   const decorations = [];
   const tileSeed = hashText(`gdo:vegetation-morphology:v1:${request.tileX}:${request.tileY}`);
   const obstacles = collectObstacles(vectorTile, request);
@@ -777,6 +846,13 @@ export function buildContextData(vectorTile, request) {
       flowingPolygons: waterDomain.meta.flowingPolygons,
       mappedFlowSegments: waterDomain.meta.mappedFlowSegments,
       overlapPolicy: 'suppress-intersecting-ribbon-v1',
+      // `ENV-03`: the vertex bake the class appearance reached the mesh through.
+      visualClasses: waterPolygonSpans.length + waterRibbonSpans.length,
+      flowingVertices,
+      shallowToDeep: 'noise-driven-shared-surface-noise-v1',
+    }, {
+      shallow: water.shallow, deep: water.deep, manner: water.manner,
+      flow: water.flow, classCode: water.classCode,
     }),
     waterDomain,
     streetFurniture,
