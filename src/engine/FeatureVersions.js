@@ -32,7 +32,7 @@ export const GDO_FEATURE_VERSIONS = Object.freeze({
   waterContact: 1,
   ambientLifeScheduler: 1,
   ambientLifeMotion: 1,
-  contentSchema: 0,
+  contentSchema: 1,
   saveSchema: 0,
 });
 
