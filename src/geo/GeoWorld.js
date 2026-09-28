@@ -25,7 +25,11 @@ import { createAmbientLifeScheduler } from '../engine/AmbientLifeScheduler.js';
 import { createCameraFade } from '../engine/CameraFade.js';
 import { GDO_WATER_VISUAL_CLASSES } from '../engine/WaterVisualClasses.js';
 import { GDO_LOW_PROFILE_BUDGETS } from '../engine/PerformanceBudget.js';
-import { GDO_NAV_ARRIVAL_RADIUS, GDO_NAV_SNAP_LIMIT, createLocalNavigation } from '../engine/LocalNavigation.js';
+import { GDO_NAV_ARRIVAL_RADIUS, GDO_NAV_METRES_PER_UNIT, GDO_NAV_SNAP_LIMIT, createLocalNavigation } from '../engine/LocalNavigation.js';
+import {
+  GDO_ACTIVITY_CONTEXT_SOURCES,
+  activityDateKey, activityPlaces, activitySeedFor, createLocalActivities,
+} from '../engine/LocalActivities.js';
 
 /** `GME-07`: guidance refresh thresholds, so a steady frame re-uses its record. */
 export const GDO_NAV_GUIDANCE_MOVE = .75;
@@ -37,14 +41,17 @@ import {
   GDO_PROP_FAMILIES, GDO_PROP_FAMILY_IDS, propToneColor, queryPropTriggerStream,
 } from '../engine/PropGrammar.js';
 import {
-  createWaterVisualMaterial, createWaterVisualPolicy, waterVisualAppearance,
+  createWaterVisualMaterial, createWaterVisualPolicy,
 } from '../engine/WaterVisualClasses.js';
 import {
   applySurfaceDetail, describeSurfaceDetailCatalogue, rolloutSurfaceDetails,
   selectSurfaceDetail, surfaceDetailOf,
 } from '../engine/SurfaceDetailCatalogue.js';
 import { DynamicProxyGrid } from '../engine/DynamicProxyGrid.js';
-import { createDiscoveryJournal, createJournalStorage } from '../engine/DiscoveryJournal.js';
+import {
+  GDO_DISCOVERY_PROFILES, createDiscoveryJournal, createJournalStorage,
+} from '../engine/DiscoveryJournal.js';
+import { GEO_BRIDGE_FAMILY, GEO_BRIDGE_FIELD } from './GeoBridgeGrammar.js';
 import {
   GDO_WATER_CONTACT_PROFILES,
   GDO_WATER_STATE,
@@ -461,6 +468,7 @@ export class GeoWorld {
     viewportHeight = 720,
     reducedMotion = prefersReducedPlantMotion(),
     ledger = null,
+    activityDate = null,
   }) {
     this.scene = scene;
     // `FND-08`: one shared domain descriptor, so shared consumers can query this
@@ -571,6 +579,23 @@ export class GeoWorld {
     // no draw call — so guidance can never be a second world renderer.
     this.navigation = createLocalNavigation({ profile });
     this.navigationRoute = null;
+    // `GME-08`: one bounded board of local activities, seeded from the world
+    // version, the coordinate, and the day — so the same day at the same place
+    // reproduces the same objectives, and each one is only emitted once the
+    // context showed the affordance it asks for.
+    this.activities = createLocalActivities({
+      profile,
+      seed: activitySeedFor({
+        worldVersion: GDO_FEATURE_VERSIONS.localActivities,
+        latitude, longitude,
+        dateKey: activityDate ?? activityDateKey(),
+      }),
+      arrivalRadius: GDO_NAV_ARRIVAL_RADIUS,
+    });
+    this.activityMergeRadius = GDO_DISCOVERY_PROFILES[profile]?.mergeRadius ?? 4;
+    this.activitySummary = null;
+    this.activityTransitions = [];
+    this.nextActivityPassMilliseconds = 0;
     this.waterMaterial = createWaterVisualMaterial({ library: this.materialLibrary, profile });
     this.waterVisual = createWaterVisualPolicy({ material: this.waterMaterial, library: this.materialLibrary, profile });
     this.decorationMaterial = configureSemanticMaterial(
@@ -785,7 +810,7 @@ export class GeoWorld {
       roads: null, land: null, water: null, decorations: [], buildings: null, buildingDetails: null,
       labels: [], biome: null, environment: null, roadMeta: null, buildingMeta: null, timings: null,
       waterDomain: null, waterDomainMeta: null, streetFurnitureMeta: null, streetFurnitureCount: 0,
-      bridgeMeta: null, bridgeCount: 0,
+      bridgeMeta: null, bridgeCount: 0, bridgeTargets: null,
       landmarkMeta: null, landmarkGrammar: null, landmarkCount: 0,
       clearanceDiagnostics: null, morphologyDiagnostics: null,
       roadSupportSegments: null, roadSupportStride: 0, roadSupportGrid: null,
@@ -1137,6 +1162,21 @@ export class GeoWorld {
         tile.bridgeCount = this.bridgePools.addOwner(
           tile.key, bridgeValues, context.bridges?.stride || 11,
         );
+        // `GME-08`: the deck spans are the affordance a "cross a bridge" activity
+        // is grounded in, so their positions are kept per tile (bounded, sorted).
+        const bridgeStride = context.bridges?.stride || 11;
+        const decks = [];
+        for (let index = 0; index + bridgeStride <= bridgeValues.length; index += bridgeStride) {
+          if (Math.round(bridgeValues[index + GEO_BRIDGE_FIELD.FAMILY]) !== GEO_BRIDGE_FAMILY.DECK_SIDE) continue;
+          decks.push({
+            index: Math.round(bridgeValues[index + GEO_BRIDGE_FIELD.STABLE_ID]),
+            name: 'the elevated deck',
+            x: bridgeValues[index + GEO_BRIDGE_FIELD.X],
+            z: bridgeValues[index + GEO_BRIDGE_FIELD.Z],
+          });
+        }
+        decks.sort((first, second) => (first.x - second.x) || (first.z - second.z) || (first.index - second.index));
+        tile.bridgeTargets = decks.slice(0, 8);
       } catch (error) { warnings.push(`bridges: ${error.message || error}`); }
       // `DET-10`: the placed props, the flat trigger stream gameplay reads, and
       // the authored solid proxies that (and only those) may block the player.
@@ -1403,6 +1443,15 @@ export class GeoWorld {
       navMinimapSegments: this.navigationGuidanceRecord?.minimap?.segments ?? 0,
       navSteadyFrameAllocations: this.navigationGuidanceRecord?.steadyFrameAllocations ?? 0,
       navTarget: this.navigationRouteKey,
+      // `GME-08`: the activity board, what completed, and what was refused
+      // because the resident context could not prove the affordance.
+      activityTemplates: this.activities.diagnostics().templates,
+      activityBoard: this.activities.size,
+      activityCompleted: this.activities.completed,
+      activityRefusals: this.activities.diagnostics().refusals,
+      activityTrimmed: this.activities.trimmed,
+      activityTravelled: this.activities.travelled,
+      activitySteadyFrameAllocations: this.activities.diagnostics().steadyFrameAllocations,
       // `ENV-03`: the water path, its class table, and the per-frame counters.
       waterVisualPath: this.waterVisual?.appearance.path ?? null,
       waterVisualClasses: Object.keys(GDO_WATER_VISUAL_CLASSES).length,
@@ -1535,6 +1584,163 @@ export class GeoWorld {
     return summary;
   }
 
+  /**
+   * `GME-08`: the context snapshot one activity refresh is grounded in. Every
+   * entry comes from something the world already mounted — the mapped labels, the
+   * navigation graph's named roads, the elevated deck spans, sampled water
+   * presence, and the placed prop triggers — so an objective can only be emitted
+   * for an affordance that really exists in the resident tiles.
+   */
+  _activitySnapshot() {
+    const places = activityPlaces(this.visibleLabels, {
+      mergeRadius: this.activityMergeRadius,
+    });
+    const bridges = [];
+    const water = [];
+    const props = [];
+    for (const key of [...this.tiles.keys()].sort()) {
+      const tile = this.tiles.get(key);
+      for (const deck of tile.bridgeTargets ?? []) {
+        bridges.push({ id: `${key}:${deck.index}`, kind: 'bridge', name: deck.name, x: deck.x, z: deck.z });
+      }
+      // A bounded sample grid, so water presence is proved from the real domain
+      // rather than inferred from a tile's class counts.
+      const domain = tile.waterDomain;
+      if (domain && tile.bounds) {
+        const result = this.activityWaterResult ??= {};
+        let admitted = 0;
+        for (let ix = 0; ix < 5 && admitted < 8; ix++) {
+          for (let iz = 0; iz < 5 && admitted < 8; iz++) {
+            const x = tile.bounds.minX + (tile.bounds.maxX - tile.bounds.minX) * ((ix + .5) / 5);
+            const z = tile.bounds.minZ + (tile.bounds.maxZ - tile.bounds.minZ) * ((iz + .5) / 5);
+            const query = queryWaterDomain(domain, x, z, result);
+            if (!query.inWater && !(query.waterDistance <= 0)) continue;
+            admitted++;
+            water.push({
+              id: `${key}:water:${ix}:${iz}`, kind: 'water', name: query.waterClassName,
+              classKind: query.waterClassName, className: query.waterClassName, x, z,
+            });
+          }
+        }
+      }
+      const triggers = tile.propTriggers;
+      if (triggers?.length) {
+        const stride = tile.propStride ?? 6;
+        for (let index = 0; index + stride <= triggers.length; index += stride) {
+          const family = GDO_PROP_FAMILIES[Math.round(triggers[index + 4])]?.id ?? 'prop';
+          props.push({
+            id: `${key}:prop:${Math.round(triggers[index + 5])}`,
+            kind: 'prop', name: family, family,
+            x: triggers[index], z: triggers[index + 2],
+          });
+        }
+      }
+    }
+    const roads = [];
+    for (const node of this.navigation.graph.nodes) {
+      if (node.kind !== 'road' || !node.name) continue;
+      roads.push({ id: node.id, kind: 'road', name: node.name, x: node.x, z: node.z });
+    }
+    return { places, roads, bridges, water, props };
+  }
+
+  /**
+   * `GME-08`: one throttled activity pass. It rebuilds the board only when the
+   * resident context actually changed, then advances the objectives from the
+   * player's position, the metres walked, and the `GME-06` journal's own ids.
+   */
+  updateActivities(x, z, nowMilliseconds = 0) {
+    if (this.disposed || !this.activities) return this.activitySummary;
+    if (nowMilliseconds < this.nextActivityPassMilliseconds) return this.activitySummary;
+    this.nextActivityPassMilliseconds = nowMilliseconds + 250;
+    if (!this.activityOriginSet) {
+      this.activities.setOrigin(x, z);
+      this.activityStart = { x, z };
+      this.activityOriginSet = true;
+    }
+    const snapshot = this._activitySnapshot();
+    this.activityContextIds = this.activityContextIds ?? new Set();
+    this.activityContextIds.clear();
+    for (const list of [snapshot.places, snapshot.roads, snapshot.bridges, snapshot.water, snapshot.props]) {
+      for (const entry of list) this.activityContextIds.add(entry.id);
+    }
+    this.activityContextCounts = {
+      places: snapshot.places.length, roads: snapshot.roads.length, bridges: snapshot.bridges.length,
+      water: snapshot.water.length, props: snapshot.props.length,
+    };
+    this.activityBridgePoints = snapshot.bridges.slice(0, 8);
+    // The snapshot the board was built from, kept so an audit can re-ground the
+    // same objectives from the same resident context.
+    this.activitySnapshot = snapshot;
+    this.activities.refresh({ ...snapshot, origin: this.activities.origin ?? { x, z } });
+    const visitedIds = new Set();
+    const sightedIds = new Set();
+    for (const record of this.discoveryJournal?.records() ?? []) {
+      if (record.state === 'visited') visitedIds.add(record.id);
+      else sightedIds.add(record.id);
+    }
+    const transitions = this.activities.advance({
+      x, z, metresPerUnit: GDO_NAV_METRES_PER_UNIT, visitedIds, sightedIds,
+    });
+    if (transitions.length) {
+      this.activityTransitions.push(...transitions);
+      while (this.activityTransitions.length > 8) this.activityTransitions.shift();
+      for (const transition of transitions) {
+        this._emitStatus(`Activity ${transition.state}: ${transition.title}`, false);
+      }
+    }
+    this.activitySummary = this.activities.summary();
+    return this.activitySummary;
+  }
+
+  /**
+   * `GME-08`: one live activity record for the audit — the board, the objective
+   * it is on, how much of it is proved by the resident context, and the replayed
+   * progress. Every field is read off the world's own state, so the audit cannot
+   * pass on a value the player could not see.
+   */
+  activitySample(index = 0) {
+    const diagnostics = this.activities.diagnostics();
+    const current = this.activities.current();
+    const board = this.activities.board;
+    const known = this.activityContextIds ?? new Set();
+    let unmatchedTargets = 0;
+    for (const entry of board) {
+      const source = GDO_ACTIVITY_CONTEXT_SOURCES[entry.template] ?? null;
+      for (const target of entry.targets) {
+        if (source && !known.has(target.id)) unmatchedTargets++;
+      }
+    }
+    const counts = this.activityContextCounts ?? {};
+    const unprovedTemplates = [...new Set(board
+      .filter(entry => GDO_ACTIVITY_CONTEXT_SOURCES[entry.template] &&
+        (counts[GDO_ACTIVITY_CONTEXT_SOURCES[entry.template]] ?? 0) === 0)
+      .map(entry => entry.template))];
+    return {
+      index,
+      board: this.activities.size,
+      completed: this.activities.completed,
+      travelled: this.activities.travelled,
+      template: current?.template ?? null,
+      title: current?.title ?? '',
+      progress: current?.progress ?? 0,
+      required: current?.required ?? 0,
+      state: current?.state ?? null,
+      targets: current?.targets ?? 0,
+      unmatchedTargets,
+      unprovedTemplates,
+      refusals: diagnostics.refusals,
+      refusalReasons: Object.keys(diagnostics.refusalReasons ?? {}),
+      checks: diagnostics.checks,
+      steadyFrameAllocations: diagnostics.steadyFrameAllocations,
+      bridges: this.activityBridgePoints?.length ?? 0,
+      bridgePoints: this.activityBridgePoints ?? [],
+      bridgeObjectives: board.filter(entry => entry.template === 'cross-bridge').length,
+      seed: this.activities.seed,
+      context: { ...(this.activityContextCounts ?? {}) },
+    };
+  }
+
   /** `GME-06`: restore the journal from the local store, if there is one. */
   /**
    * `DET-10`: the nearest prop trigger within its own declared range, read from
@@ -1609,6 +1815,9 @@ export class GeoWorld {
       });
     }
     this.observeDiscovery(position.x, position.z, nowMilliseconds);
+    // `GME-08`: the activity board advances on the same throttled cadence, so
+    // objectives move with the player without a per-frame rebuild.
+    this.updateActivities(position.x, position.z, nowMilliseconds);
     const fractionalX = this.reference.originX + position.x / this.reference.tileSize;
     const fractionalY = this.reference.originY + position.z / this.reference.tileSize;
     const x = Math.floor(fractionalX), y = Math.floor(fractionalY);
@@ -1674,6 +1883,7 @@ export class GeoWorld {
     tile.landmarkCount = 0;
     tile.landmarkGrammar = null;
     tile.bridgeCount = 0;
+    tile.bridgeTargets = null;
     tile.ambientLifeCount = 0;
     tile.root.removeFromParent();
     for (const slot of ['ground', 'roads', 'land', 'water', 'buildings', 'buildingDetails']) {

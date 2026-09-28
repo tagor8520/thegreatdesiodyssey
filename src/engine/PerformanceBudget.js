@@ -122,6 +122,12 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   // graph, so its node/edge set, its bounded route search, and the segments the
   // 2D HUD may draw are all declared ceilings on the low profile.
   navLinesPerTile: 260,
+  // `GME-08`: research §4.7 — one bounded board of affordance-proven objectives.
+  activityTemplates: 8,
+  activityBoard: 5,
+  activityTargets: 3,
+  activityChecks: 24,
+  activitySteadyFrameAllocations: 0,
   navNodes: 160,
   navEdges: 320,
   navRouteExpansions: 256,
@@ -288,6 +294,10 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'waterVisualWaveScales', budget: 'waterVisualWaveScales', label: 'water wave scales' }),
   Object.freeze({ metric: 'waterVisualUniformWrites', budget: 'waterVisualUniformWritesPerFrame', label: 'water uniform writes/frame' }),
   Object.freeze({ metric: 'waterVisualSteadyFrameAllocations', budget: 'waterVisualSteadyFrameAllocations', label: 'water steady-frame allocations' }),
+  Object.freeze({ metric: 'activityBoard', budget: 'activityBoard', label: 'emitted local activities' }),
+  Object.freeze({ metric: 'activityTargets', budget: 'activityTargets', label: 'activity targets per objective' }),
+  Object.freeze({ metric: 'activityChecks', budget: 'activityChecks', label: 'activity affordance checks' }),
+  Object.freeze({ metric: 'activitySteadyFrameAllocations', budget: 'activitySteadyFrameAllocations', label: 'activity steady-frame allocations' }),
   Object.freeze({ metric: 'navLines', budget: 'navLinesPerTile', label: 'navigation road lines/tile' }),
   Object.freeze({ metric: 'navNodes', budget: 'navNodes', label: 'local navigation nodes' }),
   Object.freeze({ metric: 'navEdges', budget: 'navEdges', label: 'local navigation edges' }),

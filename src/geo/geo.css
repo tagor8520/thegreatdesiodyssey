@@ -111,6 +111,59 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The right-hand guidance column: the `GME-07` minimap and the `GME-08`
+   activity line share it, so they never overlap the controls or the readout. */
+.geo-hud-stack {
+  position: absolute;
+  top: max(60px, calc(env(safe-area-inset-top) + 60px));
+  right: max(12px, env(safe-area-inset-right));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: min(72vw, 320px);
+}
+
+.geo-navigation {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  background: #102725e8;
+  border: 1px solid #d3b77b80;
+  border-radius: 8px;
+  box-shadow: 0 8px 30px #0005;
+  backdrop-filter: blur(8px);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.geo-minimap {
+  flex: none;
+  width: 132px;
+  height: 132px;
+  border: 1px solid rgba(211, 183, 123, .35);
+  border-radius: 6px;
+}
+
+.geo-nav-target { color: #f2c777; font-weight: 700; }
+.geo-nav-guidance { margin-top: 4px; color: #c7d5cf; }
+
+.geo-activities {
+  max-width: 100%;
+  padding: 8px 10px;
+  background: #102725e8;
+  border: 1px solid #d3b77b80;
+  border-radius: 8px;
+  box-shadow: 0 8px 30px #0005;
+  backdrop-filter: blur(8px);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.geo-activity-title { color: #f2c777; font-weight: 700; }
+.geo-activity-progress { margin-top: 3px; color: #c7d5cf; }
+
 .geo-camera-status {
   color: #d8e8e1;
   font-size: 10px;
@@ -348,6 +401,7 @@
 }
 
 .geo-mobile .geo-stats { max-width: min(72vw, 470px); }
+.geo-mobile .geo-hud-stack { max-width: min(62vw, 260px); top: max(96px, calc(env(safe-area-inset-top) + 96px)); }
 .geo-mobile .geo-source { max-width: 360px; }
 .geo-mobile .geo-exit { padding: 9px 12px; }
 

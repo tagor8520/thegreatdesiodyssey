@@ -19,6 +19,8 @@ import { createLabelLosTester } from './GeoLabelLos.js';
 import { createMapLabelLayer } from './GeoMapLabels.js';
 import { createPlantSilhouetteAuditRunner } from '../engine/PlantSilhouetteAudit.js';
 import { createTimeOfDayAuditRunner } from '../engine/TimeOfDayAudit.js';
+import { createActivityAuditRunner } from '../engine/ActivityAudit.js';
+import { activityHudText } from '../engine/LocalActivities.js';
 import { actionCapabilitiesForDomain, createActionRegistry } from '../engine/ActionRegistry.js';
 import { createTouchActionControls, touchActionMarkup } from './GeoActionControls.js';
 import { createContentValidatorExtras } from '../engine/ContentValidatorTool.js';
@@ -53,11 +55,17 @@ function uiMarkup() {
         <strong>Coordinate Explorer <span class="geo-scale-badge">1:10 footprint scale</span></strong>
         <div class="geo-coordinates">Locating…</div>
         <div class="geo-map-readout" aria-live="off">Reading map…</div>
-      <div class="geo-navigation" aria-live="polite">
-        <canvas class="geo-minimap" width="132" height="132" aria-label="Local minimap"></canvas>
-        <div class="geo-nav-detail">
-          <div class="geo-nav-target">No route · choose a place from the map</div>
-          <div class="geo-nav-guidance">Guidance appears once a target is chosen</div>
+      <div class="geo-hud-stack">
+        <div class="geo-navigation" aria-live="polite">
+          <canvas class="geo-minimap" width="132" height="132" aria-label="Local minimap"></canvas>
+          <div class="geo-nav-detail">
+            <div class="geo-nav-target">No route · choose a place from the map</div>
+            <div class="geo-nav-guidance">Guidance appears once a target is chosen</div>
+          </div>
+        </div>
+        <div class="geo-activities" aria-live="polite">
+          <div class="geo-activity-title">Local activities appear once the map is resident</div>
+          <div class="geo-activity-progress"></div>
         </div>
       </div>
         <div class="geo-camera-status">First-person camera · V to switch</div>
@@ -117,6 +125,8 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   const minimapElement = overlay.querySelector('.geo-minimap');
   const navTargetElement = overlay.querySelector('.geo-nav-target');
   const navGuidanceElement = overlay.querySelector('.geo-nav-guidance');
+  const activityTitleElement = overlay.querySelector('.geo-activity-title');
+  const activityProgressElement = overlay.querySelector('.geo-activity-progress');
   const runtimeElement = overlay.querySelector('.geo-runtime');
   const sourceElement = overlay.querySelector('.geo-source');
   const loadingElement = overlay.querySelector('.geo-loading');
@@ -459,6 +469,24 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     return guidance;
   };
 
+  // `GME-08`: the HUD line for the current local activity. The world rebuilds the
+  // board only when its resident context changed, so this is a cheap read; the
+  // text only changes when the objective or its progress actually changed.
+  let drawnActivityText = null;
+  const updateActivities = () => {
+    const summary = world.activitySummary ?? world.updateActivities(
+      player.position.x, player.position.z, performance.now(),
+    );
+    if (!activityTitleElement || !summary) return summary;
+    const text = activityHudText(summary);
+    const key = `${text.title}|${text.progress}`;
+    if (key === drawnActivityText) return summary;
+    drawnActivityText = key;
+    activityTitleElement.textContent = text.title;
+    activityProgressElement.textContent = text.progress;
+    return summary;
+  };
+
   const joystick = new FlexibleJoystick(
     joystickZone,
     joystickBase,
@@ -536,6 +564,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     renderer.render(scene, camera);
     updateMapLabels(now);
     updateNavigation();
+    updateActivities();
     sampleCpuMilliseconds += performance.now() - cpuStart;
     worstFrameGap = Math.max(worstFrameGap, frameGap);
     sampleFrames++;
@@ -758,6 +787,71 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     });
     return report;
   };
+  // `GME-08`: the scripted activity audit. It walks the player at the current
+  // objective's own target, steps the world and the HUD exactly like a frame
+  // does, and records what the objectives did — so the row's "reproducible
+  // objectives from real place/road/land context" gate is proven without a
+  // browser session.
+  const activityAuditClock = { value: 0 };
+  const activityAudit = createActivityAuditRunner({
+    label: 'coordinate-activities',
+    reset: () => {
+      // A run must be independent of the previous one, so the clock, the
+      // throttle, the board, and the journal all start over.
+      activityAuditClock.value = 0;
+      world.activityOriginSet = false;
+      world.nextActivityPassMilliseconds = 0;
+      world.nextDiscoveryPassMilliseconds = 0;
+      world.discoveryJournal?.reset?.();
+      world.activities?.reset();
+      const origin = world.activityStart ?? { x: 0, z: 0 };
+      player.setPosition(origin.x, origin.z);
+      player.update(1 / 30);
+      world.update(player.position, camera, renderer.domElement.height, 0);
+    },
+    step: ({ index, dt }) => {
+      activityAuditClock.value += dt * 1000;
+      const target = world.activities?.current()?.targets?.[0] ?? null;
+      if (target && Number.isFinite(target.x)) {
+        const dx = target.x - player.position.x;
+        const dz = target.z - player.position.z;
+        const distance = Math.hypot(dx, dz);
+        // A scripted walk compresses the journey: it still approaches the target
+        // along the real line, but fast enough for a bounded audit.
+        const stride = Math.min(distance, Math.max(20 * dt, distance / 12));
+        if (distance > 1e-6) player.setPosition(
+          player.position.x + dx / distance * stride,
+          player.position.z + dz / distance * stride,
+        );
+      }
+      player.update(dt);
+      world.update(player.position, camera, renderer.domElement.height, activityAuditClock.value);
+      updateMapLabels(activityAuditClock.value);
+      updateNavigation();
+      updateActivities();
+    },
+    sample: index => {
+      const record = world.activitySample(index);
+      const hudTitle = activityTitleElement?.textContent ?? '';
+      const hudProgress = activityProgressElement?.textContent ?? '';
+      // The HUD half of the gate: the DOM line must equal the copy the board's own
+      // summary renders, so the objective the player reads is the objective the
+      // audit measured — not a second, independently formatted string.
+      const text = activityHudText(world.activities.summary());
+      const hudTracksCurrent = hudTitle === text.title && hudProgress === text.progress;
+      return { ...record, hudTitle, hudProgress, hudTracksCurrent };
+    },
+  });
+  const runActivityAudit = options => {
+    const report = activityAudit.run(options);
+    world.activityAuditSummary = activityAudit.summary();
+    logger.info('audit', 'activity audit complete', {
+      ok: report.ok, samples: report.samples, fingerprint: report.fingerprint,
+      seed: report.seed, bridges: report.bridges,
+      failed: report.verdicts.filter(verdict => !verdict.ok).map(verdict => verdict.id),
+    });
+    return report;
+  };
   const debugSurface = installDebugHooks(window, {
     enabled: debugHooks,
     ledger: lifecycle,
@@ -810,6 +904,11 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
         discovery: world.discoverySummary ? { ...world.discoverySummary } : null,
         discoveryJournal: world.discoveryJournal?.diagnostics?.() ?? null,
         discoveryStorage: world.discoveryStorage?.diagnostics?.() ?? null,
+        // `GME-08`: the day's objectives, what they were grounded in, and what
+        // was refused because the resident context could not prove the affordance.
+        activities: world.activitySummary ? { ...world.activitySummary } : null,
+        activitiesDiagnostics: world.activities ? { ...world.activities.diagnostics() } : null,
+        activityRefusals: world.activities?.refusals ?? null,
         timeOfDayAudit: timeOfDayAudit.summary(),
         profile: world.profile,
       };
@@ -823,6 +922,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       movement: options => runMovementAudit(options),
       silhouette: options => runSilhouetteAudit(options),
       timeOfDay: options => runTimeOfDayAudit(options),
+      activities: options => runActivityAudit(options),
     },
     extras: {
       world, player, camera, renderer,
@@ -835,6 +935,9 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       // `LAY-06`: the fade policy is reachable from a debug session, and the
       // avatar shares it.
       cameraFade: world.cameraFade?.diagnostics ?? null,
+      // `GME-08`: run the activity audit from the console and read its verdicts.
+      runActivityAudit: options => runActivityAudit(options),
+      activityAuditSummary: () => world.activityAuditSummary ?? null,
     },
   });
   if (debugHooks) logger.info('debug', 'hook installed', { key: '__gdo', audits: ['movement', 'silhouette', 'timeOfDay'] });
