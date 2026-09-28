@@ -940,7 +940,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       activityAuditSummary: () => world.activityAuditSummary ?? null,
     },
   });
-  if (debugHooks) logger.info('debug', 'hook installed', { key: '__gdo', audits: ['movement', 'silhouette', 'timeOfDay'] });
+  if (debugHooks) logger.info('debug', 'hook installed', { key: '__gdo', audits: ['movement', 'silhouette', 'timeOfDay', 'activities'] });
 
   return {
     scene, camera, renderer, world, player,
