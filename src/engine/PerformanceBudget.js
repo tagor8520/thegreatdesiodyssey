@@ -76,6 +76,10 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   mainThreadMountMilliseconds: 8,
   maxCollisionCandidates: 256,
   maxSupportCandidates: 256,
+  // `GME-04` label LOS ceilings from CLIPPING_AND_LAYERING_RESEARCH.md §13.
+  labelLosTestsPerSecond: 20,
+  labelLosCandidates: 5,
+  labelLosSteadyFrameAllocations: 0,
   lifecycleOwnedResources: 384,
 });
 
@@ -178,6 +182,9 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'mainThreadMountMilliseconds', budget: 'mainThreadMountMilliseconds', label: 'main-thread mount ms' }),
   Object.freeze({ metric: 'maxCollisionCandidates', budget: 'maxCollisionCandidates', label: 'collision candidates' }),
   Object.freeze({ metric: 'maxSupportCandidates', budget: 'maxSupportCandidates', label: 'support candidates' }),
+  Object.freeze({ metric: 'labelLosTestsPerSecond', budget: 'labelLosTestsPerSecond', label: 'label LOS tests/second' }),
+  Object.freeze({ metric: 'labelLosCandidates', budget: 'labelLosCandidates', label: 'labels LOS-tested per frame' }),
+  Object.freeze({ metric: 'labelLosSteadyFrameAllocations', budget: 'labelLosSteadyFrameAllocations', label: 'label LOS steady-frame allocations' }),
   Object.freeze({ metric: 'lifecycleOwnedResources', budget: 'lifecycleOwnedResources', label: 'live owned resources' }),
 ]);
 

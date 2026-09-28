@@ -209,6 +209,10 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
     mainThreadMountMilliseconds: world?.mountDiagnostics?.maximumMilliseconds,
     maxCollisionCandidates: world?.queryDiagnostics?.maxCandidates ?? 0,
     maxSupportCandidates: world?.queryDiagnostics?.maxSupportCandidates ?? 0,
+    // `GME-04`: the measured label LOS rate and its steady-frame allocation claim.
+    labelLosTestsPerSecond: world?.labelLosRate ?? world?.labelLosDiagnostics?.testsPerSecond ?? 0,
+    labelLosCandidates: world?.labelLosDiagnostics?.lastBatch ?? 0,
+    labelLosSteadyFrameAllocations: world?.labelLosSteadyFrameAllocations ?? 0,
   });
 }
 
@@ -422,6 +426,11 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
       bridges: world?.bridgePools?.diagnostics ?? null,
       landmarks: world?.landmarkPools?.diagnostics ?? null,
       tileCache: world?.tileCacheDiagnostics ?? null,
+      // `GME-04`: label LOS verdict counts and the richer map readout at focus.
+      labelLos: world?.labelLosDiagnostics ? Object.freeze({ ...world.labelLosDiagnostics }) : null,
+      mapReadout: world?.mapReadout
+        ? Object.freeze({ ...world.mapReadout(focus.x, focus.z) })
+        : null,
       // `MAP-08`: the vocabulary the resident tiles were normalized from, plus
       // the canonical classes and roles the adapter recognizes.
       mapSemantics: Object.freeze({

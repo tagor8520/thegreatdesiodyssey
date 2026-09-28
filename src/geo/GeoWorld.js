@@ -9,6 +9,7 @@ import { GEO_TILE_CACHE_LIMITS } from './GeoTileCache.js';
 import { LifecycleLedger } from '../engine/LifecycleContract.js';
 import { defineWorldDomain } from '../engine/DomainInterface.js';
 import { resolveMapSchema } from './GeoMapSemantics.js';
+import { GEO_WATER_CLASS, queryWaterDomain, waterClassName } from './GeoWaterDomains.js';
 import {
   AmbientLifePools,
   GDO_AMBIENT_LIFE_SOURCE_TYPES,
@@ -1878,6 +1879,65 @@ export class GeoWorld {
   querySupport(x, z, out = this.supportCandidate) {
     const support = this.supportAt(x, z, out);
     return support;
+  }
+
+  /**
+   * `GME-04` richer map readout: the mapped semantics around a point — the
+   * support surface the player stands on, the water class beneath it, the
+   * nearest mapped name, and the resident tile that owns it. This is the HUD's
+   * map layer; `GME-07` builds navigation guidance on top of it.
+   */
+  mapReadout(x, z, out = this.mapReadoutRecord ??= {}) {
+    const support = this.supportAt(x, z, this.readoutSupport ??= {});
+    out.x = x;
+    out.z = z;
+    out.supportKind = support.kind ?? 'ground';
+    out.supportLevel = support.physicalLevel ?? 0;
+    out.supportY = support.y ?? 0;
+    if (support.slopeRadians !== undefined) out.slopeRadians = support.slopeRadians;
+    out.providerSchema = this.providerSchema;
+    out.residentTiles = this.tiles.size;
+
+    let tile = null, distance = Infinity;
+    for (const candidate of this.tiles.values()) {
+      if (!candidate.bounds) continue;
+      const dx = x < candidate.bounds.minX ? candidate.bounds.minX - x : x > candidate.bounds.maxX ? x - candidate.bounds.maxX : 0;
+      const dz = z < candidate.bounds.minZ ? candidate.bounds.minZ - z : z > candidate.bounds.maxZ ? z - candidate.bounds.maxZ : 0;
+      const candidateDistance = Math.hypot(dx, dz);
+      if (candidateDistance < distance) { distance = candidateDistance; tile = candidate; }
+    }
+    out.tileKey = tile?.key ?? null;
+    out.tileDistance = Number.isFinite(distance) ? distance : null;
+    out.roadFeatures = tile?.roadFeatures ?? 0;
+    out.buildingFeatures = tile?.buildingFeatures ?? 0;
+
+    out.waterClass = GEO_WATER_CLASS.UNKNOWN;
+    out.waterClassName = waterClassName(GEO_WATER_CLASS.UNKNOWN);
+    out.inWater = false;
+    out.wetland = false;
+    if (tile?.waterDomain) {
+      const water = queryWaterDomain(tile.waterDomain, x, z, this.readoutWater ??= {});
+      // The domain always reports the nearest class; the HUD only claims a water
+      // class for the point itself, or for a genuinely adjacent shoreline.
+      const local = water.inWater || water.waterDistance <= .5;
+      out.waterClass = local ? water.waterClass : GEO_WATER_CLASS.UNKNOWN;
+      out.waterClassName = waterClassName(out.waterClass);
+      out.inWater = Boolean(water.inWater);
+      out.wetland = Boolean(water.wetland);
+      out.waterDistance = water.waterDistance;
+    } else {
+      out.waterDistance = Infinity;
+    }
+
+    let nearest = null, nearestDistance = Infinity;
+    for (const label of tile?.labels ?? []) {
+      const labelDistance = Math.hypot(label.x - x, label.z - z);
+      if (labelDistance < nearestDistance) { nearestDistance = labelDistance; nearest = label; }
+    }
+    out.placeName = nearest?.name ?? null;
+    out.placeKind = nearest?.kind ?? null;
+    out.placeDistance = nearest ? nearestDistance : Infinity;
+    return out;
   }
 
   /** Shared world interface: bounded diagnostic record for logs and the HUD. */

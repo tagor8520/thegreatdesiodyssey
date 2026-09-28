@@ -8,6 +8,7 @@ import { LifecycleLedger } from '../engine/LifecycleContract.js';
 import { createDebugLogger, installDebugHooks } from '../engine/DebugHooks.js';
 import { createMovementAuditRunner } from '../engine/MovementAudit.js';
 import { createSupportQuery, describeDomainCompliance } from '../engine/DomainInterface.js';
+import { createLabelLosTester } from './GeoLabelLos.js';
 import './geo.css';
 
 function formatBytes(bytes) {
@@ -23,6 +24,7 @@ function uiMarkup() {
       <div class="geo-panel geo-stats">
         <strong>Coordinate Explorer <span class="geo-scale-badge">1:10 footprint scale</span></strong>
         <div class="geo-coordinates">Locating…</div>
+        <div class="geo-map-readout" aria-live="off">Reading map…</div>
         <div class="geo-camera-status">First-person camera · V to switch</div>
         <div class="geo-runtime">Preparing local map generator…</div>
         <div class="geo-source"></div>
@@ -78,6 +80,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   overlay.innerHTML = uiMarkup();
 
   const coordinateElement = overlay.querySelector('.geo-coordinates');
+  const mapReadoutElement = overlay.querySelector('.geo-map-readout');
   const runtimeElement = overlay.querySelector('.geo-runtime');
   const sourceElement = overlay.querySelector('.geo-source');
   const loadingElement = overlay.querySelector('.geo-loading');
@@ -219,13 +222,23 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
 
   const projectedLabel = new THREE.Vector3();
   const labelElements = [];
-  let displayedLabels = [], nextLabelRefresh = 0;
+  // `GME-04`: labels are occlusion-tested through the shared `LOS_BLOCKER` sweep
+  // at a bounded rate, so a name behind a building is hidden instead of drawn on
+  // top of it, and the DOM/HUD read the same verdicts the tests assert.
+  const labelLos = createLabelLosTester({ world, profile: world.profile });
+  const losVisibleLabels = [];
+  const losAnchor = new THREE.Vector3();
+  world.labelLosDiagnostics = labelLos.diagnostics();
+  let displayedLabels = [], nextLabelRefresh = 0, lastLosTests = 0;
   const updateMapLabels = now => {
     if (now >= nextLabelRefresh) {
       displayedLabels = world.visibleLabels;
       nextLabelRefresh = now + 250;
     }
-    const labels = displayedLabels;
+    // The tester probes from the live camera eye to each label anchor.
+    losAnchor.copy(camera.position);
+    const labels = labelLos.visibleLabels(displayedLabels, { position: losAnchor }, now, losVisibleLabels);
+    world.labelLosDiagnostics = labelLos.diagnostics();
     while (labelElements.length < labels.length) {
       const element = document.createElement('span');
       element.className = 'geo-map-label';
@@ -350,7 +363,17 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       coordinateElement.textContent = `${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}`;
       const averageCpu = sampleFrames ? sampleCpuMilliseconds / sampleFrames : 0;
       const queries = world.queryDiagnostics;
-      runtimeElement.textContent = `${Math.round(fps)} FPS · ${averageCpu.toFixed(1)}ms CPU · ${Math.round(worstFrameGap)}ms worst · ${renderer.info.render.calls} calls · ${Math.round(renderer.info.render.triangles / 1000)}k tris · ${renderer.info.memory.geometries} geo · ${longTaskCount} stalls · q ${queries.sweeps}/${queries.sphereSweeps} sweeps · ${queries.maxCandidates} max collision · ${queries.maxSupportCandidates} max support · ${queries.groundRejects} ground rejects · ${queries.depenetrations} recoveries · ${latestStatus?.roads ?? 0} roads · ${latestStatus?.buildings ?? 0} buildings · ${latestStatus?.decorations ?? 0} details · ${latestStatus?.labels ?? 0} names${latestStatus?.truncated ? ' · safety cap reached' : ''}`;
+      const los = world.labelLosDiagnostics;
+      // `GME-04` budget surface: the rate actually achieved over the last second,
+      // and the steady-frame allocation claim the tester's tests prove.
+      world.labelLosRate = Math.max(0, (los?.tests ?? 0) - (lastLosTests ?? 0));
+      lastLosTests = los?.tests ?? 0;
+      world.labelLosSteadyFrameAllocations = los?.steadyFrameAllocations ?? 0;
+      // `GME-04` richer map: the HUD names the mapped surface, water class, and
+      // nearest mapped place instead of stopping at raw coordinates.
+      const readout = world.mapReadout(player.position.x, player.position.z);
+      mapReadoutElement.textContent = `${readout.supportKind}${readout.supportLevel ? ` L${readout.supportLevel}` : ''} · ${readout.waterClassName}${readout.inWater ? ' (in water)' : ''} · ${readout.placeName ? `${readout.placeName} ${Math.round(readout.placeDistance)}u` : 'no mapped name'} · tile ${readout.tileKey ?? '—'} · ${readout.providerSchema ?? 'schema unknown'}`;
+      runtimeElement.textContent = `${Math.round(fps)} FPS · ${averageCpu.toFixed(1)}ms CPU · ${Math.round(worstFrameGap)}ms worst · ${renderer.info.render.calls} calls · ${Math.round(renderer.info.render.triangles / 1000)}k tris · ${renderer.info.memory.geometries} geo · ${longTaskCount} stalls · q ${queries.sweeps}/${queries.sphereSweeps} sweeps · ${queries.maxCandidates} max collision · ${queries.maxSupportCandidates} max support · ${queries.groundRejects} ground rejects · ${queries.depenetrations} recoveries · ${latestStatus?.roads ?? 0} roads · ${latestStatus?.buildings ?? 0} buildings · ${latestStatus?.decorations ?? 0} details · ${latestStatus?.labels ?? 0} names · LOS ${los?.tests ?? 0}/${los?.testsPerSecond ?? 0} per s · ${los?.hidden ?? 0} hidden${latestStatus?.truncated ? ' · safety cap reached' : ''}`;
       // Ignore samples contaminated by a tab/screenshot stall, and require
       // sustained slowness before reallocating the drawing buffer.
       const stableSample = worstFrameGap < 100;
@@ -473,6 +496,8 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
         plantLod: snapshot.lod,
         residentTiles: snapshot.residentTiles.length,
         query: world.queryDiagnostics,
+        labelLos: world.labelLosDiagnostics ? { ...world.labelLosDiagnostics } : null,
+        mapReadout: { ...world.mapReadout(player.position.x, player.position.z) },
         // `FND-08`: both live domains, so a debug session shows which interface
         // and scale the world and avatar are answering on.
         domains: {

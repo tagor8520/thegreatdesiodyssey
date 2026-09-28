@@ -104,6 +104,13 @@
   font-variant-numeric: tabular-nums;
 }
 
+.geo-map-readout {
+  margin-top: 2px;
+  color: #b7cdc4;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
 .geo-camera-status {
   color: #d8e8e1;
   font-size: 10px;
@@ -351,7 +358,14 @@
 @media (max-width: 700px) {
   .geo-mobile .geo-stats { max-width: 66vw; padding: 8px 10px; font-size: 10px; }
   .geo-mobile .geo-stats strong { font-size: 11px; }
-  .geo-mobile .geo-source, .geo-mobile .geo-camera-status { font-size: 8px; }
+  .geo-mobile .geo-source, .geo-mobile .geo-map-readout {
+  margin-top: 2px;
+  color: #b7cdc4;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.geo-camera-status { font-size: 8px; }
   .geo-mobile .geo-attribution { max-width: 150px; font-size: 8px; }
 }
 
