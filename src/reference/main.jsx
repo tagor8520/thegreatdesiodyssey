@@ -54,6 +54,9 @@ export function mountReferenceGame(container, {
   const store = createUIStore();
   const player = new Player(scene, camera, bridges, {
     canvas,
+    // `COL-08`: the island's water sensor is the biome manager's terrain/water
+    // plane, so the avatar swims and wades by the same rules as the coordinate one.
+    manager: biomes,
     onCameraHint: cameraHint => store.set({ cameraHint }),
     orbitOptions: {
       overviewGlobal: profile.overviewGlobal,

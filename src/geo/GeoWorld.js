@@ -9,17 +9,30 @@ import { GEO_TILE_CACHE_LIMITS } from './GeoTileCache.js';
 import { LifecycleLedger } from '../engine/LifecycleContract.js';
 import { defineWorldDomain } from '../engine/DomainInterface.js';
 import { resolveMapSchema } from './GeoMapSemantics.js';
-import { GEO_WATER_CLASS, queryWaterDomain, waterClassName } from './GeoWaterDomains.js';
+import {
+  GEO_ECOLOGICAL_DOMAIN,
+  GEO_WATER_CLASS,
+  GEO_WATER_FLOW_SOURCE,
+  queryWaterDomain,
+  waterClassName,
+} from './GeoWaterDomains.js';
 import {
   AmbientLifePools,
   GDO_AMBIENT_LIFE_SOURCE_TYPES,
 } from '../engine/AmbientLifeMotion.js';
 import { DynamicProxyGrid } from '../engine/DynamicProxyGrid.js';
 import {
+  GDO_WATER_CONTACT_PROFILES,
+  GDO_WATER_STATE,
+  GDO_WATER_SURFACE_SOURCE,
+  classifyWaterContact,
+  planWaterExit,
+} from '../engine/WaterContact.js';
+import {
   acquireProceduralMaterialLibrary,
   configureSemanticMaterial,
 } from '../engine/ProceduralMaterials.js';
-import { GEO_LAYER } from './GeoLayers.js';
+import { GEO_LAYER, GEO_SURFACE_Y } from './GeoLayers.js';
 import {
   GEO_DEFAULT_CROWN_ADAPTATION,
   GEO_PLANT_PLACEMENT_SCALE,
@@ -1952,8 +1965,98 @@ export class GeoWorld {
     return support;
   }
 
+
   /**
-   * `GME-04` richer map readout: the mapped semantics around a point — the
+   * `COL-08`: water is a sensor, not a collider. The mapped surface under a body
+   * plus its feet decide `dry`/`wading`/`swimming`/`submerged`, and the record
+   * carries the speed, gravity, camera, and current values the player applies.
+   */
+  waterContact(x, z, { feetY = 0, groundY = null, bodyHeight = .18, gravity = 5.2, profile = 'low' } = {},
+    out = this.waterContactRecord ??= {}) {
+    if (![x, z, feetY, bodyHeight, gravity].every(Number.isFinite)) {
+      throw new TypeError('Water contact needs finite coordinates, height, and gravity');
+    }
+    const tile = this._waterTileAt(x, z);
+    const support = groundY === null
+      ? this.supportAt(x, z, this.waterSupport ??= {}).y
+      : groundY;
+    if (!tile?.waterDomain) {
+      return classifyWaterContact({
+        waterSurfaceY: -Infinity, feetY, groundY: support, bodyHeight, gravity, profile,
+        inWater: false, wet: false, source: GDO_WATER_SURFACE_SOURCE.NONE,
+      }, out);
+    }
+    const water = queryWaterDomain(tile.waterDomain, x, z, this.waterQueryRecord ??= {});
+    const wetlandDepth = GDO_WATER_CONTACT_PROFILES[profile]?.wetlandDepth ?? .05;
+    const inWater = water.inWater;
+    const waterSurfaceY = inWater ? GEO_SURFACE_Y.WATER
+      : water.wetland ? GEO_SURFACE_Y.WATER - wetlandDepth
+        : -Infinity;
+    return classifyWaterContact({
+      waterSurfaceY,
+      feetY,
+      groundY: support,
+      bodyHeight,
+      gravity,
+      profile,
+      inWater: inWater || water.wetland,
+      wet: water.inWater || water.wetland || water.kind === GEO_ECOLOGICAL_DOMAIN.SHORELINE,
+      flowX: water.flowX,
+      flowZ: water.flowZ,
+      waterClass: water.waterClass,
+      waterClassName: water.waterClassName,
+      source: inWater
+        ? (water.flowSource === GEO_WATER_FLOW_SOURCE.WATERWAY
+          ? GDO_WATER_SURFACE_SOURCE.MAPPED_WATERWAY : GDO_WATER_SURFACE_SOURCE.MAPPED_POLYGON)
+        : water.wetland ? GDO_WATER_SURFACE_SOURCE.MAPPED_WETLAND : GDO_WATER_SURFACE_SOURCE.NONE,
+    }, out);
+  }
+
+  /**
+   * `COL-08` exit rules: the best bank inside a bounded four-sample fan. The
+   * query answers "can this body climb out here, and if not, why".
+   */
+  waterExitPlan(x, z, { feetY = 0, bodyHeight = .18, gravity = 5.2, profile = 'low', radius = .055 } = {},
+    out = this.waterExitRecord ??= {}) {
+    const contact = this.waterContact(x, z, { feetY, bodyHeight, gravity, profile }, this.waterExitContact ??= {});
+    let bestY = Number.NaN, bestWalkable = false, bestBlocked = true;
+    for (let index = 0; index < 4; index++) {
+      const angle = index * Math.PI / 2;
+      const sampleX = x + Math.cos(angle) * radius * 2;
+      const sampleZ = z + Math.sin(angle) * radius * 2;
+      const support = this.supportAt(sampleX, sampleZ, this.waterExitSupport ??= {});
+      const blocked = this.collidesCircle(sampleX, sampleZ, radius, GEO_QUERY_MASK.SOLID_PLAYER, feetY + .02, feetY + bodyHeight);
+      if (blocked) continue;
+      if (Number.isNaN(bestY) || (support.y ?? 0) > bestY) {
+        bestY = support.y ?? 0;
+        bestWalkable = support.walkable !== false;
+        bestBlocked = false;
+      }
+    }
+    return planWaterExit({
+      contact,
+      supportY: bestY,
+      walkable: bestWalkable,
+      blocked: bestBlocked,
+      profile,
+    }, out);
+  }
+
+  /** The resident tile that owns the water domain for a point, else the nearest. */
+  _waterTileAt(x, z) {
+    let nearest = null, nearestDistance = Infinity;
+    for (const tile of this.tiles.values()) {
+      if (!tile.waterDomain || !tile.bounds) continue;
+      if (x >= tile.bounds.minX && x <= tile.bounds.maxX && z >= tile.bounds.minZ && z <= tile.bounds.maxZ) return tile;
+      const dx = x < tile.bounds.minX ? tile.bounds.minX - x : x > tile.bounds.maxX ? x - tile.bounds.maxX : 0;
+      const dz = z < tile.bounds.minZ ? tile.bounds.minZ - z : z > tile.bounds.maxZ ? z - tile.bounds.maxZ : 0;
+      const distance = Math.hypot(dx, dz);
+      if (distance < nearestDistance) { nearestDistance = distance; nearest = tile; }
+    }
+    return nearest;
+  }
+
+  /** `GME-04` richer map readout: the mapped semantics around a point — the
    * support surface the player stands on, the water class beneath it, the
    * nearest mapped name, and the resident tile that owns it. This is the HUD's
    * map layer; `GME-07` builds navigation guidance on top of it.

@@ -1,10 +1,19 @@
 import * as THREE from 'three';
+import {
+  GDO_FALL_IMPACT,
+  GDO_WATER_CONTACT_PROFILES,
+  GDO_WATER_STATE,
+  classifyFallImpact,
+  stepWaterMotion,
+} from '../engine/WaterContact.js';
 import { terrainHeight } from './BiomeManager.js';
 import { VoxelBatch, disposeGroup } from './VoxelBatch.js';
 import { ThirdPersonCamera } from './ThirdPersonCamera.js';
 import { definePlayerDomain } from '../engine/DomainInterface.js';
 
 // Match the rendered four-unit tile centers, including shoreline steps.
+export const CURATED_BODY_HEIGHT = 1.7;
+
 export function tileHeight(x, z) { return terrainHeight(Math.floor(x / 4) * 4 + 2, Math.floor(z / 4) * 4 + 2); }
 
 /** `FND-08`: the curated avatar declares the shared player interface. Keyboard
@@ -26,8 +35,16 @@ export class Player {
     spawn = new THREE.Vector3(-42, 3, -20),
     orbitOptions = {},
     castShadow = true,
+    manager = null,
   } = {}) {
     this.camera = camera; this.bridges = bridges; this.inputTarget = inputTarget;
+    // `COL-08`: the island's biome manager answers the shared water sensor.
+    this.manager = manager;
+    this.waterContact = {};
+    this.waterMotion = {};
+    this.fallImpact = {};
+    this.waterState = GDO_WATER_STATE.DRY;
+    this.lastFallImpact = GDO_FALL_IMPACT.NONE;
     this.enabled = true;
     this.spawn = spawn.clone(); this.position = spawn.clone(); this.velocity = new THREE.Vector3();
     this.keys = new Set(); this.grounded = true; this.jumpQueued = false; this.disposed = false; this.mapMode = false;
@@ -138,20 +155,48 @@ export class Player {
     const localX = x;
     x = localX * Math.cos(yaw) + z * Math.sin(yaw);
     z = z * Math.cos(yaw) - localX * Math.sin(yaw);
-    const speed = held('ShiftLeft','ShiftRight') ? 19 : 12;
+    // `COL-08`: water scales the walk target before the axis moves are swept.
+    const water = this.manager?.waterContact
+      ? this.manager.waterContact(this.position.x, this.position.z, {
+        feetY: this.position.y, gravity: 30, bodyHeight: CURATED_BODY_HEIGHT, profile: 'low',
+      }, this.waterContact)
+      : null;
+    this.waterState = water?.state ?? GDO_WATER_STATE.DRY;
+    const speed = (held('ShiftLeft','ShiftRight') ? 19 : 12) * (water?.speedMultiplier ?? 1);
     const alpha = 1 - Math.exp(-14 * dt);
     this.velocity.x = THREE.MathUtils.lerp(this.velocity.x, x * speed, alpha);
     this.velocity.z = THREE.MathUtils.lerp(this.velocity.z, z * speed, alpha);
     if (this.jumpQueued && this.grounded) { this.velocity.y = 13; this.grounded = false; }
     this.jumpQueued = false;
     this.moveAxis('x', this.velocity.x * dt); this.moveAxis('z', this.velocity.z * dt);
-    const previousY = this.position.y; this.velocity.y -= 30 * dt; this.position.y += this.velocity.y * dt;
+    const previousY = this.position.y;
+    if (water && water.submersion > 0) {
+      stepWaterMotion({ contact: water, velocityY: this.velocity.y, gravity: 30, dt }, this.waterMotion);
+      this.velocity.y = this.waterMotion.velocityY;
+    } else this.velocity.y -= 30 * dt;
+    // §9.9: the fall speed is capped in the curated island too.
+    this.velocity.y = Math.max(this.velocity.y, -GDO_WATER_CONTACT_PROFILES.low.maxFallSpeedRatio * 30);
+    this.position.y += this.velocity.y * dt;
     let ground = -Infinity;
     for (const dx of [-.55,.55]) for (const dz of [-.55,.55]) ground = Math.max(ground, this.groundAt(this.position.x + dx, this.position.z + dz));
     if (ground >= 0 && this.velocity.y <= 0 && previousY >= ground - .6 && this.position.y <= ground) {
+      // `COL-08`: the landing is classified before the velocity is cleared.
+      classifyFallImpact({
+        verticalSpeed: this.velocity.y, gravity: 30, bodyHeight: CURATED_BODY_HEIGHT,
+        profile: 'low', landedInWater: (water?.submersion ?? 0) > .2,
+      }, this.fallImpact);
+      this.lastFallImpact = this.fallImpact.impact;
+      if (this.fallImpact.impact === GDO_FALL_IMPACT.STUMBLE) { this.velocity.x *= .45; this.velocity.z *= .45; }
+      else if (this.fallImpact.impact === GDO_FALL_IMPACT.KNOCKDOWN) { this.velocity.x = 0; this.velocity.z = 0; }
       this.position.y = ground; this.velocity.y = 0; this.grounded = true;
     } else this.grounded = false;
     if (this.position.y < -5) { this.position.copy(this.spawn); this.velocity.set(0, 0, 0); this.grounded = true; }
+    if (water && water.submersion > 0) {
+      // §9.5 horizontal drag and mapped-flow push, applied to the driven velocity.
+      const decay = Math.exp(-water.horizontalDragPerSecond * dt);
+      this.velocity.x = this.velocity.x * decay + water.currentX * dt;
+      this.velocity.z = this.velocity.z * decay + water.currentZ * dt;
+    }
     if (length) {
       const target = Math.atan2(x, z), difference = Math.atan2(Math.sin(target - this.root.rotation.y), Math.cos(target - this.root.rotation.y));
       this.root.rotation.y += difference * (1 - Math.exp(-16 * dt));

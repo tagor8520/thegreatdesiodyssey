@@ -29,6 +29,7 @@ export const GDO_FEATURE_VERSIONS = Object.freeze({
   plantSilhouetteAudit: 1,
   dynamicProxy: 1,
   timeOfDaySky: 1,
+  waterContact: 1,
   ambientLifeMotion: 1,
   contentSchema: 0,
   saveSchema: 0,

@@ -109,6 +109,7 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
   const tileCache = world?.tileCacheDiagnostics ?? null;
   const dynamicProxyDiagnostics = world?.dynamicProxies?.diagnostics?.() ?? null;
   const timeOfDayDiagnostics = world?.timeOfDayState?.diagnostics?.() ?? null;
+  const waterContact = world?.waterContactSummary ?? null;
   estimatedGpuBytes += materialTextureBytes;
   return Object.freeze({
     view,
@@ -155,6 +156,9 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
     timeOfDayElevationDegrees: timeOfDayDiagnostics?.elevationDegrees ?? 0,
     timeOfDayUniformWrites: timeOfDayDiagnostics?.uniformWrites ?? 0,
     timeOfDayStarCount: timeOfDayDiagnostics?.limits?.maxStars ?? 0,
+    // `COL-08`: the water state the avatar is in, when the caller reports one.
+    waterState: waterContact?.state ?? 'dry',
+    waterSubmersion: waterContact?.submersion ?? 0,
     plantRenderAddedDrawCalls: plantRenderDiagnostics?.addedDrawCalls ?? 0,
     plantWindUniformWritesPerFrame: plantRenderDiagnostics?.windUniformWrites ?? 0,
     plantWindCpuMatrixUpdatesPerFrame: plantRenderDiagnostics?.windCpuMatrixUpdates ?? 0,
@@ -444,6 +448,8 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
       // `ENV-02`: the live day-cycle phase and its verdict summary.
       timeOfDay: world?.timeOfDayState?.diagnostics?.() ?? null,
       timeOfDayAudit: world?.timeOfDaySummary ?? null,
+      // `COL-08`: the live water/fall summary behind the readout and the HUD.
+      water: world?.waterContactSummary ?? null,
       dynamicProxies: world?.dynamicProxies?.diagnostics?.().activeProxies ?? 0,
       dynamicProxyCells: world?.dynamicProxies?.diagnostics?.().cells ?? 0,
       dynamicProxyCapSkips: world?.dynamicProxies?.diagnostics?.().capSkips ?? 0,

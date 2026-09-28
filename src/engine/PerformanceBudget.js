@@ -33,6 +33,11 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   plantBoxModulesAfterLod: 6_000,
   // `COL-09`: research §5.1 dynamic-proxy cap for the low profile.
   dynamicProxies: 64,
+  // `COL-08`: research §5.7/§9.5 — one body-centre water sample per step and a
+  // bounded four-sample footprint when a lookup needs an edge test.
+  waterSamplesPerStep: 1,
+  waterSamplesPerLookup: 4,
+  waterSteadyFrameAllocations: 0,
   // `ENV-02`: research §9.1 low-profile sky model — one static seeded star set
   // and a bounded uniform writer so a day cycle cannot storm the renderer.
   skyStars: 120,

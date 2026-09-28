@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { VoxelBatch, disposeGroup, randomFor } from './VoxelBatch.js';
 import { isGameplayClearance } from './GameplayLayout.js';
 import { defineWorldDomain } from '../engine/DomainInterface.js';
+import { GDO_WATER_SURFACE_SOURCE, classifyWaterContact } from '../engine/WaterContact.js';
 
 export const WORLD = Object.freeze({ min: -128, max: 128, chunkSize: 32, tileSize: 4, waterY: 0 });
 export const GDO_CURATED_DOMAIN_ID = 'curated';
@@ -286,6 +287,26 @@ export class BiomeManager {
     out.kind = y < WORLD.waterY ? 'water' : 'ground';
     out.slopeRadians = 0;
     return out;
+  }
+  /**
+   * `COL-08`: the curated island answers the same water sensor as the coordinate
+   * world — a fixed water plane at `WORLD.waterY`, the analytic terrain under it,
+   * and the shared state machine. Both modes therefore share one set of rules.
+   */
+  waterContact(x, z, { feetY = 0, groundY = null, bodyHeight = 1.7, gravity = 30, profile = 'low' } = {},
+    out = {}) {
+    if (![x, z, feetY, bodyHeight, gravity].every(Number.isFinite)) {
+      throw new TypeError('Curated water contact needs finite coordinates, height, and gravity');
+    }
+    // Bridge decks are support, so a body standing on one is above the plane.
+    const ground = Number.isFinite(groundY) ? groundY
+      : Math.max(terrainHeight(x, z), this.bridges?.heightAt?.(x, z) ?? -Infinity);
+    const inWater = Math.abs(x) <= 126 && Math.abs(z) <= 126 && WORLD.waterY > ground;
+    return classifyWaterContact({
+      waterSurfaceY: WORLD.waterY, feetY, groundY: ground, bodyHeight, gravity, profile,
+      inWater, wet: inWater,
+      source: inWater ? GDO_WATER_SURFACE_SOURCE.CURATED_PLANE : GDO_WATER_SURFACE_SOURCE.NONE,
+    }, out);
   }
   /** Shared diagnostic record: bounded numbers only, never live objects. */
   querySnapshot() {

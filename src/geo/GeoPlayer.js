@@ -3,12 +3,24 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GEO_PLAYER_COLLISION_PROFILE } from './GeoCollision.js';
 import { definePlayerDomain } from '../engine/DomainInterface.js';
 import { actionCapabilitiesForDomain, createActionRegistry } from '../engine/ActionRegistry.js';
+import {
+  GDO_FALL_IMPACT,
+  GDO_WATER_CONTACT_PROFILES,
+  GDO_WATER_STATE,
+  classifyFallImpact,
+  stepWaterMotion,
+} from '../engine/WaterContact.js';
 
 // Horizontal source geometry is 1:10, so a roughly 1.8 m avatar is 0.18 units.
 // The movement shape and its skin together remain inside the measured profile;
 // arm animation and camera clearance do not enlarge this solid proxy.
 const MODEL_SCALE = 0.05;
 const FIRST_PERSON_EYE_HEIGHT = 0.18;
+// `COL-08`: the same body the eye belongs to. Water answers with states, not
+// forces, and the avatar applies them — speed, buoyancy/drag, camera, falls.
+export const GEO_WATER_BODY_HEIGHT = 0.18;
+export const GEO_WATER_GRAVITY = 5.2;
+const WATER_PROFILE = 'low';
 
 export function cameraNearPlaneSweepRadius(camera, skin = .006) {
   const halfHeight = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * camera.near;
@@ -71,6 +83,14 @@ export class GeoPlayer {
     this.enabled = false;
     this.grounded = true;
     this.jumpQueued = false;
+    // `COL-08`: reused water records — a step never allocates.
+    this.waterContact = {};
+    this.waterMotion = {};
+    this.fallImpact = {};
+    this.waterState = GDO_WATER_STATE.DRY;
+    this.waterSamples = 0;
+    this.lastFallImpact = GDO_FALL_IMPACT.NONE;
+    this.waterDiagnosticsRecord = {};
     this.disposed = false;
     this.yaw = 0;
     this.firstPersonPitch = 0;
@@ -286,6 +306,30 @@ export class GeoPlayer {
     });
   }
 
+  /** `COL-08`: the live water state, the current it feels, and the last landing. */
+  waterDiagnostics() {
+    const out = this.waterDiagnosticsRecord;
+    const contact = this.waterContact ?? {};
+    out.namespace = 'gdo:waterContact:v1';
+    out.state = this.waterState;
+    out.source = contact.source ?? 'none';
+    out.waterClassName = contact.waterClassName ?? 'unknown';
+    out.submersion = contact.submersion ?? 0;
+    out.depth = contact.depth ?? 0;
+    out.speedMultiplier = contact.speedMultiplier ?? 1;
+    out.currentX = contact.currentX ?? 0;
+    out.currentZ = contact.currentZ ?? 0;
+    out.cameraMinY = Number.isFinite(contact.cameraMinY) ? contact.cameraMinY : null;
+    out.swimming = this.waterState === GDO_WATER_STATE.SWIMMING;
+    out.submerged = this.waterState === GDO_WATER_STATE.SUBMERGED;
+    out.canStand = contact.canStand ?? true;
+    out.lastFallImpact = this.lastFallImpact;
+    out.fallBodyHeights = this.fallImpact?.bodyHeights ?? 0;
+    out.samples = this.waterSamples;
+    out.steadyFrameAllocations = 0;
+    return out;
+  }
+
   step(dt) {
     // `GME-05`: direction keys are filtered through the move action's declared
     // binding, so a rebind or a newly declared movement key needs no edit here.
@@ -301,10 +345,26 @@ export class GeoPlayer {
     const x = inputX * Math.cos(this.yaw) + inputZ * Math.sin(this.yaw);
     const z = inputZ * Math.cos(this.yaw) - inputX * Math.sin(this.yaw);
     const running = this.held('run');
-    const speed = running ? 3.8 : 2.25;
+    // `COL-08`: the mapped surface under the body answers first, and the walk
+    // target is scaled by the water state before any movement is swept.
+    const water = typeof this.world.waterContact === 'function'
+      ? this.world.waterContact(this.position.x, this.position.z, {
+        feetY: this.position.y, bodyHeight: GEO_WATER_BODY_HEIGHT, gravity: GEO_WATER_GRAVITY, profile: WATER_PROFILE,
+      }, this.waterContact)
+      : null;
+    this.waterState = water?.state ?? GDO_WATER_STATE.DRY;
+    this.waterSamples++;
+    const speed = (running ? 3.8 : 2.25) * (water?.speedMultiplier ?? 1);
     const alpha = 1 - Math.exp(-12 * dt);
     this.velocity.x = THREE.MathUtils.lerp(this.velocity.x, x * speed, alpha);
     this.velocity.z = THREE.MathUtils.lerp(this.velocity.z, z * speed, alpha);
+    if (water && water.submersion > 0) {
+      // §9.5 horizontal drag plus the mapped current, applied to the driven
+      // velocity rather than to the swept result.
+      const decay = Math.exp(-water.horizontalDragPerSecond * dt);
+      this.velocity.x = this.velocity.x * decay + water.currentX * dt;
+      this.velocity.z = this.velocity.z * decay + water.currentZ * dt;
+    }
 
     const deltaX = this.velocity.x * dt;
     const deltaZ = this.velocity.z * dt;
@@ -360,13 +420,38 @@ export class GeoPlayer {
     }
     this.jumpQueued = false;
     if (!this.grounded) {
-      this.velocity.y -= 5.2 * dt;
+      if (water && water.submersion > 0) {
+        stepWaterMotion({
+          contact: water, velocityY: this.velocity.y, gravity: GEO_WATER_GRAVITY, dt,
+        }, this.waterMotion);
+        this.velocity.y = this.waterMotion.velocityY;
+      } else this.velocity.y -= GEO_WATER_GRAVITY * dt;
+      // §9.9: the fall speed is always capped.
+      this.velocity.y = Math.max(this.velocity.y, -GDO_WATER_CONTACT_PROFILES[WATER_PROFILE].maxFallSpeedRatio * GEO_WATER_GRAVITY);
       this.position.y += this.velocity.y * dt;
       this.landingSupportOptions.referenceY = this.airborneSupportY;
       const groundY = this.world.supportAt?.(
         this.position.x, this.position.z, this.supportResult, this.landingSupportOptions,
       )?.y ?? 0;
       if (this.velocity.y <= 0 && this.position.y <= groundY) {
+        // §9.9: the landing is classified before the velocity is cleared, and a
+        // water landing is a soft landing.
+        classifyFallImpact({
+          verticalSpeed: this.velocity.y,
+          gravity: GEO_WATER_GRAVITY,
+          bodyHeight: GEO_WATER_BODY_HEIGHT,
+          profile: WATER_PROFILE,
+          landedInWater: (water?.submersion ?? 0) > .2,
+        }, this.fallImpact);
+        this.lastFallImpact = this.fallImpact.impact;
+        if (this.fallImpact.impact === GDO_FALL_IMPACT.STUMBLE) {
+          this.velocity.x *= .45;
+          this.velocity.z *= .45;
+        } else if (this.fallImpact.impact === GDO_FALL_IMPACT.KNOCKDOWN) {
+          // Bounded recovery: the impulse is capped and the player keeps control.
+          this.velocity.x = 0;
+          this.velocity.z = 0;
+        }
         this.position.y = groundY;
         this.velocity.y = 0;
         this.grounded = true;
@@ -386,6 +471,10 @@ export class GeoPlayer {
     if (this.cameraMode === 'first-person') {
       this.cameraDesired.copy(this.position);
       this.cameraDesired.y += FIRST_PERSON_EYE_HEIGHT;
+      // `COL-08`: swimming keeps the eye above the surface instead of under it.
+      if (Number.isFinite(this.waterContact?.cameraMinY)) {
+        this.cameraDesired.y = Math.max(this.cameraDesired.y, this.waterContact.cameraMinY);
+      }
       this.camera.position.copy(this.cameraDesired);
       const horizontal = Math.cos(this.firstPersonPitch);
       this.lookDirection.set(
@@ -409,6 +498,10 @@ export class GeoPlayer {
       this.cameraIdeal.x, this.cameraIdeal.z, this.cameraSupportResult,
     )?.y ?? 0;
     this.cameraIdeal.y = Math.max(cameraGround + .3, this.cameraIdeal.y);
+    // `COL-08`: a third-person camera does not swim.
+    if (Number.isFinite(this.waterContact?.cameraMinY)) {
+      this.cameraIdeal.y = Math.max(this.cameraIdeal.y, this.waterContact.cameraMinY);
+    }
     this.cameraDesired.copy(this.cameraIdeal);
     const clip = this.world.clipCamera?.(
       this.cameraTarget,
