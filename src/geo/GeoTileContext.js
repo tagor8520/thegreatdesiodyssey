@@ -652,8 +652,8 @@ function placeProps(vectorTile, request, { decorations, obstacles, waterDomain, 
  */
 function collectNavigationLines(vectorTile, request) {
   const vectorLayer = pickMapLayer(vectorTile.layers, GEO_MAP_ROLE.TRANSPORT)?.layer;
-  if (!vectorLayer) return { lines: [], names: [], levels: [], truncated: false };
-  const lines = [], names = [], levels = [];
+  if (!vectorLayer) return { lines: [], names: [], levels: [], kinds: [], widths: [], truncated: false };
+  const lines = [], names = [], levels = [], kinds = [], widths = [];
   const maxLines = GDO_LOW_PROFILE_BUDGETS.navLinesPerTile;
   let truncated = false;
   for (let featureIndex = 0; featureIndex < vectorLayer.length; featureIndex++) {
@@ -675,9 +675,17 @@ function collectNavigationLines(vectorTile, request) {
       lines.push(flat);
       names.push(name);
       levels.push(style.transport.physicalLevel);
+      // `LIF-04`: the canonical road class, so a sidewalk graph is a declared
+      // filter over real map context rather than a second provider reader.
+      kinds.push(style.kind ?? '');
+      // The carriageway width in world units, already scaled: a sidewalk offset is
+      // the real half-width plus a kerb, never a number copied out of a table.
+      widths.push(style.width);
     }
   }
-  return { lines, names, levels, truncated };
+  // `kinds` and `widths` travel with the lines, so the sidewalk graph is a
+  // declared filter over the mapped carriageway rather than a parallel table.
+  return { lines, names, levels, kinds, widths, truncated };
 }
 
 function addLegacyParkedCars(vectorTile, request, decorations, seed) {

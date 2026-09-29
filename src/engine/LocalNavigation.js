@@ -145,6 +145,8 @@ function buildGraph(tiles, places, caps) {
       const line = tile.lines[lineIndex];
       const name = tile.names[lineIndex] ?? '';
       const level = tile.levels[lineIndex] ?? 0;
+      const kind = tile.kinds?.[lineIndex] ?? '';
+      const width = tile.widths?.[lineIndex] ?? .55;
       for (let index = 0; index + 3 < line.length; index += 2) {
         const ax = line[index], az = line[index + 1];
         const bx = line[index + 2], bz = line[index + 3];
@@ -153,7 +155,7 @@ function buildGraph(tiles, places, caps) {
         const from = nodeAt(ax, az, { name, tile: tileKey, level });
         const to = nodeAt(bx, bz, { name, tile: tileKey, level });
         segments.push({
-          from, to, ax, az, bx, bz, length, name, level, tile: tileKey, cuts: [],
+          from, to, ax, az, bx, bz, length, name, kind, width, level, tile: tileKey, cuts: [],
         });
       }
     }
@@ -216,7 +218,13 @@ function buildGraph(tiles, places, caps) {
       rawEdges.push({
         id: hash(`${a.id}|${b.id}`), a: a.id, b: b.id,
         length: segmentLength(a.x, a.z, b.x, b.z),
-        level: Math.max(a.level, b.level), name: segment.name || a.name || b.name || '',
+        level: Math.max(a.level, b.level),
+        name: segment.name || a.name || b.name || '',
+        // The edge keeps the canonical class of the line it came from, so a
+        // sidewalk graph is a filter over the one graph rather than a rebuild.
+        kind: segment.kind || '',
+        width: segment.width ?? .55,
+        link: false,
       });
     }
   }
@@ -244,9 +252,13 @@ function buildGraph(tiles, places, caps) {
     // The anchor road node is retained through pruning: a dense tile must never
     // orphan the doorway of a place the player can see named on the map.
     anchors.add(nearestKey);
+    // A place link is a doorway, not a street: it carries no road class, so a
+    // pedestrian sidewalk graph is built from the streets alone.
+    // A place link is a doorway rather than a street: it is flagged, carries no
+    // road class, and is never walked as if it were a carriageway.
     rawEdges.push({
       id: hash(`${node.id}|${nearest.id}`), a: node.id, b: nearest.id,
-      length: Math.max(nearestDistance, .05), level: 0, name: place.name,
+      length: Math.max(nearestDistance, .05), level: 0, name: place.name, kind: '', width: 0, link: true,
     });
   }
 
@@ -706,6 +718,10 @@ export function createLocalNavigation({ profile = 'low', limits = null } = {}) {
       if (!key || !payload || !Array.isArray(payload.lines)) return false;
       tiles.set(key, {
         lines: payload.lines, names: payload.names ?? [], levels: payload.levels ?? [],
+        // `LIF-04`: the canonical road class travels with each line, so a consumer
+        // can tell a street a person may walk beside from a motorway or a path
+        // without re-interpreting the provider schema.
+        kinds: payload.kinds ?? [], widths: payload.widths ?? [],
         truncated: Boolean(payload.truncated),
       });
       return rebuild();

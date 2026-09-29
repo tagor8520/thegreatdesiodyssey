@@ -23,6 +23,8 @@ import { createActivityAuditRunner } from '../engine/ActivityAudit.js';
 import { activityHudText } from '../engine/LocalActivities.js';
 import { createWeatherAuditRunner } from '../engine/WeatherAudit.js';
 import { weatherHudText } from '../engine/WeatherState.js';
+import { pedestrianHudText } from '../engine/LocalPedestrians.js';
+import { GDO_PEDESTRIAN_AUDIT_SCRIPT, createPedestrianAuditRunner, pedestrianAuditPlayerAt } from '../engine/PedestrianAudit.js';
 import { actionCapabilitiesForDomain, createActionRegistry } from '../engine/ActionRegistry.js';
 import { createTouchActionControls, touchActionMarkup } from './GeoActionControls.js';
 import { createContentValidatorExtras } from '../engine/ContentValidatorTool.js';
@@ -72,6 +74,10 @@ function uiMarkup() {
         <div class="geo-weather" aria-live="polite">
           <div class="geo-weather-title">Weather appears once the map is resident</div>
           <div class="geo-weather-detail"></div>
+        </div>
+        <div class="geo-pedestrians" aria-live="polite">
+          <div class="geo-pedestrian-title">Pedestrians appear once the streets are resident</div>
+          <div class="geo-pedestrian-detail"></div>
         </div>
       </div>
         <div class="geo-camera-status">First-person camera · V to switch</div>
@@ -135,6 +141,8 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   const activityProgressElement = overlay.querySelector('.geo-activity-progress');
   const weatherTitleElement = overlay.querySelector('.geo-weather-title');
   const weatherDetailElement = overlay.querySelector('.geo-weather-detail');
+  const pedestrianTitleElement = overlay.querySelector('.geo-pedestrian-title');
+  const pedestrianDetailElement = overlay.querySelector('.geo-pedestrian-detail');
   const runtimeElement = overlay.querySelector('.geo-runtime');
   const sourceElement = overlay.querySelector('.geo-source');
   const loadingElement = overlay.querySelector('.geo-loading');
@@ -524,6 +532,20 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     return text;
   };
 
+  // `LIF-04`: the HUD line for the local street. It is written from the board's
+  // own `pedestrianHudText`, so the line and the audit read one summary.
+  let drawnPedestrianText = null;
+  const updatePedestrianHud = () => {
+    const summary = world.pedestrianSummary;
+    if (!pedestrianTitleElement || !summary) return null;
+    const text = pedestrianHudText(summary);
+    if (text.text === drawnPedestrianText) return text;
+    drawnPedestrianText = text.text;
+    pedestrianTitleElement.textContent = text.text;
+    pedestrianDetailElement.textContent = text.detail;
+    return text;
+  };
+
   const joystick = new FlexibleJoystick(
     joystickZone,
     joystickBase,
@@ -608,6 +630,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     updateNavigation();
     updateActivities();
     updateWeatherHud();
+    updatePedestrianHud();
     sampleCpuMilliseconds += performance.now() - cpuStart;
     worstFrameGap = Math.max(worstFrameGap, frameGap);
     sampleFrames++;
@@ -872,6 +895,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       updateMapLabels(activityAuditClock.value);
       updateNavigation();
       updateActivities();
+      updatePedestrianHud();
     },
     sample: index => {
       const record = world.activitySample(index);
@@ -951,6 +975,73 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       fogFar: 175,
     },
   });
+  // `LIF-04`: the scripted pedestrian audit. It walks the player from the tile
+  // centre out past the active radius and back while the world steps exactly like
+  // a frame, so the row's "route graph, despawn/reuse, no dense global simulation"
+  // gate is measured on the live board instead of asserted in a comment.
+  const pedestrianAuditClock = { value: 0 };
+  // The world owns where its audit can walk to, so the script is a property of the
+  // map rather than a number a reader has to trust.
+  const worldPedestrianAuditScript = () => {
+    const far = world.pedestrianAuditScript();
+    return Object.freeze({ ...GDO_PEDESTRIAN_AUDIT_SCRIPT, farX: far.dx, farZ: far.dz });
+  };
+  const pedestrianAudit = createPedestrianAuditRunner({
+    label: 'coordinate-pedestrians',
+    steps: GDO_PEDESTRIAN_AUDIT_SCRIPT.steps,
+    dt: GDO_PEDESTRIAN_AUDIT_SCRIPT.dt,
+    reset: () => {
+      pedestrianAuditClock.value = 0;
+      world.pedestrians?.reset();
+      world.lastPedestrianMilliseconds = null;
+      world.pedestrianSummary = null;
+      const origin = world.pedestrianAuditOrigin();
+      player.setPosition(origin.x, origin.z);
+      player.update(GDO_PEDESTRIAN_AUDIT_SCRIPT.dt);
+      world.update(player.position, camera, renderer.domElement.height, 0);
+      updatePedestrianHud();
+    },
+    step: ({ index, dt, steps }) => {
+      pedestrianAuditClock.value += dt * 1000;
+      // The shared script: stand in the street, step outside every declared active
+      // radius, then come back. The board is told nothing — the radius decides.
+      const origin = world.pedestrianAuditOrigin();
+      const at = pedestrianAuditPlayerAt(index, steps, worldPedestrianAuditScript());
+      player.setPosition(origin.x + at.x, origin.z + at.z);
+      player.update(dt);
+      world.update(player.position, camera, renderer.domElement.height, pedestrianAuditClock.value);
+      updatePedestrianHud();
+    },
+    sample: index => {
+      const record = world.pedestrianSample(index);
+      const text = pedestrianHudText(world.pedestrianSummary ?? {});
+      return {
+        ...record,
+        // The HUD half of the gate: the DOM line is the board's own copy, so what
+        // the player reads is what the audit measured.
+        hudText: pedestrianTitleElement?.textContent ?? '',
+        hudDetail: pedestrianDetailElement?.textContent ?? '',
+        hudTracksBoard: (pedestrianTitleElement?.textContent ?? '').startsWith(text.text),
+      };
+    },
+    context: () => world.pedestrianAuditContext(),
+    expect: {
+      profile: world.profile,
+      maxAgents: world.pedestrians?.limits.maxAgents,
+      farPoint: world.pedestrianAuditScript().found,
+    },
+  });
+  const runPedestrianAudit = options => {
+    const report = pedestrianAudit.run(options);
+    world.pedestrianAuditSummary = pedestrianAudit.summary();
+    logger.info('audit', 'pedestrian audit complete', {
+      ok: report.ok, samples: report.samples, fingerprint: report.fingerprint,
+      spawns: report.spawns, recycles: report.recycles, live: report.liveAgents,
+      failed: report.verdicts.filter(verdict => !verdict.ok).map(verdict => verdict.id),
+    });
+    return report;
+  };
+
   const runWeatherAudit = options => {
     const report = weatherAudit.run(options);
     world.weatherAuditSummary = weatherAudit.summary();
@@ -1027,6 +1118,9 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
         weatherAudit: weatherAudit.summary(),
         activities: world.activitySummary ? { ...world.activitySummary } : null,
         activitiesDiagnostics: world.activities ? { ...world.activities.diagnostics() } : null,
+        pedestrians: world.pedestrianSummary ? { ...world.pedestrianSummary } : null,
+        pedestrianDiagnostics: world.pedestrians ? world.pedestrians.diagnostics : null,
+        pedestrianPools: world.pedestrianPools?.diagnostics ?? null,
         activityRefusals: world.activities?.refusals ?? null,
         timeOfDayAudit: timeOfDayAudit.summary(),
         profile: world.profile,
@@ -1043,6 +1137,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       timeOfDay: options => runTimeOfDayAudit(options),
       activities: options => runActivityAudit(options),
       weather: options => runWeatherAudit(options),
+      pedestrians: options => runPedestrianAudit(options),
     },
     extras: {
       world, player, camera, renderer,
@@ -1063,9 +1158,14 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       runWeatherAudit: options => runWeatherAudit(options),
       weatherAuditSummary: () => world.weatherAuditSummary ?? null,
       weather: world.weather,
+      // `LIF-04`: run the pedestrian audit from the console and read the live board.
+      runPedestrianAudit: options => runPedestrianAudit(options),
+      pedestrianAuditSummary: () => world.pedestrianAuditSummary ?? null,
+      pedestrians: world.pedestrians,
+      pedestrianSample: index => world.pedestrianSample(index),
     },
   });
-  if (debugHooks) logger.info('debug', 'hook installed', { key: '__gdo', audits: ['movement', 'silhouette', 'timeOfDay', 'activities', 'weather'] });
+  if (debugHooks) logger.info('debug', 'hook installed', { key: '__gdo', audits: ['movement', 'silhouette', 'timeOfDay', 'activities', 'weather', 'pedestrians'] });
 
   return {
     scene, camera, renderer, world, player,

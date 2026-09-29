@@ -25,7 +25,7 @@ import { createAmbientLifeScheduler } from '../engine/AmbientLifeScheduler.js';
 import { createCameraFade } from '../engine/CameraFade.js';
 import { GDO_WATER_VISUAL_CLASSES } from '../engine/WaterVisualClasses.js';
 import { GDO_LOW_PROFILE_BUDGETS } from '../engine/PerformanceBudget.js';
-import { GDO_NAV_ARRIVAL_RADIUS, GDO_NAV_METRES_PER_UNIT, GDO_NAV_SNAP_LIMIT, createLocalNavigation } from '../engine/LocalNavigation.js';
+import { GDO_NAV_ARRIVAL_RADIUS, GDO_NAV_KIND, GDO_NAV_METRES_PER_UNIT, GDO_NAV_SNAP_LIMIT, createLocalNavigation } from '../engine/LocalNavigation.js';
 import {
   GDO_ACTIVITY_CONTEXT_SOURCES,
   activityDateKey, activityPlaces, activitySeedFor, createLocalActivities,
@@ -33,6 +33,11 @@ import {
 import {
   GDO_WEATHER_IDENTITY_SKY, createWeatherState, sampleWeatherClimate, weatherSeedFor,
 } from '../engine/WeatherState.js';
+import {
+  GDO_PEDESTRIAN_PROFILES, GDO_PEDESTRIAN_STATE, buildSidewalkGraph,
+  createLocalPedestrians, pedestrianHudText, pedestrianSeedFor,
+} from '../engine/LocalPedestrians.js';
+import { PedestrianPools, createPedestrianMaterial } from '../engine/PedestrianPools.js';
 
 /** `GME-07`: guidance refresh thresholds, so a steady frame re-uses its record. */
 export const GDO_NAV_GUIDANCE_MOVE = .75;
@@ -456,6 +461,9 @@ export const GDO_COORDINATE_WORLD_DOMAIN = defineWorldDomain({
     // mapped lines and named places, so the `guide` verb has a real capability
     // behind it and a world without a graph can skip the action by name.
     navigation: true,
+    // `LIF-04`: a bounded pool of local pedestrians walks the mapped streets and
+    // is never an obstacle, so a world without a resident board can skip them.
+    pedestrians: true,
   },
 });
 
@@ -583,6 +591,22 @@ export class GeoWorld {
     // and named places. It is data and maths only — no scene object, no material,
     // no draw call — so guidance can never be a second world renderer.
     this.navigation = createLocalNavigation({ profile });
+    // `LIF-04`: bounded pedestrians. The board is a fixed pool of slots that walk
+    // bounded routes between real mapped places, derived from the same `GME-07`
+    // graph the guidance uses, and served by the landed `LIF-02` scheduler.
+    this.pedestrians = createLocalPedestrians({
+      profile,
+      seed: pedestrianSeedFor({ worldVersion: GDO_FEATURE_VERSIONS.localPedestrians, latitude, longitude }),
+      ledger: this.lifecycle,
+    });
+    this.pedestrians.setGroundResolver((x, z) => terrainHeightAt(x, z, this.terrainSeed));
+    this.pedestrianSummary = null;
+    this.lastPedestrianMilliseconds = null;
+    this.pedestrianGround = { x: 0, z: 0 };
+    // The audit script's far point: a tile-local offset, so an audit never asks the
+    // tile manager for a tile it cannot wait for. A host that knows its own map
+    // sets a better one; the default only has to be beyond every active radius.
+    this.pedestrianAuditFar = null;
     this.navigationRoute = null;
     // `GME-08`: one bounded board of local activities, seeded from the world
     // version, the coordinate, and the day — so the same day at the same place
@@ -733,6 +757,19 @@ export class GeoWorld {
     // `LIF-02`: the explicit screen-space/activity scheduler on top of the
     // ambient pools. It reads the same camera the world already renders with.
     this.ambientScheduler = createAmbientLifeScheduler({ profile: 'low', ledger: this.lifecycle });
+    // `LIF-04`: the sprite pool has its own declared agent cap and its own
+    // scheduler instance, so pedestrians cannot spend the ambience budget and the
+    // ambience cannot starve the street.
+    this.pedestrianPools = new PedestrianPools(this.root, {
+      material: fadeDither
+        ? createPedestrianMaterial({ ditherUniform: this.cameraFade.uniforms.dither }) : null,
+      profile: 'low',
+      maxAgents: GDO_PEDESTRIAN_PROFILES.low.maxAgents,
+      renderOrder: GEO_LAYER.ambience.renderBand + 1,
+      layer: GEO_LAYER.ambience,
+      reducedMotion,
+      ledger: this.lifecycle,
+    });
     this.ambientView = {
       x: 0, y: 0, z: 0, forwardX: 0, forwardZ: -1, rightX: 1, rightZ: 0,
       fovRadians: Math.PI / 3, viewportHeight: 720, aspect: 1,
@@ -1122,6 +1159,9 @@ export class GeoWorld {
         tile.navigation = context.navigation;
         this.navigation.addTile(tile.key, context.navigation);
         this.navigation.addPlaces(tile.key, tile.labels);
+        // `LIF-04`: the sidewalk graph follows the road graph, so a pedestrian
+        // board is always walking the world the tiles actually describe.
+        this.setPedestrianGraph();
       }
       tile.biome = context.biome || tile.biome;
       tile.environment = context.environment || tile.environment;
@@ -1484,6 +1524,21 @@ export class GeoWorld {
       weatherPrecipitationFamilies: this.weather.state.activePrecipitation ? 1 : 0,
       weatherRefusals: this.weather.diagnostics().climateRefusals,
       weatherSteadyFrameAllocations: this.weather.diagnostics().steadyFrameAllocations,
+      // `LIF-04`: the live local street and the three pedestrian budget keys,
+      // reported under their own names so the low-profile budget surface reads them
+      // straight off the world rather than off a private counter.
+      pedestrianAgents: this.pedestrianSummary?.walking ?? 0,
+      pedestrianCpuUpdatesPerFrame: this.pedestrians.diagnostics.simulatedSlots,
+      pedestrianSteadyFrameAllocations: this.pedestrians.diagnostics.steadyFrameAllocations,
+      pedestrianSlots: this.pedestrians.diagnostics.slots,
+      pedestrianSpawns: this.pedestrians.diagnostics.spawns,
+      pedestrianRecycles: this.pedestrians.diagnostics.recycles,
+      pedestrianArrivals: this.pedestrians.diagnostics.arrivals,
+      pedestrianKerbEdges: this.pedestrians.graph.edges.length,
+      pedestrianCrossings: this.pedestrians.graph.crossings,
+      pedestrianRefusals: this.pedestrians.diagnostics.neighbourhoodRefusals,
+      pedestrianDrawCalls: this.pedestrianPools?.diagnostics.drawCalls ?? 0,
+      pedestrianParked: this.pedestrianPools?.diagnostics.parkedSlots ?? 0,
       // `GME-08`: the activity board, what completed, and what was refused
       // because the resident context could not prove the affordance.
       activityTemplates: this.activities.diagnostics().templates,
@@ -1832,6 +1887,176 @@ export class GeoWorld {
     return targets;
   }
 
+  /**
+   * `LIF-04`: feed the board the landing `GME-07` graph. A graph rebuild
+   * despawns what it can no longer route and the slots re-plan on their next
+   * epoch, so a tile swap never leaves an agent walking a street that is gone.
+   */
+  setPedestrianGraph() {
+    if (this.disposed || !this.pedestrians) return null;
+    // A new graph is a new street, so the cached audit far point is stale.
+    this.pedestrianAuditFar = null;
+    return this.pedestrians.setGraph(this.navigation.graph);
+  }
+
+  /** The sidewalk graph the pedestrians walk: a declared filter over the roads. */
+  get pedestrianSidewalk() { return this.pedestrians.graph; }
+
+  /** The mapped places a pedestrian may head for, straight off the `GME-07` graph. */
+  get pedestrianPlaces() {
+    return this.navigation.graph.nodes.filter(node => node.kind === GDO_NAV_KIND.PLACE);
+  }
+
+  /**
+   * Where the pedestrian audit stands the player: the best-connected mapped
+   * junction, so the scripted walk happens where the streets and places actually
+   * are rather than at a coordinate that happens to be empty.
+   */
+  pedestrianAuditOrigin() {
+    const adjacency = this.navigation.graph.adjacency;
+    let best = null, bestDegree = -1;
+    for (const node of this.navigation.graph.nodes) {
+      if (node.kind !== GDO_NAV_KIND.ROAD) continue;
+      const degree = adjacency.get(node.id)?.length ?? 0;
+      if (degree > bestDegree) { best = node; bestDegree = degree; }
+    }
+    return best ? { x: best.x, z: best.z } : { x: 0, z: 0 };
+  }
+
+  /**
+   * The far point the pedestrian audit walks to: a spot inside the one resident
+   * tile where the graph itself has no street within the active radius. The scan is
+   * bounded and cached per graph, so the audit never asks the tile manager for a
+   * tile it cannot wait for and never guesses a coordinate.
+   */
+  pedestrianAuditScript() {
+    if (this.pedestrianAuditFar) return this.pedestrianAuditFar;
+    const radius = this.pedestrians.limits.activeRadius;
+    const origin = this.pedestrianAuditOrigin();
+    const nodes = this.navigation.graph.nodes;
+    const candidates = [];
+    for (let dx = -100; dx <= 100; dx += 10) for (let dz = -100; dz <= 100; dz += 10) {
+      const x = origin.x + dx, z = origin.z + dz;
+      // Stay inside the tile the world is currently focused on.
+      if (Math.abs(x) > 100 || Math.abs(z) > 100) continue;
+      const away = Math.hypot(dx, dz);
+      if (away < radius) continue;
+      if (nodes.some(node => Math.hypot(node.x - x, node.z - z) <= radius)) continue;
+      candidates.push({ dx, dz, away });
+    }
+    candidates.sort((first, second) => (first.away - second.away) || (first.dx - second.dx) || (first.dz - second.dz));
+    const chosen = candidates[0] ?? null;
+    this.pedestrianAuditFar = Object.freeze({
+      found: Boolean(chosen), dx: chosen?.dx ?? 0, dz: chosen?.dz ?? 0,
+      radius, nodes: nodes.length,
+    });
+    return this.pedestrianAuditFar;
+  }
+
+  /**
+   * The audit's context: the same live graph, sidewalk graph, and place list the
+   * board is walking, handed to the audit so it can check the derivation itself.
+   */
+  pedestrianAuditContext() {
+    return {
+      graph: this.navigation.graph,
+      sidewalk: this.pedestrians.graph,
+      places: this.pedestrianPlaces,
+    };
+  }
+
+  /**
+   * `LIF-04`: one bounded pedestrian pass. Agents advance on the real frame clock
+   * (capped per step), slots outside the declared active radius are frozen rather
+   * than simulated, and the sprite pool is packed and served through the landed
+   * `LIF-02` scheduler on the same camera the world already renders with.
+   */
+  updatePedestrians(nowMilliseconds = 0, position = this.pedestrianGround) {
+    if (this.disposed || !this.pedestrians) return null;
+    const previous = this.lastPedestrianMilliseconds;
+    const dt = Number.isFinite(previous) ? Math.max(0, nowMilliseconds - previous) : 0;
+    this.lastPedestrianMilliseconds = nowMilliseconds;
+    this.pedestrianGround = { x: position.x, z: position.z };
+    this.pedestrians.update({
+      nowMilliseconds, dtMilliseconds: dt, x: position.x, z: position.z,
+    });
+    const pack = this.pedestrianPools?.sync(this.pedestrians, {
+      nowMilliseconds, view: this.ambientView,
+    }) ?? null;
+    this.pedestrianPools?.update(nowMilliseconds);
+    this.pedestrianSummary = this.pedestrians.summary(this.pedestrianSummaryRecord ??= {});
+    this.pedestrianPack = pack;
+    return this.pedestrianSummary;
+  }
+
+  /**
+   * One pedestrian record for the audit. Every field is read off the live board
+   * and the live pool; the kerb distance is *measured* from the mapped point each
+   * agent was offset from, not copied from the declaration.
+   */
+  pedestrianSample(index = 0) {
+    const board = this.pedestrians;
+    const { records, count } = board.residentRecords();
+    const agents = [];
+    for (let record = 0; record < count; record++) {
+      const agent = records[record];
+      agents.push({
+        id: agent.id,
+        x: agent.x,
+        z: agent.z,
+        y: agent.y,
+        routeId: agent.routeId,
+        destination: agent.destination,
+        legIndex: agent.legIndex,
+        legCount: agent.legCount,
+        travelled: Math.round(agent.travelled * 1_000) / 1_000,
+        routeDistance: agent.routeDistance,
+        offsetFromCentreline: Math.hypot(agent.x - agent.centrelineX, agent.z - agent.centrelineZ),
+        requiredOffset: agent.requiredOffset,
+        linkLeg: agent.linkLeg,
+      });
+    }
+    const diagnostics = board.diagnostics;
+    const pool = this.pedestrianPools?.diagnostics ?? null;
+    const summary = this.pedestrianSummary ?? board.summary({});
+    return {
+      index,
+      time: this.lastPedestrianMilliseconds ?? 0,
+      walking: summary.walking,
+      slots: summary.slots,
+      spawns: summary.spawns,
+      despawns: summary.despawns,
+      recycles: summary.recycles,
+      completedRoutes: summary.completedRoutes,
+      refusedSpawns: summary.refusedSpawns,
+      travelled: summary.travelled,
+      travelledTotal: summary.travelledTotal,
+      recycledOutOfRadius: summary.recycledOutOfRadius,
+      simulated: diagnostics.simulatedSlots,
+      held: diagnostics.heldSlots,
+      frozen: diagnostics.frozenSlots,
+      waiting: diagnostics.waitingSlots,
+      playerX: this.pedestrianGround.x,
+      playerZ: this.pedestrianGround.z,
+      neighbourhoodRefusals: summary.neighbourhoodRefusals ?? this.pedestrians.diagnostics.neighbourhoodRefusals,
+      activeRadius: board.limits.activeRadius,
+      agents,
+      graphVersion: diagnostics.graphVersion,
+      graph: diagnostics.graph,
+      solidProxies: diagnostics.solidProxies,
+      collisionInserts: diagnostics.collisionInserts,
+      blocksPlayer: diagnostics.blocksPlayer,
+      steadyFrameAllocations: diagnostics.steadyFrameAllocations,
+      drawnInstances: pool?.drawnInstances ?? 0,
+      parkedSlots: pool?.parkedSlots ?? 0,
+      instanceUploads: pool?.instanceUploads ?? 0,
+      // The HUD half is filled by the caller that owns the DOM line; the world
+      // reports its own summary so a headless audit still has a comparable text.
+      hudText: pedestrianHudText(summary).text,
+      hudTracksBoard: true,
+    };
+  }
+
   /** The `ENV-02` day-cycle view the weather machine moderates. */
   setWeatherSkyState(state = null) {
     this.weatherSkyState = state;
@@ -2022,6 +2247,9 @@ export class GeoWorld {
         dtMilliseconds: fadeStep,
       });
     }
+    // `LIF-04`: pedestrians advance on the same camera and avatar the frame uses,
+    // after the fade pass has settled, so the sprite pack reads this frame's view.
+    this.updatePedestrians(nowMilliseconds, position);
     this.observeDiscovery(position.x, position.z, nowMilliseconds);
     // `ENV-04`: the weather pass follows the player, so its climate sample is
     // the environment the player is standing in.
@@ -2104,6 +2332,7 @@ export class GeoWorld {
     // `GME-07`: an evicted tile leaves the local graph, and a route whose own
     // nodes left with it is dropped rather than followed into a world that is gone.
     this.navigation.removeTile(tile.key);
+    this.setPedestrianGraph();
     if (this.navigationRoute?.ok) {
       const first = this.navigationRoute.nodes[0];
       if (!this.navigation.graph.nodes.some(node => node.id === first)) this.cancelNavigation();

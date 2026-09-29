@@ -124,9 +124,26 @@ function createDecision(out = {}) {
  * One scheduler per ambient-life pool. `begin()` opens a frame, `evaluate()`
  * offers one source, `finish()` applies the budget and computes visibility.
  */
-export function createAmbientLifeScheduler({ profile = 'low', ledger = null } = {}) {
-  const policy = GDO_AMBIENT_SCHEDULER_PROFILES[profile];
-  if (!policy) throw new RangeError(`Unknown ambient-life scheduler profile: ${profile}`);
+export function createAmbientLifeScheduler({ profile = 'low', ledger = null, limits = null } = {}) {
+  const base = GDO_AMBIENT_SCHEDULER_PROFILES[profile];
+  if (!base) throw new RangeError(`Unknown ambient-life scheduler profile: ${profile}`);
+  if (limits && (!Number.isInteger(limits.maxActiveSources) || limits.maxActiveSources <= 0 ||
+      !Number.isInteger(limits.maxSourcesPerUpdate) || limits.maxSourcesPerUpdate <= 0)) {
+    throw new RangeError('Invalid ambient-life scheduler limits override');
+  }
+  /**
+   * `LIF-04` and friends may override the *counts* only. The screen-space rules —
+   * the projected-pixel threshold, the hysteresis band, the margins — stay the
+   * profile's, so a second source family cannot invent its own serving policy.
+   */
+  const policy = limits
+    ? Object.freeze({
+      ...base,
+      maxActiveSources: limits.maxActiveSources,
+      maxSourcesPerUpdate: limits.maxSourcesPerUpdate ?? base.maxSourcesPerUpdate,
+      maxResidentSources: limits.maxResidentSources ?? limits.maxActiveSources,
+    })
+    : base;
   const camera = {
     x: 0, y: 0, z: 0,
     forwardX: 0, forwardZ: -1, rightX: 1, rightZ: 0,

@@ -127,6 +127,11 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   weatherWritesPerUpdate: 12,
   weatherPrecipitationFamilies: 1,
   weatherSteadyFrameAllocations: 0,
+  // `LIF-04`: research §7 — 16 dynamic pedestrians on the low profile, no dense
+  // global simulation, and zero steady-frame allocations.
+  pedestrianAgents: 16,
+  pedestrianCpuUpdatesPerFrame: 16,
+  pedestrianSteadyFrameAllocations: 0,
   // `GME-08`: research §4.7 — one bounded board of affordance-proven objectives.
   activityTemplates: 8,
   activityBoard: 5,
@@ -302,6 +307,9 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'weatherWritesPerUpdate', budget: 'weatherWritesPerUpdate', label: 'weather writes/update' }),
   Object.freeze({ metric: 'weatherPrecipitationFamilies', budget: 'weatherPrecipitationFamilies', label: 'active precipitation families' }),
   Object.freeze({ metric: 'weatherSteadyFrameAllocations', budget: 'weatherSteadyFrameAllocations', label: 'weather steady-frame allocations' }),
+  Object.freeze({ metric: 'pedestrianAgents', budget: 'pedestrianAgents', label: 'live pedestrian agents' }),
+  Object.freeze({ metric: 'pedestrianCpuUpdatesPerFrame', budget: 'pedestrianCpuUpdatesPerFrame', label: 'pedestrian CPU updates/frame' }),
+  Object.freeze({ metric: 'pedestrianSteadyFrameAllocations', budget: 'pedestrianSteadyFrameAllocations', label: 'pedestrian steady-frame allocations' }),
   Object.freeze({ metric: 'activityBoard', budget: 'activityBoard', label: 'emitted local activities' }),
   Object.freeze({ metric: 'activityTargets', budget: 'activityTargets', label: 'activity targets per objective' }),
   Object.freeze({ metric: 'activityChecks', budget: 'activityChecks', label: 'activity affordance checks' }),
