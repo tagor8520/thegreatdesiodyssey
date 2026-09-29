@@ -7,7 +7,7 @@ import {
 } from '../engine/ProceduralEngine.js';
 import { createTimeOfDayState, luminance, nightReadability } from '../engine/TimeOfDaySky.js';
 import { GeoWorld, GDO_COORDINATE_WORLD_DOMAIN } from './GeoWorld.js';
-import { GeoPlayer, probeAuditedCameraClearance } from './GeoPlayer.js';
+import { GDO_COORDINATE_PLAYER_DOMAIN, GeoPlayer, probeAuditedCameraClearance } from './GeoPlayer.js';
 import { registerPropInteraction } from '../engine/PropGrammar.js';
 import { FlexibleJoystick, shouldUseTouchControls } from './GeoControls.js';
 import { validateCoordinate } from './GeoMath.js';
@@ -193,7 +193,6 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     ledger: lifecycle,
   });
   timeOfDayLighting.apply(timeOfDay.state);
-  world.timeOfDayState = timeOfDay;
 
   let disposed = false, lost = false, animationFrame = 0, initialReady = false;
   let player;
@@ -255,6 +254,10 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     fogFar: 175,
   };
   world.setWeatherTargets(weatherTargets);
+  // `ENV-02`: the diagnostics surface reports the day-cycle state the sky, the
+  // light rig, the fog, and the weather machine are already reading. It is
+  // attached *after* the world exists — nothing constructs with it.
+  world.timeOfDayState = timeOfDay;
   const updateCameraUI = mode => {
     const firstPerson = mode === 'first-person';
     cameraStatusElement.textContent = `${firstPerson ? 'First' : 'Third'}-person camera · V to switch`;

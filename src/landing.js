@@ -53,6 +53,9 @@ function renderLanding(message = '') {
   const form = container.querySelector('.odyssey-coordinate-form');
   const sample = container.querySelector('.odyssey-sample-coordinate');
   const note = container.querySelector('.odyssey-start-note');
+  // A launch that throws is a failure, not a status line: it is marked as one so
+  // the note cannot be mistaken for the ordinary loading hint.
+  note.dataset.state = message ? 'error' : 'status';
   if (message) note.textContent = message;
   curatedButton.addEventListener('click', () => launchGame({ mode: 'curated' }), { once: true });
   form.addEventListener('submit', event => {
