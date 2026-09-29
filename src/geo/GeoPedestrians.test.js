@@ -46,7 +46,27 @@ function mount(fixtureId = 'dense-urban', { profile = 'low', seed = null } = {})
     timings: { fetchMilliseconds: 1, roadsMilliseconds: 2, contextMilliseconds: 3, buildingsMilliseconds: 4, totalMilliseconds: 10 },
   });
   world._flushPlantMounts(0);
-  return { scene, world, tile, compilation, ledger };
+  // A real camera on the street: the pedestrian pool is served by the same
+  // screen-space scheduler as the ambience, so its verdicts need a real view.
+  const origin = world.pedestrianAuditOrigin();
+  const camera = new THREE.PerspectiveCamera(60, 16 / 9, .1, 600);
+  camera.position.set(origin.x, 1.2, origin.z - 8);
+  camera.lookAt(origin.x, 1.0, origin.z + 20);
+  camera.updateMatrixWorld(true);
+  return { scene, world, tile, compilation, ledger, camera, origin };
+}
+
+/** A parked instance keeps zero visibility in the stream it already owns. */
+function poolStale(world) {
+  let stale = 0;
+  for (const mesh of world.pedestrianPools.meshes) {
+    const geometry = mesh.geometry;
+    const park = geometry.getAttribute('gdoPedPark')?.array ?? [];
+    for (let slot = 0; slot < geometry.instanceCount; slot++) {
+      if (!Number.isFinite(park[slot])) stale++;
+    }
+  }
+  return stale;
 }
 
 /** Drive the world the way a frame does, so the pedestrian pass runs on its clock. */
@@ -55,12 +75,12 @@ function mount(fixtureId = 'dense-urban', { profile = 'low', seed = null } = {})
 // one scripted run. A frame is a script unit here, not a rendered frame.
 const AUDIT_DT = 1 / 10;
 
-function drive(world, { steps = 120, x = 0, z = 0, clock = 0, dt = AUDIT_DT } = {}) {
+function drive(world, { steps = 120, x = 0, z = 0, clock = 0, dt = AUDIT_DT, camera = null } = {}) {
   let time = clock;
   const origin = world.pedestrianAuditOrigin();
   for (let index = 0; index < steps; index++) {
     time += dt * 1_000;
-    world.update({ x: origin.x + x, y: 0, z: origin.z + z }, null, 720, time);
+    world.update({ x: origin.x + x, y: 0, z: origin.z + z }, camera, 720, time);
   }
   return { clock: time, sample: world.pedestrianSample(0) };
 }
@@ -108,9 +128,9 @@ test('LIF-04 the world builds a sidewalk graph from the fixture it mounted', () 
 });
 
 test('LIF-04 the world walks pedestrians between its own named places', () => {
-  const { world, scene, ledger } = mount('dense-urban');
+  const { world, scene, ledger, camera } = mount('dense-urban');
   try {
-    const { sample } = drive(world, { steps: 900 });
+    const { sample } = drive(world, { steps: 1_200, camera });
     assert.ok(sample.walking > 0, 'agents appeared on the fixture street');
     assert.ok(sample.walking <= world.pedestrians.limits.maxAgents);
     assert.ok(sample.travelledTotal > 0, 'agents walked');
@@ -124,6 +144,13 @@ test('LIF-04 the world walks pedestrians between its own named places', () => {
     }
     // The pool: two flat draws, no matrices, no proxies, no collision.
     const pools = world.pedestrianPools.diagnostics;
+    const pack = world.pedestrianPools.lastPack;
+    assert.ok(pack.offered > 0, 'the pool was offered the resident agents');
+    assert.ok(pack.active > 0, `the view served ${pack.active} of ${pack.offered} agents`);
+    assert.equal(pack.drawn, sample.walking, 'the instance stream carries every live agent');
+    assert.ok(pools.drawnInstances > 0);
+    assert.ok(pools.parkedSlots >= 0);
+    assert.equal(poolStale(world), 0, 'no parked agent was left in a stale stream slot');
     assert.equal(pools.drawCalls, 2);
     // `LAY-06`: the pool declares the same opaque screen-door fade policy the
     // ambience does, against the same shared dither mask.
@@ -151,9 +178,9 @@ test('LIF-04 the world walks pedestrians between its own named places', () => {
 });
 
 test('LIF-04 the world recycles its pedestrians instead of simulating a crowd', () => {
-  const { world, scene, ledger } = mount('dense-urban');
+  const { world, scene, ledger, camera } = mount('dense-urban');
   try {
-    const near = drive(world, { steps: 1_200 });
+    const near = drive(world, { steps: 1_200, camera });
     assert.ok(near.sample.walking > 0);
     assert.ok(near.sample.simulated > 0);
     const travelled = near.sample.travelledTotal;
@@ -180,7 +207,7 @@ test('LIF-04 the world recycles its pedestrians instead of simulating a crowd', 
     assert.equal(far.travelledTotal, travelled, 'a parked frame moves nobody');
     assert.equal(far.spawns, near.sample.spawns, 'nothing spawns out of play');
     assert.ok(far.recycledOutOfRadius > 0, 'agents were recycled by the radius');
-    const back = drive(world, { steps: 900, clock: time });
+    const back = drive(world, { steps: 900, clock: time, camera });
     assert.ok(back.sample.walking > 0, 'the pool refilled on the street');
     assert.equal(back.sample.spawns > near.sample.spawns, true, 'recycled slots took the street again');
   } finally {
@@ -191,7 +218,7 @@ test('LIF-04 the world recycles its pedestrians instead of simulating a crowd', 
 });
 
 test('LIF-04 the world audit proves the row gate on the live pool', () => {
-  const { world, scene, ledger, compilation } = mount('dense-urban');
+  const { world, scene, ledger, compilation, camera } = mount('dense-urban');
   try {
     const steps = GDO_PEDESTRIAN_AUDIT_SCRIPT.steps;
     const streetless = world.pedestrianAuditScript();
@@ -213,7 +240,7 @@ test('LIF-04 the world audit proves the row gate on the live pool', () => {
       step: ({ index, dt }) => {
         clock += dt * 1_000;
         const at = pedestrianAuditPlayerAt(index, steps, script);
-        world.update({ x: origin.x + at.x, y: 0, z: origin.z + at.z }, null, 720, clock);
+        world.update({ x: origin.x + at.x, y: 0, z: origin.z + at.z }, camera, 720, clock);
       },
       sample: index => world.pedestrianSample(index),
       context: () => world.pedestrianAuditContext(),
@@ -246,14 +273,14 @@ test('LIF-04 the world audit proves the row gate on the live pool', () => {
 });
 
 test('LIF-04 a tile with no walkable street leaves the street empty rather than inventing one', () => {
-  const { world, scene, ledger } = mount('dense-urban');
+  const { world, scene, ledger, camera } = mount('dense-urban');
   try {
     // An empty graph: the pool has nowhere to walk, and says so.
     const empty = createLocalNavigation({ profile: 'low' });
     world.navigation = empty;
     world.setPedestrianGraph();
     assert.equal(world.pedestrianSidewalk.edges.length, 0);
-    const { sample } = drive(world, { steps: 60 });
+    const { sample } = drive(world, { steps: 60, camera });
     assert.equal(sample.walking, 0);
     assert.equal(sample.spawns, 0);
     // The board says why the street is empty instead of looking unbuilt.

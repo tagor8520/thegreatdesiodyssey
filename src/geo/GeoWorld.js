@@ -1619,12 +1619,12 @@ export class GeoWorld {
    * and field of view are the inputs, so first- and third-person both work, and
    * the pool parks what the budget cannot afford.
    */
-  scheduleAmbientLife(nowMilliseconds = this.lastAmbientScheduleMilliseconds ?? 0) {
-    const pools = this.ambientLifePools, scheduler = this.ambientScheduler;
-    if (!pools || !scheduler || this.disposed) return null;
-    if ((pools.entries ?? 0) === 0 && (pools.packedRecords?.every(records => records.length === 0) ?? true)) {
-      return null;
-    }
+  /**
+   * The one camera view record every screen-space scheduler reads: the species
+   * scheduler, the pedestrian scheduler, and the camera fade all consume the same
+   * basis, so a second source family can never invent its own serving rules.
+   */
+  refreshAmbientView(nowMilliseconds = this.lastAmbientScheduleMilliseconds ?? 0) {
     const view = this.ambientView;
     const camera = this.viewCamera;
     if (camera) {
@@ -1649,6 +1649,16 @@ export class GeoWorld {
     view.nowMilliseconds = Number.isFinite(nowMilliseconds) ? nowMilliseconds : 0;
     view.cycleIndex = Math.floor(view.nowMilliseconds / 1_000);
     this.lastAmbientScheduleMilliseconds = view.nowMilliseconds;
+    return view;
+  }
+
+  scheduleAmbientLife(nowMilliseconds = this.lastAmbientScheduleMilliseconds ?? 0) {
+    const pools = this.ambientLifePools, scheduler = this.ambientScheduler;
+    if (!pools || !scheduler || this.disposed) return null;
+    const view = this.refreshAmbientView(nowMilliseconds);
+    if ((pools.entries ?? 0) === 0 && (pools.packedRecords?.every(records => records.length === 0) ?? true)) {
+      return null;
+    }
     this.ambientSchedule = pools.scheduleVisibility(scheduler, view);
     return this.ambientSchedule;
   }
@@ -1980,8 +1990,11 @@ export class GeoWorld {
     this.pedestrians.update({
       nowMilliseconds, dtMilliseconds: dt, x: position.x, z: position.z,
     });
+    // The same camera basis the species scheduler reads, refreshed on this pass so
+    // a world with no birds still serves its pedestrians from a current view.
+    const view = this.refreshAmbientView(nowMilliseconds);
     const pack = this.pedestrianPools?.sync(this.pedestrians, {
-      nowMilliseconds, view: this.ambientView,
+      nowMilliseconds, view,
     }) ?? null;
     this.pedestrianPools?.update(nowMilliseconds);
     this.pedestrianSummary = this.pedestrians.summary(this.pedestrianSummaryRecord ??= {});
