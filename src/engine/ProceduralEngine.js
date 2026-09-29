@@ -39,6 +39,9 @@ export function createProceduralSky(scene, { starCount = 120, showMoon = false, 
     uStarOpacity: { value: 0 },
     uMoonOpacity: { value: 0 },
     uCloudCoverage: { value: cloudCoverage ? 1 : 0 },
+    // `ENV-04` owns the cloud tint: the day cycle sets the gradient, the weather
+    // machine tints it (dust, storm, snow all read as different cloud colours).
+    uCloudTint: { value: new THREE.Color(1, 1, 1) },
   };
   const material = new THREE.ShaderMaterial({
     uniforms,
@@ -65,6 +68,7 @@ export function createProceduralSky(scene, { starCount = 120, showMoon = false, 
       uniform float uStarOpacity;
       uniform float uMoonOpacity;
       uniform float uCloudCoverage;
+      uniform vec3 uCloudTint;
       // Deterministic star lattice: a hash on the quantized sky direction makes
       // a static point field without a second draw call.
       float starField(vec3 direction) {
@@ -93,7 +97,8 @@ export function createProceduralSky(scene, { starCount = 120, showMoon = false, 
         float cloudNoise = fract(sin(dot(cloudCell, vec2(41.7, 289.1))) * 43758.5453);
         float cloudBand = smoothstep(0.08, 0.24, direction.y) * (1.0 - smoothstep(0.62, 0.84, direction.y));
         float blockCloud = step(0.62, cloudNoise) * cloudBand * 0.58 * uCloudCoverage;
-        sky = mix(sky, mix(vec3(0.82, 0.86, 0.84), uMiddle, 0.35), blockCloud);
+        vec3 cloudColor = mix(vec3(0.82, 0.86, 0.84), uMiddle, 0.35) * uCloudTint;
+        sky = mix(sky, cloudColor, blockCloud);
         sky += vec3(starField(direction));
         gl_FragColor = vec4(sky, 1.0);
         #include <tonemapping_fragment>

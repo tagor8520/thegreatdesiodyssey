@@ -122,6 +122,11 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   // graph, so its node/edge set, its bounded route search, and the segments the
   // 2D HUD may draw are all declared ceilings on the low profile.
   navLinesPerTile: 260,
+  // `ENV-04`: the weather machine is a bounded writer, a single precipitation
+  // family at a time, and zero steady-frame allocations on every profile.
+  weatherWritesPerUpdate: 12,
+  weatherPrecipitationFamilies: 1,
+  weatherSteadyFrameAllocations: 0,
   // `GME-08`: research §4.7 — one bounded board of affordance-proven objectives.
   activityTemplates: 8,
   activityBoard: 5,
@@ -294,6 +299,9 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'waterVisualWaveScales', budget: 'waterVisualWaveScales', label: 'water wave scales' }),
   Object.freeze({ metric: 'waterVisualUniformWrites', budget: 'waterVisualUniformWritesPerFrame', label: 'water uniform writes/frame' }),
   Object.freeze({ metric: 'waterVisualSteadyFrameAllocations', budget: 'waterVisualSteadyFrameAllocations', label: 'water steady-frame allocations' }),
+  Object.freeze({ metric: 'weatherWritesPerUpdate', budget: 'weatherWritesPerUpdate', label: 'weather writes/update' }),
+  Object.freeze({ metric: 'weatherPrecipitationFamilies', budget: 'weatherPrecipitationFamilies', label: 'active precipitation families' }),
+  Object.freeze({ metric: 'weatherSteadyFrameAllocations', budget: 'weatherSteadyFrameAllocations', label: 'weather steady-frame allocations' }),
   Object.freeze({ metric: 'activityBoard', budget: 'activityBoard', label: 'emitted local activities' }),
   Object.freeze({ metric: 'activityTargets', budget: 'activityTargets', label: 'activity targets per objective' }),
   Object.freeze({ metric: 'activityChecks', budget: 'activityChecks', label: 'activity affordance checks' }),

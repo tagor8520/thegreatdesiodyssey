@@ -38,6 +38,7 @@ export const GDO_FEATURE_VERSIONS = Object.freeze({
   propGrammar: 1,
   localNavigation: 1,
   localActivities: 1,
+  weatherState: 1,
   actionRegistry: 1,
   plantSilhouetteAudit: 1,
   dynamicProxy: 1,

@@ -30,6 +30,9 @@ import {
   GDO_ACTIVITY_CONTEXT_SOURCES,
   activityDateKey, activityPlaces, activitySeedFor, createLocalActivities,
 } from '../engine/LocalActivities.js';
+import {
+  GDO_WEATHER_IDENTITY_SKY, createWeatherState, sampleWeatherClimate, weatherSeedFor,
+} from '../engine/WeatherState.js';
 
 /** `GME-07`: guidance refresh thresholds, so a steady frame re-uses its record. */
 export const GDO_NAV_GUIDANCE_MOVE = .75;
@@ -71,6 +74,7 @@ import {
 } from './PlantClearance.js';
 import {
   GDO_VEGETATION_MORPHOLOGY_NAMESPACE,
+  GEO_MORPHOLOGY_FIELD_NAMES,
   GEO_MORPHOLOGY_STRIDE,
   decodeMorphologyScale,
 } from './PlantMorphology.js';
@@ -469,6 +473,7 @@ export class GeoWorld {
     reducedMotion = prefersReducedPlantMotion(),
     ledger = null,
     activityDate = null,
+    weatherMonth = null,
   }) {
     this.scene = scene;
     // `FND-08`: one shared domain descriptor, so shared consumers can query this
@@ -593,6 +598,30 @@ export class GeoWorld {
       arrivalRadius: GDO_NAV_ARRIVAL_RADIUS,
     });
     this.activityMergeRadius = GDO_DISCOVERY_PROFILES[profile]?.mergeRadius ?? 4;
+    // `ENV-04`: one deterministic weather machine per world, seeded from the
+    // coordinate and the feature version so the same place always seeds the same
+    // schedule. Its render targets are supplied by the game (`setWeatherTargets`)
+    // and its wind/habitat targets are the world's own landed pools.
+    this.weatherClimate = sampleWeatherClimate({ latitude }, {});
+    this.weather = createWeatherState({
+      profile,
+      seed: weatherSeedFor({
+        worldVersion: GDO_FEATURE_VERSIONS.weatherState, latitude, longitude,
+      }),
+      latitude,
+      month: weatherMonth ?? new Date().getUTCMonth() + 1,
+      targets: {
+        wind: options => this.configurePlantWind(options),
+        habitat: options => { this.weatherHabitat = options; },
+      },
+    });
+    this.weatherTargets = null;
+    this.weatherHabitat = null;
+    this.weatherHabitatResponse = { bird: 1, bee: 1 };
+    this.weatherSkyState = null;
+    this.weatherBaseRecord = null;
+    this.weatherSampleRecord = null;
+    this.weatherView = null;
     this.activitySummary = null;
     this.activityTransitions = [];
     this.nextActivityPassMilliseconds = 0;
@@ -1443,6 +1472,18 @@ export class GeoWorld {
       navMinimapSegments: this.navigationGuidanceRecord?.minimap?.segments ?? 0,
       navSteadyFrameAllocations: this.navigationGuidanceRecord?.steadyFrameAllocations ?? 0,
       navTarget: this.navigationRouteKey,
+      // `ENV-04`: the active weather state and what the profile refused to draw.
+      weatherId: this.weather.state.id,
+      weatherPrecipitation: this.weather.state.activePrecipitation,
+      weatherBlend: this.weather.state.blend,
+      weatherTransitions: this.weather.diagnostics().transitions,
+      weatherUniformWrites: this.weather.diagnostics().uniformWrites,
+      // The three `ENV-04` budget keys, reported under their own names so the
+      // low-profile budget surface reads them straight off the world.
+      weatherWritesPerUpdate: this.weather.diagnostics().writesThisUpdate,
+      weatherPrecipitationFamilies: this.weather.state.activePrecipitation ? 1 : 0,
+      weatherRefusals: this.weather.diagnostics().climateRefusals,
+      weatherSteadyFrameAllocations: this.weather.diagnostics().steadyFrameAllocations,
       // `GME-08`: the activity board, what completed, and what was refused
       // because the resident context could not prove the affordance.
       activityTemplates: this.activities.diagnostics().templates,
@@ -1548,6 +1589,8 @@ export class GeoWorld {
       view.aspect = camera.aspect || 1;
     }
     view.viewportHeight = this.viewportHeight;
+    // `ENV-04`: the weather's habitat response reaches the scheduler's offers.
+    view.habitatResponse = this.weatherHabitatResponse;
     view.nowMilliseconds = Number.isFinite(nowMilliseconds) ? nowMilliseconds : 0;
     view.cycleIndex = Math.floor(view.nowMilliseconds / 1_000);
     this.lastAmbientScheduleMilliseconds = view.nowMilliseconds;
@@ -1741,6 +1784,171 @@ export class GeoWorld {
     };
   }
 
+  /**
+   * `ENV-04`: the climate sample the weather machine is fed. It is assembled from
+   * what the resident world already knows — the focus tile's `VEG-08` environment
+   * summary (temperature, moisture, seasonality, ground height, riparian, canopy,
+   * urban) and the `TER-07` water query at the player — and nothing else. A world
+   * with no environment summary yet falls back to latitude-plus-water, which is
+   * still deterministic and still reports itself as a fallback.
+   */
+  weatherClimateAt(x, z) {
+    const tile = this._waterTileAt(x, z) ?? this.tiles.get(this.lastFocusKey ?? '') ?? this.tiles.values().next().value ?? null;
+    const fields = tile?.environment?.fields ?? null;
+    let sample = null;
+    if (fields) {
+      const at = name => {
+        const index = GEO_MORPHOLOGY_FIELD_NAMES.indexOf(name);
+        return index >= 0 && index < fields.length ? fields[index] / 255 : undefined;
+      };
+      sample = {
+        source: 'environment-summary-v1',
+        temperature: at('temperature'), moisture: at('moisture'), seasonality: at('seasonality'),
+        // `VEG-08`'s normalized `elevation` is 0 at the terrain maximum, so it is
+        // the *lowness* the weather sample cools from.
+        lowness: at('elevation'), riparian: at('riparian'), canopy: at('canopy'),
+        human: at('human'), urban: at('urban'), latitude: this.latitude,
+      };
+    }
+    let wetland = false, inWater = false, waterDistance = Infinity;
+    if (tile?.waterDomain) {
+      const query = queryWaterDomain(tile.waterDomain, x, z, this.weatherWaterQuery ??= {});
+      wetland = Boolean(query.wetland);
+      inWater = Boolean(query.inWater);
+      waterDistance = query.waterDistance;
+    }
+    const environment = sample ?? { latitude: this.latitude, source: 'climate-fallback-v1' };
+    // The reuse slot keeps the pass allocation-free: the same record is refilled
+    // every pass, and the machine blends towards it rather than snapping.
+    this.weatherClimate = sampleWeatherClimate(
+      { ...environment, wetland, inWater, waterDistance }, this.weatherClimate,
+    );
+    return this.weatherClimate;
+  }
+
+  /** The game supplies the sky/light/fog/exposure targets; the world owns the rest. */
+  setWeatherTargets(targets = null) {
+    this.weatherTargets = targets;
+    return targets;
+  }
+
+  /** The `ENV-02` day-cycle view the weather machine moderates. */
+  setWeatherSkyState(state = null) {
+    this.weatherSkyState = state;
+    return state;
+  }
+
+  /**
+   * Re-apply the current weather response after `ENV-02` landed a keyframe on the
+   * same sun/fog/exposure channels. One bounded pass, never a state change.
+   */
+  reapplyWeather() {
+    if (this.disposed || !this.weather) return 0;
+    const writes = this.weather.reapply({
+      skyState: this.weatherSkyState, targets: this.weatherTargets,
+    });
+    if (writes > 0) this.weatherView = this.weather.state;
+    return writes;
+  }
+
+  /**
+   * `ENV-04`: one bounded weather pass. The day cycle stays the authority for the
+   * palette; this scales its output, tints the fog, moves the fog range, and hands
+   * the wind and habitat responses to the landed pools — then reports what the
+   * active profile refused to render.
+   */
+  updateWeather(nowMilliseconds = 0, skyState = null) {
+    if (this.disposed || !this.weather) return null;
+    if (skyState) this.weatherSkyState = skyState;
+    const x = this.lastWeatherPosition?.x ?? 0, z = this.lastWeatherPosition?.z ?? 0;
+    this.weather.setClimate(this.weatherClimateAt(x, z));
+    this.weather.update({
+      nowMilliseconds, skyState: this.weatherSkyState, targets: this.weatherTargets,
+    });
+    // The habitat response reaches the ambient-life scheduler on its next pass.
+    const habitat = this.weatherHabitat;
+    if (habitat) {
+      this.weatherHabitatResponse.bird = habitat.flyers;
+      this.weatherHabitatResponse.bee = habitat.insects;
+    }
+    this.weatherView = this.weather.state;
+    return this.weatherView;
+  }
+
+  /**
+   * One weather record for the audit. Every field is read off the world, and the
+   * two records the audit compares are snapshots rather than live views: the
+   * runtime's sky/climate records are mutated in place, so a recorded reference
+   * would rewrite history and make an honest comparison impossible.
+   */
+  weatherBaseSnapshot(state = this.weatherSkyState ?? GDO_WEATHER_IDENTITY_SKY) {
+    const out = this.weatherBaseRecord ??= {};
+    out.namespace = state.namespace ?? 'gdo:timeOfDaySky:v1';
+    out.phase = state.phase ?? 'unknown';
+    out.fraction = state.fraction ?? 0;
+    out.daylight = state.daylight ?? true;
+    out.sunIntensity = state.sunIntensity;
+    out.hemisphereIntensity = state.hemisphereIntensity;
+    out.exposure = state.exposure;
+    out.nightFactor = state.nightFactor ?? 0;
+    return Object.freeze({ ...out });
+  }
+
+  weatherSample(index = 0) {
+    const diagnostics = this.weather.diagnostics();
+    const view = this.weather.state;
+    const applied = this.weather.moderatedSky(this.weatherSkyState ?? GDO_WEATHER_IDENTITY_SKY);
+    const fog = this.weatherTargets?.scene?.fog ?? null;
+    return {
+      index,
+      run: view.run,
+      id: view.id,
+      from: view.from,
+      to: view.to,
+      blend: view.blend,
+      precipitation: view.precipitation,
+      activePrecipitation: view.activePrecipitation,
+      sunScale: view.sunScale,
+      fillScale: view.fillScale,
+      exposureScale: view.exposureScale,
+      fogNearScale: view.fogNearScale,
+      fogFarScale: view.fogFarScale,
+      cloudiness: view.cloudiness,
+      windStrength: view.wind.strength,
+      gustiness: view.wind.gustiness,
+      wetness: view.surface.wetness,
+      dust: view.surface.dust,
+      snow: view.surface.snow,
+      damp: view.surface.damp,
+      habitatFlyers: view.habitat.flyers,
+      habitatInsects: view.habitat.insects,
+      base: this.weatherBaseSnapshot(),
+      applied: {
+        sunIntensity: applied.sunIntensity,
+        hemisphereIntensity: applied.hemisphereIntensity,
+        exposure: applied.exposure,
+        fog: applied.fog,
+        fogFar: fog?.far ?? null,
+      },
+      writes: diagnostics.uniformWrites,
+      writesThisUpdate: diagnostics.writesThisUpdate,
+      overBudgetUpdates: diagnostics.overBudgetUpdates,
+      deferredWrites: diagnostics.deferredWrites,
+      steadyFrameAllocations: diagnostics.steadyFrameAllocations,
+      climate: {
+        temperature: this.weather.climate.temperature,
+        moisture: this.weather.climate.moisture,
+        aridity: this.weather.climate.aridity,
+      },
+      refusalReasons: diagnostics.refusalReasons,
+      fallback: diagnostics.fallback,
+      writable: Boolean(this.weatherTargets),
+      seed: this.weather.seed,
+      season: this.weather.season,
+      profile: this.weather.profile,
+    };
+  }
+
   /** `GME-06`: restore the journal from the local store, if there is one. */
   /**
    * `DET-10`: the nearest prop trigger within its own declared range, read from
@@ -1815,6 +2023,10 @@ export class GeoWorld {
       });
     }
     this.observeDiscovery(position.x, position.z, nowMilliseconds);
+    // `ENV-04`: the weather pass follows the player, so its climate sample is
+    // the environment the player is standing in.
+    this.lastWeatherPosition = { x: position.x, z: position.z };
+    this.updateWeather(nowMilliseconds, this.weatherSkyState);
     // `GME-08`: the activity board advances on the same throttled cadence, so
     // objectives move with the player without a per-frame rebuild.
     this.updateActivities(position.x, position.z, nowMilliseconds);

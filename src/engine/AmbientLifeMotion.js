@@ -798,6 +798,10 @@ export class AmbientLifePools {
     if (this.disposed || !scheduler?.begin) return null;
     scheduler.begin(view);
     const nowMilliseconds = Number.isFinite(view.nowMilliseconds) ? view.nowMilliseconds : 0;
+    // `ENV-04`: the habitat response reaches the same offer the scheduler reads.
+    // A weather state scales each family's view distance, so a storm genuinely
+    // suppresses flyers instead of merely declaring that it would.
+    const habitat = view.habitatResponse ?? null;
     let offered = 0;
     // Pass one: every resident sprite states its case. The offer order is the
     // packed instance order, so offer index `n` is instance `n` of its family.
@@ -807,10 +811,12 @@ export class AmbientLifePools {
         const record = records[index];
         const cycle = Math.floor(nowMilliseconds / (record.cycleSeconds * 1_000));
         const window = ambientLifeCycleWindow(record, cycle, this._schedulerWindow ??= {});
+        const habitatScale = habitat
+          ? Math.max(0, habitat[GDO_AMBIENT_LIFE_FAMILY_ORDER[familyIndex]] ?? 1) : 1;
         scheduler.evaluate({
           id: record.id, familyIndex, x: record.x, y: record.groundY + record.hover, z: record.z,
           radius: Math.max(record.spriteWidth, record.spriteHeight) * record.scale * .5,
-          viewDistance: record.viewDistance, priority: record.priority,
+          viewDistance: record.viewDistance * habitatScale, priority: record.priority,
           // The shader's own appearance envelope: a source is live between its
           // window start and its live end, and dormant for the rest of the cycle.
           windowLive: nowMilliseconds >= window.start && nowMilliseconds <= window.liveEnd,

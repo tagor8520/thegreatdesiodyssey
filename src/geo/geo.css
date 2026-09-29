@@ -164,6 +164,21 @@
 .geo-activity-title { color: #f2c777; font-weight: 700; }
 .geo-activity-progress { margin-top: 3px; color: #c7d5cf; }
 
+.geo-weather {
+  max-width: 100%;
+  padding: 8px 10px;
+  background: #102725e8;
+  border: 1px solid #8fb7cb80;
+  border-radius: 8px;
+  box-shadow: 0 8px 30px #0005;
+  backdrop-filter: blur(8px);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.geo-weather-title { color: #bcdcf0; font-weight: 700; }
+.geo-weather-detail { margin-top: 3px; color: #c7d5cf; }
+
 .geo-camera-status {
   color: #d8e8e1;
   font-size: 10px;

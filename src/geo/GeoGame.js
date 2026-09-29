@@ -21,6 +21,8 @@ import { createPlantSilhouetteAuditRunner } from '../engine/PlantSilhouetteAudit
 import { createTimeOfDayAuditRunner } from '../engine/TimeOfDayAudit.js';
 import { createActivityAuditRunner } from '../engine/ActivityAudit.js';
 import { activityHudText } from '../engine/LocalActivities.js';
+import { createWeatherAuditRunner } from '../engine/WeatherAudit.js';
+import { weatherHudText } from '../engine/WeatherState.js';
 import { actionCapabilitiesForDomain, createActionRegistry } from '../engine/ActionRegistry.js';
 import { createTouchActionControls, touchActionMarkup } from './GeoActionControls.js';
 import { createContentValidatorExtras } from '../engine/ContentValidatorTool.js';
@@ -66,6 +68,10 @@ function uiMarkup() {
         <div class="geo-activities" aria-live="polite">
           <div class="geo-activity-title">Local activities appear once the map is resident</div>
           <div class="geo-activity-progress"></div>
+        </div>
+        <div class="geo-weather" aria-live="polite">
+          <div class="geo-weather-title">Weather appears once the map is resident</div>
+          <div class="geo-weather-detail"></div>
         </div>
       </div>
         <div class="geo-camera-status">First-person camera · V to switch</div>
@@ -127,6 +133,8 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   const navGuidanceElement = overlay.querySelector('.geo-nav-guidance');
   const activityTitleElement = overlay.querySelector('.geo-activity-title');
   const activityProgressElement = overlay.querySelector('.geo-activity-progress');
+  const weatherTitleElement = overlay.querySelector('.geo-weather-title');
+  const weatherDetailElement = overlay.querySelector('.geo-weather-detail');
   const runtimeElement = overlay.querySelector('.geo-runtime');
   const sourceElement = overlay.querySelector('.geo-source');
   const loadingElement = overlay.querySelector('.geo-loading');
@@ -225,6 +233,20 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       canvas.tabIndex = 0; canvas.focus({ preventScroll: true });
     },
   });
+  // `ENV-04`: the world's weather machine weathers the `ENV-02` day cycle rather
+  // than replacing it — same rig, same fog, same renderer — plus the sky dome's
+  // cloud uniforms and the world's own landed wind and habitat responses.
+  const weatherTargets = {
+    rig: lightRig,
+    renderer,
+    scene,
+    sky: engine.sky ?? null,
+    wind: options => world.configurePlantWind(options),
+    habitat: options => { world.weatherHabitat = options; },
+    fogNear: 78,
+    fogFar: 175,
+  };
+  world.setWeatherTargets(weatherTargets);
   const updateCameraUI = mode => {
     const firstPerson = mode === 'first-person';
     cameraStatusElement.textContent = `${firstPerson ? 'First' : 'Third'}-person camera · V to switch`;
@@ -487,6 +509,21 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     return summary;
   };
 
+  // `ENV-04`: the HUD line for the current weather. Every number it shows is read
+  // off the machine the renderer is using, so the line cannot drift from the sky.
+  let drawnWeatherText = null;
+  const updateWeatherHud = () => {
+    if (!weatherTitleElement || !world.weather) return null;
+    const text = weatherHudText(world.weather.state);
+    if (text.text === drawnWeatherText) return text;
+    drawnWeatherText = text.text;
+    weatherTitleElement.textContent = `${text.text} · run ${world.weather.state.run}`;
+    const surface = world.weather.state.surface;
+    weatherDetailElement.textContent =
+      `wind ${world.weather.state.wind.strength.toFixed(2)} · ${surface.wetness >= .5 ? 'wet ground' : surface.dust >= .5 ? 'dust' : surface.snow >= .5 ? 'snow' : 'dry ground'}`;
+    return text;
+  };
+
   const joystick = new FlexibleJoystick(
     joystickZone,
     joystickBase,
@@ -557,14 +594,20 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     // `ENV-02`: the world clock advances with real time, and the bounded writer
     // only touches the sky/light/fog/exposure when a value actually changed.
     timeOfDay.advance(frameGap);
-    timeOfDay.update(now);
+    const dayWrote = timeOfDay.update(now);
+    world.setWeatherSkyState(timeOfDay.state);
     player.update(dt);
     world.update(player.position, camera, renderer.domElement.height, now);
+    // `ENV-04`: the day cycle and the weather machine write the same sun, fog, and
+    // exposure channels. When `ENV-02` lands a keyframe it overwrites the weather's
+    // scale, so one bounded re-apply puts the moderated numbers back.
+    if (dayWrote) world.reapplyWeather();
     debugOverlay?.update(world, player.position, renderer, now);
     renderer.render(scene, camera);
     updateMapLabels(now);
     updateNavigation();
     updateActivities();
+    updateWeatherHud();
     sampleCpuMilliseconds += performance.now() - cpuStart;
     worstFrameGap = Math.max(worstFrameGap, frameGap);
     sampleFrames++;
@@ -852,6 +895,72 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     });
     return report;
   };
+  // `ENV-04`: the scripted weather audit. It compresses a session — jumping to
+  // just past each run boundary and then stepping over the blend — and samples the
+  // world's own weather record, so "deterministic transitions, environment
+  // response, low-profile fallback" is proven without a browser session.
+  const weatherAuditClock = { value: 0 };
+  // A sample slot for the audit: the day cycle's own sampler writes into it, so a
+  // scripted run never mutates (or inherits) the runtime's live state record.
+  const weatherAuditSky = {
+    horizon: [0, 0, 0], middle: [0, 0, 0], zenith: [0, 0, 0], fog: [0, 0, 0],
+    sun: [0, 0, 0], hemisphere: [0, 0, 0], ground: [0, 0, 0],
+    sunDirection: [0, 1, 0], moonDirection: [0, -1, 0],
+  };
+  const weatherAudit = createWeatherAuditRunner({
+    label: 'coordinate-weather',
+    reset: () => {
+      weatherAuditClock.value = 0;
+      world.weather?.reset();
+      timeOfDay.setClock(0);
+      world.setWeatherSkyState(timeOfDay.sampleNow(weatherAuditSky));
+    },
+    step: ({ dt }) => {
+      const boundary = world.weather.nextRunBoundary(weatherAuditClock.value);
+      const cross = world.weather.limits.runMilliseconds * .5;
+      weatherAuditClock.value = weatherAuditClock.value + cross >= boundary
+        ? boundary + world.weather.limits.blendMilliseconds * .25
+        : weatherAuditClock.value + cross;
+      // The day cycle advances on the same scripted clock, so the machine is
+      // moderating a real `ENV-02` keyframe rather than a frozen noon. `sampleNow`
+      // is the day cycle's own sampler: it answers for that instant without
+      // depending on the runtime's write cadence, so a second pass replays the
+      // first one exactly.
+      timeOfDay.setClock(weatherAuditClock.value);
+      world.setWeatherSkyState(timeOfDay.sampleNow(weatherAuditSky));
+      player.update(dt);
+      world.update(player.position, camera, renderer.domElement.height, weatherAuditClock.value);
+      updateWeatherHud();
+    },
+    sample: index => {
+      const record = world.weatherSample(index);
+      const text = weatherHudText(world.weather.state);
+      return {
+        ...record,
+        // The HUD half of the gate: the DOM line is the copy the machine's own
+        // state renders, so what the player reads is what the audit measured.
+        hudTitle: weatherTitleElement?.textContent ?? '',
+        hudDetail: weatherDetailElement?.textContent ?? '',
+        hudTracksCurrent: (weatherTitleElement?.textContent ?? '').startsWith(text.text),
+      };
+    },
+    expect: {
+      requiredFallbacks: world.weather?.policy.cloudCoverage === false ? ['cloudCoverage'] : [],
+      minStates: 3,
+      maxWritesPerUpdate: world.weather?.limits.maxWritesPerUpdate ?? 12,
+      fogFar: 175,
+    },
+  });
+  const runWeatherAudit = options => {
+    const report = weatherAudit.run(options);
+    world.weatherAuditSummary = weatherAudit.summary();
+    logger.info('audit', 'weather audit complete', {
+      ok: report.ok, samples: report.samples, fingerprint: report.fingerprint,
+      states: report.states, transitions: report.transitions,
+      failed: report.verdicts.filter(verdict => !verdict.ok).map(verdict => verdict.id),
+    });
+    return report;
+  };
   const debugSurface = installDebugHooks(window, {
     enabled: debugHooks,
     ledger: lifecycle,
@@ -906,6 +1015,16 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
         discoveryStorage: world.discoveryStorage?.diagnostics?.() ?? null,
         // `GME-08`: the day's objectives, what they were grounded in, and what
         // was refused because the resident context could not prove the affordance.
+        // `ENV-04`: the live weather state, its climate, and what the profile
+        // refused to render this frame.
+        weather: world.weather ? {
+          ...world.weather.describe(),
+          diagnostics: world.weather.diagnostics(),
+          limits: world.weather.limits,
+          fallback: world.weather.fallback,
+        } : null,
+        weatherState: world.weather ? { ...world.weather.state } : null,
+        weatherAudit: weatherAudit.summary(),
         activities: world.activitySummary ? { ...world.activitySummary } : null,
         activitiesDiagnostics: world.activities ? { ...world.activities.diagnostics() } : null,
         activityRefusals: world.activities?.refusals ?? null,
@@ -923,6 +1042,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       silhouette: options => runSilhouetteAudit(options),
       timeOfDay: options => runTimeOfDayAudit(options),
       activities: options => runActivityAudit(options),
+      weather: options => runWeatherAudit(options),
     },
     extras: {
       world, player, camera, renderer,
@@ -938,9 +1058,14 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       // `GME-08`: run the activity audit from the console and read its verdicts.
       runActivityAudit: options => runActivityAudit(options),
       activityAuditSummary: () => world.activityAuditSummary ?? null,
+      // `ENV-04`: run the weather audit from the console, and drive the machine
+      // directly for a side-by-side look at the sky.
+      runWeatherAudit: options => runWeatherAudit(options),
+      weatherAuditSummary: () => world.weatherAuditSummary ?? null,
+      weather: world.weather,
     },
   });
-  if (debugHooks) logger.info('debug', 'hook installed', { key: '__gdo', audits: ['movement', 'silhouette', 'timeOfDay', 'activities'] });
+  if (debugHooks) logger.info('debug', 'hook installed', { key: '__gdo', audits: ['movement', 'silhouette', 'timeOfDay', 'activities', 'weather'] });
 
   return {
     scene, camera, renderer, world, player,
@@ -948,6 +1073,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     logger,
     debugHooks: debugSurface,
     runMovementAudit,
+    runWeatherAudit,
     get debugOverlay() { return debugOverlay; },
     dispose() {
       if (disposed) return; disposed = true;

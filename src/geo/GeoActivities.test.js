@@ -165,8 +165,13 @@ test('GME-08 objectives advance from the player position and the discovery journ
     drive(world, position, 300);
     const current = world.activities.current();
     assert.ok(current, 'the board has a current objective');
-    const target = world.activities.board.flatMap(entry => entry.targets)[0];
-    assert.ok(target, 'the board names at least one target');
+    // The board is date-seeded, so the first entry is not always the active one —
+    // and `return-home` legitimately targets the origin the player already stands
+    // on. Walk to the active objective's own mapped target instead, so the
+    // odometer assertion measures the same thing whatever day the suite runs.
+    const active = world.activities.board.find(entry => entry.id === current.id);
+    const target = active?.targets.find(entry => entry.kind !== 'origin') ?? active?.targets[0];
+    assert.ok(target, 'the current objective names at least one target');
     // Walk onto the target over a few frames, the way the HUD walk does.
     let clock = 600;
     for (let index = 0; index < 12; index++) {
