@@ -19,7 +19,7 @@ import { createLabelLosTester } from './GeoLabelLos.js';
 import { createMapLabelLayer } from './GeoMapLabels.js';
 import { createPlantSilhouetteAuditRunner } from '../engine/PlantSilhouetteAudit.js';
 import { createTimeOfDayAuditRunner } from '../engine/TimeOfDayAudit.js';
-import { createActivityAuditRunner } from '../engine/ActivityAudit.js';
+import { activityAuditWalk, createActivityAuditRunner } from '../engine/ActivityAudit.js';
 import { activityHudText } from '../engine/LocalActivities.js';
 import { createWeatherAuditRunner } from '../engine/WeatherAudit.js';
 import { weatherHudText } from '../engine/WeatherState.js';
@@ -530,8 +530,12 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     drawnWeatherText = text.text;
     weatherTitleElement.textContent = `${text.text} · run ${world.weather.state.run}`;
     const surface = world.weather.state.surface;
+    // `ENV-05`: the same line reports the bounded effect family the weather is
+    // drawing, so a player reads the particles and their cost together.
+    const effects = world.weatherEffects?.diagnostics ?? null;
+    const effectNote = effects?.family ? `${effects.particles} ${effects.family} · 1 draw` : 'no particles';
     weatherDetailElement.textContent =
-      `wind ${world.weather.state.wind.strength.toFixed(2)} · ${surface.wetness >= .5 ? 'wet ground' : surface.dust >= .5 ? 'dust' : surface.snow >= .5 ? 'snow' : 'dry ground'}`;
+      `wind ${world.weather.state.wind.strength.toFixed(2)} · ${surface.wetness >= .5 ? 'wet ground' : surface.dust >= .5 ? 'dust' : surface.snow >= .5 ? 'snow' : 'dry ground'} · ${effectNote}`;
     return text;
   };
 
@@ -880,19 +884,16 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     },
     step: ({ index, dt }) => {
       activityAuditClock.value += dt * 1000;
-      const target = world.activities?.current()?.targets?.[0] ?? null;
-      if (target && Number.isFinite(target.x)) {
-        const dx = target.x - player.position.x;
-        const dz = target.z - player.position.z;
-        const distance = Math.hypot(dx, dz);
-        // A scripted walk compresses the journey: it still approaches the target
-        // along the real line, but fast enough for a bounded audit.
-        const stride = Math.min(distance, Math.max(20 * dt, distance / 12));
-        if (distance > 1e-6) player.setPosition(
-          player.position.x + dx / distance * stride,
-          player.position.z + dz / distance * stride,
-        );
-      }
+      // One shared planner: it approaches a named target, and gives a
+      // self-referential objective (which names none) its own bounded leg, so the
+      // scripted walk advances on every date-seeded board.
+      const next = activityAuditWalk({
+        x: player.position.x, z: player.position.z,
+        objective: world.activities?.current() ?? null,
+        targets: world.activities?.currentTargets?.() ?? [],
+        index, dt,
+      });
+      if (next.x !== player.position.x || next.z !== player.position.z) player.setPosition(next.x, next.z);
       player.update(dt);
       world.update(player.position, camera, renderer.domElement.height, activityAuditClock.value);
       updateMapLabels(activityAuditClock.value);

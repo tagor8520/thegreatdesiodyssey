@@ -52,6 +52,8 @@ export const GDO_ACTIVITY_CONTEXT_SOURCES = Object.freeze({
 });
 
 /** Per-profile ceilings: how many objectives a board may hold and test. */
+const EMPTY_TARGETS = Object.freeze([]);
+
 export const GDO_ACTIVITY_LIMITS = Object.freeze({
   low: Object.freeze({ board: 3, targets: 3, checks: 24, placeTargets: 2 }),
   balanced: Object.freeze({ board: 4, targets: 4, checks: 36, placeTargets: 3 }),
@@ -486,6 +488,17 @@ export function createLocalActivities({
       currentRecord.targets = entry?.targets.length ?? 0;
       currentRecord.state = entry?.state ?? GDO_ACTIVITY_STATE.ACTIVE;
       return entry ? currentRecord : null;
+    },
+    /**
+     * The current objective's own target records. `current().targets` is the
+     * *count* the HUD reads, so a scripted walk needs this accessor to reach the
+     * real array — a self-referential objective returns an empty list, which is
+     * exactly what "it names no target" means.
+     */
+    currentTargets() {
+      const entry = records.find(record => record.state === GDO_ACTIVITY_STATE.ACTIVE)
+        ?? records[records.length - 1] ?? null;
+      return entry?.targets ?? EMPTY_TARGETS;
     },
     summary() {
       const current = api.current();

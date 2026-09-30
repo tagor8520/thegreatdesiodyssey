@@ -170,6 +170,68 @@ export function runActivityAudit({
   return Object.freeze(report);
 }
 
+/**
+ * The one scripted walk both hosts drive.
+ *
+ * The board is date-seeded, so the current objective can be a *self-referential*
+ * one — `walk-distance` proves itself from the walk itself and legitimately names
+ * no target. A script that only ever walks toward `targets[0]` therefore stands
+ * still on such a day, and the `progress`/`completion` verdicts fail for a reason
+ * that has nothing to do with the world. This planner gives a targetless
+ * objective a deterministic virtual leg instead: it walks the distance the
+ * objective still needs, along a slowly curving heading, so every day's board is
+ * walked the same way.
+ */
+export const GDO_ACTIVITY_AUDIT_SCRIPT = Object.freeze({
+  steps: 36,
+  repeat: 2,
+  dt: 1 / 30,
+  // A scripted walk compresses the journey: it still approaches the target along
+  // the real line, but closes a bounded fraction of the gap per step.
+  approachFraction: 12,
+  minimumStrideMetres: 20,
+  // The targetless leg: a fixed heading, curved a little per step, bounded by the
+  // longest objective the templates can declare plus margin.
+  virtualHeadingRadians: .9,
+  virtualCurvePerStep: .05,
+  maximumLegMetres: 900,
+});
+
+/**
+ * The next scripted position for one audit step. `objective` is the live current
+ * record (`targets`, `required`, `progress`). Returns the position plus which plan
+ * was used, so a report can name it rather than guess.
+ */
+export function activityAuditWalk({
+  x = 0, z = 0, objective = null, targets = null, index = 0, dt = GDO_ACTIVITY_AUDIT_SCRIPT.dt,
+  script = GDO_ACTIVITY_AUDIT_SCRIPT,
+} = {}) {
+  const list = Array.isArray(targets) ? targets : (Array.isArray(objective?.targets) ? objective.targets : []);
+  const target = list.find(entry => Number.isFinite(entry?.x) && Number.isFinite(entry?.z)) ?? null;
+  if (target) {
+    const dx = target.x - x, dz = target.z - z;
+    const distance = Math.hypot(dx, dz);
+    if (distance <= 1e-6) return { x, z, plan: 'arrived', legMetres: 0 };
+    const stride = Math.min(distance, Math.max(script.minimumStrideMetres * dt, distance / script.approachFraction));
+    return { x: x + dx / distance * stride, z: z + dz / distance * stride, plan: 'target', legMetres: stride * 10 };
+  }
+  // Self-referential: walk what the objective still needs, in mapped metres.
+  const required = Number.isFinite(objective?.required) ? objective.required : 0;
+  const progress = Number.isFinite(objective?.progress) ? objective.progress : 0;
+  const remainingMetres = Math.max(0, Math.min(script.maximumLegMetres, required - progress));
+  if (remainingMetres <= 0) return { x, z, plan: 'complete', legMetres: 0 };
+  const strideUnits = Math.min(remainingMetres / 10, Math.max(
+    script.minimumStrideMetres * dt, remainingMetres / 10 / script.approachFraction,
+  ));
+  const heading = script.virtualHeadingRadians + index * script.virtualCurvePerStep;
+  return {
+    x: x + Math.cos(heading) * strideUnits,
+    z: z + Math.sin(heading) * strideUnits,
+    plan: 'self-referential',
+    legMetres: strideUnits * 10,
+  };
+}
+
 export function createActivityAuditRunner(options = {}) {
   let last = null;
   return {

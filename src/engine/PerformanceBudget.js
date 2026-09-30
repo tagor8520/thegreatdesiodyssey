@@ -127,6 +127,15 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   weatherWritesPerUpdate: 12,
   weatherPrecipitationFamilies: 1,
   weatherSteadyFrameAllocations: 0,
+  // `ENV-05`: research §9.4/§14 — the visible weather particles are camera-local,
+  // one draw for the one active family, never blended (alpha-test/dither), and a
+  // bounded share of the screen. §14's low ceiling is 80 visible particles.
+  weatherParticles: 80,
+  weatherParticleDrawsPerFamily: 1,
+  weatherEffectOverdrawLayers: 1,
+  weatherEffectCoveragePercent: 14,
+  weatherEffectUniformWritesPerFrame: 5,
+  weatherEffectSteadyFrameAllocations: 0,
   // `LIF-04`: research §7 — 16 dynamic pedestrians on the low profile, no dense
   // global simulation, and zero steady-frame allocations.
   pedestrianAgents: 16,
@@ -205,6 +214,19 @@ export const GDO_SURFACE_DETAIL_CAPS = Object.freeze({
  * shipped low-profile budget — `validateWaterVisualClasses` proves the two agree,
  * so a path cannot quietly widen behind the budget assertion's back.
  */
+/**
+ * `ENV-05` per-profile weather-effect ceilings, in the shape the validator and
+ * the coverage report both read. Low is the research §14 row: 80 particles, one
+ * draw, one layer.
+ */
+export const GDO_WEATHER_EFFECT_CAPS = Object.freeze({
+  profiles: Object.freeze({
+    low: Object.freeze({ particles: 80, draws: 1, overdrawLayers: 1, coveragePercent: 14, steadyFrameAllocations: 0 }),
+    balanced: Object.freeze({ particles: 180, draws: 1, overdrawLayers: 2, coveragePercent: 22, steadyFrameAllocations: 0 }),
+    high: Object.freeze({ particles: 350, draws: 1, overdrawLayers: 2, coveragePercent: 28, steadyFrameAllocations: 0 }),
+  }),
+});
+
 export const GDO_WATER_VISUAL_CAPS = Object.freeze({
   waveScalesPerClass: 2,
   profiles: Object.freeze({
@@ -307,6 +329,10 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'weatherWritesPerUpdate', budget: 'weatherWritesPerUpdate', label: 'weather writes/update' }),
   Object.freeze({ metric: 'weatherPrecipitationFamilies', budget: 'weatherPrecipitationFamilies', label: 'active precipitation families' }),
   Object.freeze({ metric: 'weatherSteadyFrameAllocations', budget: 'weatherSteadyFrameAllocations', label: 'weather steady-frame allocations' }),
+  Object.freeze({ metric: 'weatherParticles', budget: 'weatherParticles', label: 'visible weather particles' }),
+  Object.freeze({ metric: 'weatherParticleDraws', budget: 'weatherParticleDrawsPerFamily', label: 'weather particle draws' }),
+  Object.freeze({ metric: 'weatherEffectOverdrawLayers', budget: 'weatherEffectOverdrawLayers', label: 'weather overdraw layers' }),
+  Object.freeze({ metric: 'weatherEffectSteadyFrameAllocations', budget: 'weatherEffectSteadyFrameAllocations', label: 'weather-effect steady-frame allocations' }),
   Object.freeze({ metric: 'pedestrianAgents', budget: 'pedestrianAgents', label: 'live pedestrian agents' }),
   Object.freeze({ metric: 'pedestrianCpuUpdatesPerFrame', budget: 'pedestrianCpuUpdatesPerFrame', label: 'pedestrian CPU updates/frame' }),
   Object.freeze({ metric: 'pedestrianSteadyFrameAllocations', budget: 'pedestrianSteadyFrameAllocations', label: 'pedestrian steady-frame allocations' }),

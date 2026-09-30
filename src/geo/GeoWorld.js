@@ -52,6 +52,9 @@ import {
   createWaterVisualMaterial, createWaterVisualPolicy,
 } from '../engine/WaterVisualClasses.js';
 import {
+  applyWeatherSurface, createWeatherEffects, weatherSurfaceResponse,
+} from '../engine/WeatherEffects.js';
+import {
   applySurfaceDetail, describeSurfaceDetailCatalogue, rolloutSurfaceDetails,
   selectSurfaceDetail, surfaceDetailOf,
 } from '../engine/SurfaceDetailCatalogue.js';
@@ -754,6 +757,20 @@ export class GeoWorld {
     });
     this.lastAmbientFade = null;
     this.lastCameraFadeMilliseconds = 0;
+    // `ENV-05`: the precipitation family `ENV-04` activates is drawn by one
+    // camera-local, opaque, dithered pool, and the same response record drives the
+    // water's wetness, ripple gain, and shore band through weather-owned uniforms.
+    // The pool reads the shared `MAT-02` dither mask the camera fade owns, so the
+    // screen-door rule stays one rule.
+    this.weatherEffects = createWeatherEffects({
+      scene: this.root,
+      ditherUniform: fadeDither ? this.cameraFade.uniforms.dither : null,
+      profile: profile ?? 'low',
+      ledger: this.lifecycle,
+      reducedMotion,
+      seed: this.terrainSeed,
+    });
+    this.weatherSurface = weatherSurfaceResponse(null, {});
     // `LIF-02`: the explicit screen-space/activity scheduler on top of the
     // ambient pools. It reads the same camera the world already renders with.
     this.ambientScheduler = createAmbientLifeScheduler({ profile: 'low', ledger: this.lifecycle });
@@ -1524,6 +1541,11 @@ export class GeoWorld {
       weatherPrecipitationFamilies: this.weather.state.activePrecipitation ? 1 : 0,
       weatherRefusals: this.weather.diagnostics().climateRefusals,
       weatherSteadyFrameAllocations: this.weather.diagnostics().steadyFrameAllocations,
+      weatherParticles: this.weatherEffects?.diagnostics.particles ?? 0,
+      weatherParticleDraws: this.weatherEffects?.diagnostics.draws ?? 0,
+      weatherEffectOverdrawLayers: this.weatherEffects?.diagnostics.overdrawLayers ?? 0,
+      weatherEffectCoverage: this.weatherEffects?.diagnostics.coverage ?? null,
+      weatherEffectSteadyFrameAllocations: this.weatherEffects?.diagnostics.steadyFrameAllocations ?? 0,
       // `LIF-04`: the live local street and the three pedestrian budget keys,
       // reported under their own names so the low-profile budget surface reads them
       // straight off the world rather than off a private counter.
@@ -1595,7 +1617,10 @@ export class GeoWorld {
   setReducedMotion(value) {
     const plants = this.plantRenderPools.setReducedMotion(value);
     const ambience = this.ambientLifePools.setReducedMotion(value);
-    return plants || ambience;
+    // `ENV-05`: one preference change reaches the weather particles too, so the
+    // research's "reduced motion suppresses particles" rule has one owner.
+    const effects = this.weatherEffects?.setReducedMotion(value) ?? false;
+    return plants || ambience || Boolean(effects);
   }
 
   configurePlantWind(options = {}) {
@@ -2114,6 +2139,24 @@ export class GeoWorld {
   }
 
   /**
+   * `ENV-05`: one bounded effects pass over the live `ENV-04` view. The particle
+   * family follows `activePrecipitation`, and the surface/shore response reaches
+   * the `ENV-03` water material's weather-owned uniforms — uniform-only, so the
+   * class palette, the wave scales, and the blend path stay `ENV-03`'s and no
+   * program recompiles.
+   */
+  updateWeatherEffects(nowMilliseconds = 0, camera = this.viewCamera) {
+    if (this.disposed || !this.weatherEffects) return null;
+    const view = this.weatherView ?? this.weather?.state ?? null;
+    this.weatherEffects.sync({ view, camera, nowMilliseconds });
+    if (view) {
+      weatherSurfaceResponse(view, this.weatherSurface);
+      applyWeatherSurface(this.waterVisual, this.weatherSurface);
+    }
+    return this.weatherEffects.diagnostics;
+  }
+
+  /**
    * One weather record for the audit. Every field is read off the world, and the
    * two records the audit compares are snapshots rather than live views: the
    * runtime's sky/climate records are mutated in place, so a recorded reference
@@ -2241,6 +2284,8 @@ export class GeoWorld {
     this._blendEnvironmentGround(nowMilliseconds);
     const time = nowMilliseconds * .001;
     this.waterVisual.beginFrame(time);
+    // `ENV-05`: the effects read the weather this frame already advanced.
+    this.updateWeatherEffects(nowMilliseconds, this.viewCamera);
     this.ambientLifePools.update(nowMilliseconds);
     this.scheduleAmbientLife(nowMilliseconds);
     // `LAY-06`: the fade decision runs on the same camera and avatar the frame

@@ -334,6 +334,12 @@ const WATER_FRAGMENT_SHADER = `
   uniform float uReflectStrength;
   uniform float uFoamMode;
   uniform float uDitherSize;
+  // ENV-05: the weather owns exactly these three channels. The class palette,
+  // the wave scales, and the blend path stay ENV-03's, so a rain state moves
+  // the water without touching a define, a palette, or a program key.
+  uniform float uWeatherWetness;
+  uniform float uWeatherRipple;
+  uniform float uShoreWet;
   varying vec3 vWorldPosition;
   varying vec3 vColor;
   varying vec3 vWaterShallow;
@@ -354,6 +360,9 @@ const WATER_FRAGMENT_SHADER = `
     vec2 normalUv = broadUv + vec2(-uTime * 0.004, uTime * 0.003);
     vec3 waterNormal = texture2D(uWaterNormal, normalUv).xyz * 2.0 - 1.0;
     float fine = texture2D(uSurfaceNoise, fineUv).r - 0.5;
+    // ENV-05: rain raises the ripple amplitude (research 10.6) instead of
+    // adding a second particle family; snow and dust lower it.
+    float weatherRipple = mix(1.0, uWeatherRipple, normalVisibility);
     waterNormal = normalize(vec3(
       waterNormal.xy * normalVisibility * vWaterManner.x,
       max(0.2, waterNormal.z)));
@@ -366,12 +375,16 @@ const WATER_FRAGMENT_SHADER = `
     float depth = clamp(0.35 + (macro - 0.5) * 0.9, 0.0, 1.0);
     vec3 body = mix(vWaterDeep, vWaterShallow, depth);
     body = mix(body, mix(body, vColor, 0.35), 0.25);
+    // A wet surface reads darker than a dry one, and the wet band along the bank
+    // widens with rain: both are uniform-only responses.
+    body *= (1.0 - 0.22 * uWeatherWetness * (0.45 + 0.55 * depth));
+    body = mix(body, body * 0.92, clamp(uShoreWet, 0.0, 1.0) * 0.5);
     vec3 color = mix(body * mix(0.90, 1.06, macro), vec3(0.42, 0.73, 0.82) * mix(0.8, 1.2, uReflectStrength),
       fresnel * uReflectStrength);
-    color += fine * 0.035 * vWaterManner.x;
+    color += fine * 0.035 * vWaterManner.x * weatherRipple;
     // Foam is a class property, and a dithered one on the opaque paths: a
     // fragment is either painted or dropped, never stacked.
-    float foam = vWaterManner.z * (0.55 + 0.45 * fine * 2.0) * uWaveStrength.x;
+    float foam = vWaterManner.z * (0.55 + 0.45 * fine * 2.0) * uWaveStrength.x * (1.0 + uShoreWet * 1.6);
     if (foam > 0.001) {
       float dither = texture2D(uFoamDither, gl_FragCoord.xy / uDitherSize).r;
       if (uFoamMode < 0.5) {
@@ -418,6 +431,9 @@ export function createWaterVisualMaterial({ library, profile = 'low', dither = t
       uWaterAlpha: { value: declared.alpha },
       uReflectStrength: { value: declared.reflectStrength },
       uFoamMode: { value: declared.foamMode === 'blended' ? 1 : 0 },
+      uWeatherWetness: { value: 0 },
+      uWeatherRipple: { value: 1 },
+      uShoreWet: { value: 0 },
       uDitherSize: { value: GDO_LOW_PROFILE_BUDGETS.waterVisualDitherSize },
       fogColor: { value: new THREE.Color() },
       fogNear: { value: 1 },
@@ -451,6 +467,9 @@ export function createWaterVisualPolicy({ material, library = null, profile = 'l
   const state = {
     profile, writes: 0, frames: 0, profileChanges: 0, allocations: 0,
     coverage: null, lastFrameWrites: 0,
+    // `ENV-05` bookkeeping: the weather's own bounded channel writes, kept apart
+    // from the per-frame clock write so each owner's budget stays measurable.
+    weatherWrites: 0, weatherFrames: 0, weatherResponse: null, weatherRefusals: [],
   };
   const record = () => {
     const declared = GDO_WATER_VISUAL_PROFILES[state.profile];
@@ -497,6 +516,43 @@ export function createWaterVisualPolicy({ material, library = null, profile = 'l
     },
     /** Bind the class table to a vertex of one class; the CPU bake entry point. */
     appearanceForClass: waterVisualVertexAppearance,
+    /**
+     * `ENV-05`: apply the weather/shore response. This is the only weather entry
+     * point, and it writes three uniforms the class table never owns, so the
+     * program key, the palette, and the wave scales are all untouched.
+     */
+    applyWeather(response) {
+      if (!response) return null;
+      state.weatherWrites += 0;
+      let writes = 0;
+      const writeWeather = (name, value) => { material.uniforms[name].value = value; writes++; state.writes++; };
+      writeWeather('uWeatherWetness', Math.max(0, Math.min(1, response.wetness ?? 0)));
+      writeWeather('uWeatherRipple', Math.max(.05, response.rippleGain ?? 1));
+      // The shore band is a distance in metres; the water shader reads its
+      // normalized strength so the two scales cannot drift apart.
+      writeWeather('uShoreWet', Math.max(0, Math.min(1, (response.shoreWetMetres ?? 0) / 4)));
+      state.weatherWrites += writes;
+      state.weatherFrames++;
+      state.weatherResponse = Object.freeze({
+        family: response.family ?? null,
+        wetness: material.uniforms.uWeatherWetness.value,
+        rippleGain: material.uniforms.uWeatherRipple.value,
+        shoreWet: material.uniforms.uShoreWet.value,
+        ripples: Boolean(response.ripples),
+        writes,
+      });
+      return state.weatherResponse;
+    },
+    /** What the weather asked for and could not have, named rather than dropped. */
+    weatherFallbacks(out = []) {
+      out.length = 0;
+      if (!material.uniforms.uWeatherWetness) out.push(Object.freeze({ response: 'wetness', reason: 'target-unsupported' }));
+      if (state.profile === 'low' && (state.weatherResponse?.shoreWet ?? 0) > 0) {
+        out.push(Object.freeze({ response: 'shore-band', reason: 'profile-dither-only' }));
+      }
+      state.weatherRefusals = out.slice();
+      return out;
+    },
     /** Record the measured coverage of a frame for the bounded-path verdict. */
     recordCoverage(measured) {
       state.coverage = waterCoverageReport({ profile: state.profile, ...measured });
@@ -514,6 +570,9 @@ export function createWaterVisualPolicy({ material, library = null, profile = 'l
         steadyFrameWrites: state.lastFrameWrites,
         steadyFrameAllocations: state.allocations,
         profileChanges: state.profileChanges,
+        weatherWrites: state.weatherWrites,
+        weatherFrames: state.weatherFrames,
+        weatherResponse: state.weatherResponse,
         frames: state.frames,
         coverage: state.coverage,
       });

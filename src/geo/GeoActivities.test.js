@@ -10,7 +10,7 @@ import {
   GDO_ACTIVITY_CONTEXT_SOURCES, GDO_ACTIVITY_LIMITS, GDO_ACTIVITY_REFUSAL,
   GDO_ACTIVITY_TEMPLATES, activityDateKey, activityHudText, activitySeedFor,
 } from '../engine/LocalActivities.js';
-import { createActivityAuditRunner } from '../engine/ActivityAudit.js';
+import { activityAuditWalk, createActivityAuditRunner } from '../engine/ActivityAudit.js';
 
 /**
  * `GME-08` gate, live: the coordinate world mounts a real fixture, grounds its
@@ -141,20 +141,35 @@ test('GME-08 the same coordinate and day reproduce the board, a different day do
   assert.deepEqual(boards[0].ids, boards[1].ids, 'the same day at the same coordinate repeats the board');
   assert.equal(boards[0].describe, boards[1].describe, 'titles, proofs, and targets repeat too');
 
-  const { world, scene, ledger } = mount('dense-urban', { activityDate: '2026-09-30' });
-  try {
-    drive(world, new THREE.Vector3(0, 1.7, 0), 0);
-    drive(world, new THREE.Vector3(0, 1.7, 0), 300);
-    assert.equal(world.activities.seed, activitySeedFor({
-      worldVersion: GDO_FEATURE_VERSIONS.localActivities,
-      latitude: 28.9845, longitude: 77.7064, dateKey: '2026-09-30',
-    }));
-    assert.notEqual(world.activities.seed, boards[0].seed, 'another day seeds another board');
-  } finally {
-    world.dispose();
-    ledger.disposeAll();
-    scene.clear();
+  // Another day is another board. Both sides of the comparison are *explicit*
+  // dates: comparing a fixed date against the live "today" made this check pass
+  // or fail by calendar — on the day the hardcoded date really is today, the
+  // world under test and the fixture agree and the assertion is vacuous.
+  const days = [];
+  for (const activityDate of ['2026-09-30', '2026-01-15']) {
+    const { world, scene, ledger } = mount('dense-urban', { activityDate });
+    try {
+      drive(world, new THREE.Vector3(0, 1.7, 0), 0);
+      drive(world, new THREE.Vector3(0, 1.7, 0), 300);
+      days.push({
+        seed: world.activities.seed,
+        expected: activitySeedFor({
+          worldVersion: GDO_FEATURE_VERSIONS.localActivities,
+          latitude: 28.9845, longitude: 77.7064, dateKey: activityDate,
+        }),
+        ids: world.activities.board.map(entry => entry.id),
+      });
+    } finally {
+      world.dispose();
+      ledger.disposeAll();
+      scene.clear();
+    }
   }
+  assert.equal(days[0].seed, days[0].expected, 'the declared date seeds the declared board');
+  assert.notEqual(days[0].seed, days[1].seed, 'another day seeds another board');
+  // The default world is seeded from the live UTC day, which the earlier test
+  // already proved; here it only has to differ from an explicit other day.
+  assert.notEqual(days[0].seed, days[1].seed);
 });
 
 test('GME-08 objectives advance from the player position and the discovery journal', () => {
@@ -170,16 +185,22 @@ test('GME-08 objectives advance from the player position and the discovery journ
     // on. Walk to the active objective's own mapped target instead, so the
     // odometer assertion measures the same thing whatever day the suite runs.
     const active = world.activities.board.find(entry => entry.id === current.id);
-    const target = active?.targets.find(entry => entry.kind !== 'origin') ?? active?.targets[0];
-    assert.ok(target, 'the current objective names at least one target');
-    // Walk onto the target over a few frames, the way the HUD walk does.
+    const target = active?.targets.find(entry => entry.kind !== 'origin') ?? active?.targets[0] ?? null;
+    assert.deepEqual(world.activities.currentTargets(), active?.targets ?? [], 'the accessor serves the live targets');
+    // A context-requiring objective must name a target the context carries; a
+    // self-referential one (`walk-distance`) declares its own goal and names none,
+    // which is why this assertion is conditional rather than universal.
+    if (GDO_ACTIVITY_CONTEXT_SOURCES[current.template]) {
+      assert.ok(target, `the context-grounded objective ${current.template} names at least one target`);
+    }
+    // Walk the objective the way the shared planner walks it, over a few frames.
     let clock = 600;
     for (let index = 0; index < 12; index++) {
-      position.set(
-        position.x + (target.x - position.x) * .4,
-        position.y,
-        position.z + (target.z - position.z) * .4,
-      );
+      const next = activityAuditWalk({
+        x: position.x, z: position.z, objective: current,
+        targets: world.activities.currentTargets(), index, dt: 1 / 30,
+      });
+      position.set(next.x, position.y, next.z);
       clock += 300;
       world.update(position, null, 720, clock);
     }
@@ -218,18 +239,17 @@ test('GME-08 the scripted activity audit passes against the live world', () => {
         world.activities.reset();
         position.set(0, 1.7, 0);
       },
-      step: ({ dt }) => {
+      step: ({ index, dt }) => {
         clock += dt * 1000;
-        const target = world.activities.current()?.targets?.[0] ?? null;
-        if (target) {
-          const dx = target.x - position.x;
-          const dz = target.z - position.z;
-          const distance = Math.hypot(dx, dz);
-          if (distance > 1e-6) {
-            const stride = Math.min(distance, Math.max(20 * dt, distance / 12));
-            position.set(position.x + dx / distance * stride, 1.7, position.z + dz / distance * stride);
-          }
-        }
+        // The engine's own planner, so the test drives the scripted walk the live
+        // host drives — including the leg a self-referential objective needs.
+        const next = activityAuditWalk({
+          x: position.x, z: position.z,
+          objective: world.activities.current(),
+          targets: world.activities.currentTargets(),
+          index, dt,
+        });
+        position.set(next.x, 1.7, next.z);
         world.update(position, camera, 720, clock);
       },
       sample: index => {
