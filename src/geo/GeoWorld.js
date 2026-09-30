@@ -54,6 +54,7 @@ import {
 import {
   applyWeatherSurface, createWeatherEffects, weatherSurfaceResponse,
 } from '../engine/WeatherEffects.js';
+import { geologyDetailBudget, geologyHudText, measureGeology, validateGeology } from './GeoGeology.js';
 import {
   applySurfaceDetail, describeSurfaceDetailCatalogue, rolloutSurfaceDetails,
   selectSurfaceDetail, surfaceDetailOf,
@@ -666,6 +667,13 @@ export class GeoWorld {
     // of silently overwriting a neighbour. The key is the world's own terrain seed
     // plus the profile, so the same coordinate and quality always roll out the
     // same set.
+    // `TER-06`: the geology is a *field* over the one shared analytic height —
+    // never a second sampler. The tile mesh, the building foundations in the tile
+    // worker, and every support query already call `terrainHeightAt`, so a terrace
+    // the player can see is a terrace the player stands on and a terrace a
+    // building is founded on. This world only classifies and measures it.
+    this.geology = validateGeology();
+    this.geologyMeasurements = new Map();
     this.surfaceDetailRollout = rolloutSurfaceDetails(profile ?? 'low');
     this.surfaceDetailKey = `${this.terrainSeed}:${profile ?? 'low'}`;
     const detailMaterials = new Map([
@@ -1541,6 +1549,14 @@ export class GeoWorld {
       weatherPrecipitationFamilies: this.weather.state.activePrecipitation ? 1 : 0,
       weatherRefusals: this.weather.diagnostics().climateRefusals,
       weatherSteadyFrameAllocations: this.weather.diagnostics().steadyFrameAllocations,
+      geologyProfile: this.profile,
+      geologyTiles: this.geologyDiagnostics?.tiles ?? 0,
+      geologyFlanks: this.geologyDiagnostics?.flanks ?? 0,
+      geologyRisers: this.geologyDiagnostics?.risers ?? 0,
+      geologyCliffs: this.geologyDiagnostics?.cliffs ?? 0,
+      geologyPlateaus: this.geologyDiagnostics?.plateaus ?? 0,
+      geologyBudgetOk: this.geologyDiagnostics?.ok ?? null,
+      geologySteadyFrameAllocations: 0,
       weatherParticles: this.weatherEffects?.diagnostics.particles ?? 0,
       weatherParticleDraws: this.weatherEffects?.diagnostics.draws ?? 0,
       weatherEffectOverdrawLayers: this.weatherEffects?.diagnostics.overdrawLayers ?? 0,
@@ -2286,6 +2302,10 @@ export class GeoWorld {
     this.waterVisual.beginFrame(time);
     // `ENV-05`: the effects read the weather this frame already advanced.
     this.updateWeatherEffects(nowMilliseconds, this.viewCamera);
+    // `TER-06`: judge the resident tiles' geology against the profile's own
+    // detail ceilings. A verdict is measured once per tile and cached, so a
+    // steady frame reads the cache and allocates nothing.
+    this.updateGeologyDiagnostics();
     this.ambientLifePools.update(nowMilliseconds);
     this.scheduleAmbientLife(nowMilliseconds);
     // `LAY-06`: the fade decision runs on the same camera and avatar the frame
@@ -2868,6 +2888,54 @@ export class GeoWorld {
     );
     out.amount = safeAmount;
     return out;
+  }
+
+  /**
+   * `TER-06` per-frame read: the worst resident verdict plus the summed flank,
+   * cliff, and plateau counts. Reading the cache is the whole cost, so a steady
+   * frame re-measures nothing and allocates nothing.
+   */
+  updateGeologyDiagnostics() {
+    let tiles = 0, flanks = 0, cliffs = 0, plateaus = 0, faceUnits = 0, ok = true;
+    for (const tile of this.tiles.values()) {
+      const verdict = this.geologyBudgetFor(tile);
+      if (!verdict) continue;
+      tiles++;
+      flanks += verdict.measured.flanks;
+      cliffs += verdict.measured.cliffs;
+      plateaus += verdict.measured.plateaus;
+      faceUnits = Math.max(faceUnits, verdict.measured.faceUnits);
+      if (!verdict.ok) ok = false;
+    }
+    if (!this.geologyDiagnostics) this.geologyDiagnostics = {};
+    this.geologyDiagnostics.tiles = tiles;
+    this.geologyDiagnostics.flanks = flanks;
+    this.geologyDiagnostics.cliffs = cliffs;
+    this.geologyDiagnostics.plateaus = plateaus;
+    this.geologyDiagnostics.faceUnits = faceUnits;
+    this.geologyDiagnostics.ok = ok;
+    return this.geologyDiagnostics;
+  }
+
+  /**
+   * `TER-06`: the measured geology of one resident tile, judged against the
+   * profile's own ceilings. The verdict is cached per tile key and cleared with
+   * the tile, so a steady frame re-measures nothing.
+   */
+  geologyBudgetFor(tile) {
+    if (!tile?.bounds) return null;
+    const cached = this.geologyMeasurements.get(tile.key);
+    if (cached) return cached;
+    const measurement = measureGeology({ bounds: tile.bounds, seed: this.terrainSeed, profile: this.profile });
+    this.queryDiagnostics.geologyMeasurements = (this.queryDiagnostics.geologyMeasurements ?? 0) + 1;
+    const verdict = geologyDetailBudget(measurement, { profile: this.profile });
+    this.geologyMeasurements.set(tile.key, verdict);
+    return verdict;
+  }
+
+  /** The `TER-06` line the HUD and the debug payload read. */
+  geologyHudText() {
+    return geologyHudText(this.geologyDiagnostics, this.geology);
   }
 
   supportAt(x, z, out = this.supportCandidate, { referenceY = Number.NaN } = {}) {

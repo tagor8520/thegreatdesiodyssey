@@ -462,13 +462,15 @@ test('dense canonical vegetation and furniture uploads preserve collision isolat
     const render = world.plantRenderPools.diagnostics;
     const furniture = world.streetFurniturePools.diagnostics;
     const bridge = world.bridgePools.diagnostics;
-    assert.equal(render.entries, 1_044);
+    // The count is the fixture's own placement pass over the live `TER-06`
+    // geology, so it follows the ground the vegetation is cleared against.
+    assert.equal(render.entries, 1_046);
     assert.equal(render.activeDrawPools, 11);
     assert.equal(render.sourceGeometries, 36);
     assert.equal(render.gpuGeometryBytes, 208_452);
-    assert.equal(render.visibleTriangles, 11_190);
+    assert.equal(render.visibleTriangles, 11_292);
     assert.equal(render.addedDrawCalls, 4);
-    assert.deepEqual(render.byLod, { near: 0, mid: 35, far: 461, beyond: 548 });
+    assert.deepEqual(render.byLod, { near: 0, mid: 36, far: 464, beyond: 546 });
     assert.equal(furniture.entries, compilation.context.streetFurniture.meta.placements);
     assert.equal(furniture.sourceGeometries, 7);
     assert.equal(furniture.activeDrawPools, 3);

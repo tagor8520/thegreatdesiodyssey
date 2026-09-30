@@ -350,7 +350,9 @@ test('building builder preserves mapped X/Z footprint, emits upward roofs, and c
     terrainHeightAt(100, 100, 0) + terrainHeightAt(0, 100, 0)
   ) / 4;
   assert.ok(Math.abs(openMapTiles.collisionSpans[0] - expectedFoundation) < 1e-6);
-  assert.ok(openMapTiles.collisionSpans[1] - openMapTiles.collisionSpans[0] >= 3);
+  // The span is stored as Float32, so the comparison carries the shipped
+  // tolerance rather than demanding an exact decimal.
+  assert.ok(openMapTiles.collisionSpans[1] - openMapTiles.collisionSpans[0] >= 3 - 1e-6);
   assert.ok(openMapTiles.collisionSpans[1] - openMapTiles.collisionSpans[0] <= 3.14);
   assert.deepEqual([...openMapTiles.collisionMasks], [GEO_BUILDING_QUERY_MASK]);
   assert.equal(openMapTiles.supportSlots.length % GEO_SUPPORT_SLOT_STRIDE, 0);

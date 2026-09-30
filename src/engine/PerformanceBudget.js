@@ -127,6 +127,14 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   weatherWritesPerUpdate: 12,
   weatherPrecipitationFamilies: 1,
   weatherSteadyFrameAllocations: 0,
+  // `TER-06`: research §4.1 — terracing is a bounded *field* change: the tile
+  // grid keeps its own resolution and index count, and the only added surface is
+  // the riser a step crossing creates, capped per tile.
+  geologyFlanksPerTile: 96,
+  geologyCliffsPerTile: 8,
+  geologyFaceUnits: .24,
+  geologyAddedTriangles: 0,
+  geologySteadyFrameAllocations: 0,
   // `ENV-05`: research §9.4/§14 — the visible weather particles are camera-local,
   // one draw for the one active family, never blended (alpha-test/dither), and a
   // bounded share of the screen. §14's low ceiling is 80 visible particles.
@@ -214,6 +222,26 @@ export const GDO_SURFACE_DETAIL_CAPS = Object.freeze({
  * shipped low-profile budget — `validateWaterVisualClasses` proves the two agree,
  * so a path cannot quietly widen behind the budget assertion's back.
  */
+/**
+ * `TER-06` per-profile geology ceilings, in the shape the validator and the
+ * per-tile budget both read. Low is the shipped `geologyRisersPerTile` /
+ * `geologyAddedTriangles` row.
+ */
+export const GDO_TERRAIN_GEOLOGY_CAPS = Object.freeze({
+  profiles: Object.freeze({
+    low: Object.freeze({ maximumFlanksPerTile: 96, maximumCliffsPerTile: 8, maximumFaceUnits: .24, maximumAddedTriangles: 0 }),
+    balanced: Object.freeze({ maximumFlanksPerTile: 128, maximumCliffsPerTile: 12, maximumFaceUnits: .24, maximumAddedTriangles: 0 }),
+    high: Object.freeze({ maximumFlanksPerTile: 192, maximumCliffsPerTile: 20, maximumFaceUnits: .24, maximumAddedTriangles: 0 }),
+  }),
+});
+
+/** Budget view of one geology profile, in the validator's own key shape. */
+export function terrainGeologyBudgetForProfile(name) {
+  const profile = GDO_TERRAIN_GEOLOGY_CAPS.profiles[name];
+  if (!profile) throw new RangeError(`Unknown geology profile: ${name}`);
+  return Object.freeze({ profile: name, ...profile });
+}
+
 /**
  * `ENV-05` per-profile weather-effect ceilings, in the shape the validator and
  * the coverage report both read. Low is the research §14 row: 80 particles, one
@@ -329,6 +357,10 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'weatherWritesPerUpdate', budget: 'weatherWritesPerUpdate', label: 'weather writes/update' }),
   Object.freeze({ metric: 'weatherPrecipitationFamilies', budget: 'weatherPrecipitationFamilies', label: 'active precipitation families' }),
   Object.freeze({ metric: 'weatherSteadyFrameAllocations', budget: 'weatherSteadyFrameAllocations', label: 'weather steady-frame allocations' }),
+  Object.freeze({ metric: 'geologyFlanks', budget: 'geologyFlanksPerTile', label: 'geology flank samples/tile' }),
+  Object.freeze({ metric: 'geologyCliffs', budget: 'geologyCliffsPerTile', label: 'geology cliff samples/tile' }),
+  Object.freeze({ metric: 'geologyFaceUnits', budget: 'geologyFaceUnits', label: 'geology drawn face/tile' }),
+  Object.freeze({ metric: 'geologySteadyFrameAllocations', budget: 'geologySteadyFrameAllocations', label: 'geology steady-frame allocations' }),
   Object.freeze({ metric: 'weatherParticles', budget: 'weatherParticles', label: 'visible weather particles' }),
   Object.freeze({ metric: 'weatherParticleDraws', budget: 'weatherParticleDrawsPerFamily', label: 'weather particle draws' }),
   Object.freeze({ metric: 'weatherEffectOverdrawLayers', budget: 'weatherEffectOverdrawLayers', label: 'weather overdraw layers' }),
