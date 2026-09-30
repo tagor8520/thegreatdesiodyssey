@@ -1,10 +1,10 @@
-.odyssey-landing { position:fixed; inset:0; z-index:30; overflow:auto; box-sizing:border-box; padding:clamp(24px,5vw,72px); display:flex; flex-direction:column; color:#fff6e3; font-family:system-ui,sans-serif; background:linear-gradient(90deg,rgba(10,28,27,.96) 0%,rgba(10,28,27,.88) 32%,rgba(10,28,27,.45) 66%,rgba(10,28,27,.15) 100%); }
+.odyssey-landing { position:fixed; inset:0; z-index:30; overflow:auto; box-sizing:border-box; padding:clamp(24px,5vw,72px); display:flex; flex-direction:column; color:#fff6e3; font-family:system-ui,sans-serif; background:linear-gradient(90deg,rgba(10,28,27,.98) 0%,rgba(10,28,27,.9) 32%,rgba(10,28,27,.45) 66%,rgba(10,28,27,.18) 100%),url('/content/images/bg_diorama.jpg') center/cover no-repeat,#0a1c1b; }
 .odyssey-brand { display:flex; align-items:center; gap:12px; font-size:11px; letter-spacing:.19em; font-weight:700; }
 .odyssey-nav { position:absolute; top:clamp(24px,5vw,72px); right:clamp(24px,5vw,72px); display:flex; gap:clamp(16px,2.5vw,36px); }
 .odyssey-nav a,.odyssey-footer a { color:#fff6e3; text-decoration:none; font-size:11px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; border-bottom:1px solid transparent; transition:color .15s,border-color .15s; }
 .odyssey-nav a:hover,.odyssey-footer a:hover { color:#f4b65f; border-color:#f4b65f; }
 .odyssey-emblem { display:grid; place-items:center; width:38px; height:38px; border:1px solid #d7ad6a; border-radius:50%; color:#f0b357; font-size:25px; }
-.odyssey-intro { margin:auto 0; padding:42px 0; max-width:780px; }
+.odyssey-intro { margin:auto 0; padding:42px 0; width:min(1080px,100%); }
 .odyssey-eyebrow { display:flex; align-items:center; gap:12px; color:#d9bc89; font-size:10px; font-weight:700; letter-spacing:.22em; }
 .odyssey-eyebrow span { width:32px; height:2px; background:#e9a74b; }
 .odyssey-intro h1 { margin:22px 0; font-family:Georgia,'Times New Roman',serif; font-size:clamp(48px,7.2vw,108px); line-height:.99; font-weight:500; letter-spacing:-.045em; }
@@ -14,9 +14,27 @@
 .odyssey-start:hover { background:#ffcb82; transform:translateY(-2px); }
 .odyssey-start:active { transform:translateY(3px); box-shadow:0 3px 0 #965d24; }
 .odyssey-start:focus-visible { outline:3px solid white; outline-offset:6px; }
+.odyssey-start:disabled { cursor:wait; filter:saturate(.55); transform:none; box-shadow:0 3px 0 #765127; }
 .odyssey-start span { font-size:25px; }
 .odyssey-start-note { margin-top:21px; color:#b5c1b1; font-size:11px; }
 .odyssey-footer { border-top:1px solid #ddd4b433; padding-top:23px; display:flex; align-items:center; justify-content:space-between; gap:20px; }
 .odyssey-coffee { display:inline-flex; align-items:center; gap:8px; }
 @media(max-width:600px) { .odyssey-landing { background:linear-gradient(90deg,#0a1c1bf0,#0a1c1bcc); padding-top:92px; } .odyssey-brand { position:absolute; top:24px; left:24px; font-size:8px; max-width:160px; } .odyssey-nav { top:34px; right:24px; gap:10px; } .odyssey-nav a { font-size:8px; letter-spacing:.05em; } .odyssey-eyebrow { font-size:8px; } .odyssey-footer a { font-size:9px; } }
-@media(prefers-reduced-motion:reduce) { .odyssey-start { transition:none; } }
+.odyssey-options { display:grid; grid-template-columns:minmax(260px,1fr) minmax(300px,1fr); gap:14px; margin-top:28px; max-width:940px; }
+.odyssey-option { box-sizing:border-box; min-height:254px; padding:22px; border:1px solid rgba(244,182,95,.24); border-radius:10px; background:rgba(8,30,27,.68); box-shadow:0 16px 42px rgba(0,0,0,.16); backdrop-filter:blur(12px); }
+.odyssey-option-label { color:#d9bc89; font-size:9px; font-weight:800; letter-spacing:.18em; }
+.odyssey-option h2 { margin:10px 0 8px; color:#fff6e3; font:500 clamp(23px,2.3vw,32px) Georgia,'Times New Roman',serif; }
+.odyssey-option p { min-height:48px; margin:0 0 17px; color:#bdcbc5; font-size:12px; line-height:1.5; }
+.odyssey-option .odyssey-start { padding:14px 18px; font-size:14px; box-shadow:0 4px 0 #965d24; }
+.odyssey-coordinate-fields { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.odyssey-coordinate-fields label { color:#b9c7c1; font-size:9px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
+.odyssey-coordinate-fields input { display:block; box-sizing:border-box; width:100%; margin-top:5px; padding:11px 10px; border:1px solid rgba(244,182,95,.32); border-radius:6px; outline:0; background:#071b18; color:#fff6e3; font:600 14px ui-monospace,monospace; }
+.odyssey-coordinate-fields input:focus { border-color:#f4b65f; box-shadow:0 0 0 2px rgba(244,182,95,.16); }
+.odyssey-coordinate-start { display:flex; justify-content:space-between; width:100%; margin-top:10px; padding:12px 14px; border:0; border-radius:6px; background:#79a98e; color:#0b201b; font-weight:800; cursor:pointer; }
+.odyssey-coordinate-start:hover { background:#91c0a6; }
+.odyssey-sample-coordinate { margin-top:9px; padding:0; border:0; border-bottom:1px solid rgba(244,182,95,.42); background:none; color:#d9bc89; font-size:10px; cursor:pointer; }
+.odyssey-option button:disabled { cursor:wait; opacity:.65; }
+.odyssey-start-note { max-width:940px; }
+.odyssey-start-note[data-state="error"] { color:#ffcf9a; font-weight:600; border-left:2px solid #e08a4c; padding-left:10px; }
+@media(max-width:780px) { .odyssey-options { grid-template-columns:1fr; } .odyssey-option { min-height:0; } .odyssey-option p { min-height:0; } .odyssey-intro h1 { font-size:clamp(46px,14vw,76px); } }
+@media(prefers-reduced-motion:reduce) { .odyssey-start { transition:none; } .odyssey-option { backdrop-filter:none; } }

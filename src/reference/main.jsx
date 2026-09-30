@@ -1,6 +1,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import * as THREE from 'three';
+import { createProceduralEngine } from '../engine/ProceduralEngine.js';
 import { GameUI, createUIStore } from './GameUI.jsx';
 import { BiomeManager } from './BiomeManager.js';
 import { Environment } from './Environment.js';
@@ -9,36 +10,98 @@ import { BridgeManager } from './BridgeManager.js';
 import { HoardingManager } from './HoardingManager.js';
 import { ItemManager } from './ItemManager.js';
 import { GameAudio } from './GameAudio.js';
+import { resolveQuality } from './Quality.js';
+import { configureVoxelRendering } from './VoxelBatch.js';
 
-/** Mount into a sized container. Transport ownership stays with the caller.
- * getWorldTime returns seconds relative to a shared session epoch, not Unix time.
- * subscribePing(callback) reports measured RTT in ms, null on disconnect, and returns unsubscribe.
+/**
+ * Mount into a sized container. Transport ownership stays with the caller.
+ * `quality` accepts auto, low, balanced, high, or a complete custom profile.
+ * `initialStarted` lets the lightweight app shell enter gameplay after lazy import.
  */
-export function mountReferenceGame(container, { getWorldTime, subscribePing, onSelect } = {}) {
-  const canvas = document.createElement('canvas');
-  canvas.style.cssText = 'display:block;width:100%;height:100%;touch-action:none';
-  canvas.setAttribute('aria-label', 'The Great Desi Odyssey three-state world');
-  const overlay = document.createElement('div'); container.append(canvas, overlay);
-  const scene = new THREE.Scene();
-  let renderer;
-  try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' }); }
-  catch (error) { canvas.remove(); overlay.remove(); throw error; }
-  const camera = new THREE.PerspectiveCamera(42, 1, 1, 900);
-  const biomes = new BiomeManager(scene);
-  const bridges = new BridgeManager(scene);
+export function mountReferenceGame(container, {
+  getWorldTime,
+  subscribePing,
+  onSelect,
+  onExitRequest,
+  quality = 'auto',
+  initialStarted = false,
+} = {}) {
+  const profile = resolveQuality(quality);
+  configureVoxelRendering({
+    castShadow: profile.voxelShadows,
+    receiveShadow: profile.shadows,
+    materialDetail: profile.name ?? 'low',
+  });
+
+  const engine = createProceduralEngine(container, {
+    ariaLabel: 'The Great Desi Odyssey three-state world',
+    antialias: profile.antialias,
+    powerPreference: profile.powerPreference,
+    fov: 42,
+    near: 1,
+    far: profile.cameraFar,
+  });
+  const { canvas, overlay, scene, renderer, camera } = engine;
+  // Keep statistics for all passes in the current frame; reset explicitly below.
+  renderer.info.autoReset = false;
+  const biomes = new BiomeManager(scene, {
+    loadRadius: profile.loadRadius,
+    unloadRadius: profile.unloadRadius,
+    budgetMs: profile.streamBudgetMs,
+    decorationDensity: profile.decorationDensity,
+  });
+  // `COL-06`: bridges and signs join the island's own structural sweep, so the
+  // camera's clip query is the declared `dynamicSweep` member and not a second
+  // private blocker list.
+  const bridges = new BridgeManager(scene, {
+    cameraBlockers: biomes.cameraBlockers,
+    sweep: biomes.structureSweep,
+  });
   const store = createUIStore();
-  const player = new Player(scene, camera, bridges, { canvas, onCameraHint: cameraHint => store.set({ cameraHint }) });
+  const player = new Player(scene, camera, bridges, {
+    canvas,
+    // `COL-08`: the island's water sensor is the biome manager's terrain/water
+    // plane, so the avatar swims and wades by the same rules as the coordinate one.
+    manager: biomes,
+    onCameraHint: cameraHint => store.set({ cameraHint }),
+    orbitOptions: {
+      overviewGlobal: profile.overviewGlobal,
+      overviewHeight: profile.overviewHeight,
+      overviewDistance: profile.overviewDistance,
+    },
+    castShadow: profile.shadows,
+  });
   player.enabled = false; player.root.visible = false; player.orbit.mapMode = true;
   player.orbit.update(0, player.position, true);
-  const hoardings = new HoardingManager(scene);
-  let environment = new Environment({ scene, renderer, camera });
+
+  const hoardings = new HoardingManager(scene, { textureScale: profile.signTextureScale });
+  bridges.cameraBlockers.push(...hoardings.cameraBlockers);
+  let environment = new Environment({
+    scene,
+    renderer,
+    camera,
+    ambientOcclusion: profile.ambientOcclusion,
+    environmentMap: profile.environmentMap,
+    shadows: profile.shadows,
+    shadowMapSize: profile.shadowMapSize,
+    pixelRatio: profile.pixelRatio,
+    fogNear: profile.fogNear,
+    fogFar: profile.fogFar,
+    materialLibrary: engine.materialLibrary,
+    materialDetail: profile.name ?? 'low',
+  });
   const ui = createRoot(overlay);
   const sound = new GameAudio();
-  const items = new ItemManager(scene, { onCollect: item => {
-    store.set({ score: item.score, collected: item.collected, lastPickup: `${item.name} +${item.points}` });
-    sound.pickup(item.points);
-  } });
-  store.set({ total: items.total });
+  const items = new ItemManager(scene, {
+    activeRadius: profile.itemRadius,
+    initialFocus: player.position,
+    onCollect: item => {
+      store.set({ score: item.score, collected: item.collected, lastPickup: `${item.name} +${item.points}` });
+      sound.pickup(item.points);
+    },
+  });
+  store.set({ total: items.total, quality: profile.label, renderScale: renderer.getPixelRatio() });
+
   const onStart = () => {
     if (store.getSnapshot().started) return;
     void sound.unlock().then(ok => { if (!sound.disposed && !ok) store.set({ soundEnabled: false }); });
@@ -52,66 +115,122 @@ export function mountReferenceGame(container, { getWorldTime, subscribePing, onS
   };
   const onExit = () => {
     if (!store.getSnapshot().started) return;
-    player.blur(); player.enabled = false; player.root.visible = false;
-    player.mapMode = false; player.orbit.mapMode = true; player.orbit.release();
+    player.blur(); player.orbit.release();
+    if (onExitRequest) {
+      onExitRequest();
+      return;
+    }
+    player.enabled = false; player.root.visible = false;
+    player.mapMode = false; player.orbit.mapMode = true;
     store.set({ started: false, cameraHint: 'Click to look · Scroll to zoom' });
   };
   ui.render(<GameUI store={store} onSelect={onSelect} onStart={onStart} onExit={onExit} onToggleSound={onToggleSound} />);
+  if (initialStarted) onStart();
+
   const unsubscribePing = subscribePing?.(rtt => {
     store.set({ pingMs: Number.isFinite(rtt) && rtt >= 0 ? rtt : null });
   });
   const resize = () => environment.resize(container.clientWidth, container.clientHeight);
   const observer = new ResizeObserver(resize); observer.observe(container); resize();
-  const started = performance.now(); let last = started, sampleStart = started, frames = 0, disposed = false, lost = false, animationFrame = 0;
+
+  const startedAt = performance.now();
+  const frameInterval = 1000 / profile.targetFps;
+  let lastFrame = startedAt, sampleStart = startedAt, frames = 0;
+  let disposed = false, lost = false, animationFrame = 0;
+  let slowSamples = 0, fastSamples = 0;
   const mapFocus = new THREE.Vector3(0, 0, -7);
+
+  const adaptResolution = fps => {
+    if (!profile.adaptiveResolution) return;
+    if (fps < profile.targetFps * .82) {
+      slowSamples++; fastSamples = 0;
+      if (slowSamples >= 2 && environment.pixelRatio > profile.minPixelRatio) {
+        environment.setPixelRatioLimit(Math.max(profile.minPixelRatio, environment.pixelRatio - .1));
+        slowSamples = 0;
+      }
+    } else if (fps > profile.targetFps * .96) {
+      fastSamples++; slowSamples = 0;
+      if (fastSamples >= 8 && environment.pixelRatio < profile.pixelRatio) {
+        environment.setPixelRatioLimit(Math.min(profile.pixelRatio, environment.pixelRatio + .05));
+        fastSamples = 0;
+      }
+    } else {
+      slowSamples = fastSamples = 0;
+    }
+  };
+
   const frame = now => {
     if (disposed || lost) return;
     animationFrame = requestAnimationFrame(frame);
-    if (document.hidden) return;
-    const delta = Math.min((now - last) / 1000, .1); last = now;
-    const seconds = getWorldTime ? getWorldTime() : (now - started) / 1000;
+    if (document.hidden || now - lastFrame < frameInterval - 1) return;
+
+    const delta = Math.min((now - lastFrame) / 1000, .1); lastFrame = now;
+    const seconds = getWorldTime ? getWorldTime() : (now - startedAt) / 1000;
     const startedPlaying = store.getSnapshot().started;
-    if (startedPlaying) { player.update(delta); items.update(seconds, player.bounds); }
-    else player.orbit.update(delta, player.position);
-    biomes.update(!startedPlaying || player.mapMode ? mapFocus : player.position, seconds);
-    environment.update(seconds); environment.render(delta);
+    if (startedPlaying) {
+      player.update(delta);
+      items.update(seconds, player.bounds);
+    } else {
+      player.orbit.update(delta, player.position);
+    }
+    const overviewFocus = profile.overviewGlobal ? mapFocus : player.position;
+    biomes.update(!startedPlaying || player.mapMode ? overviewFocus : player.position, seconds);
+    environment.update(seconds);
+    renderer.info.reset();
+    environment.render(delta);
     frames++;
+
     if (now - sampleStart >= 500) {
-      store.set({ fps: frames * 1000 / (now - sampleStart) }); frames = 0; sampleStart = now;
+      const fps = frames * 1000 / (now - sampleStart);
+      adaptResolution(fps);
+      store.set({
+        fps,
+        drawCalls: renderer.info.render.calls,
+        triangles: renderer.info.render.triangles,
+        residentChunks: biomes.chunks.size,
+        renderScale: renderer.getPixelRatio(),
+      });
+      frames = 0; sampleStart = now;
     }
   };
-  const resetSampling = () => { last = sampleStart = performance.now(); frames = 0; store.set({ fps: null }); if (document.hidden) player.blur(); };
-  const contextLost = event => { event.preventDefault(); lost = true; cancelAnimationFrame(animationFrame); player.blur(); resetSampling(); };
+
+  const resetSampling = () => {
+    lastFrame = sampleStart = performance.now(); frames = 0; slowSamples = fastSamples = 0;
+    store.set({ fps: null });
+    if (document.hidden) player.blur();
+  };
+  const contextLost = event => {
+    event.preventDefault(); lost = true; cancelAnimationFrame(animationFrame); player.blur(); resetSampling();
+  };
   const contextRestored = () => {
-    // Rebuild generated render-target contents after WebGL resource restoration.
     environment.dispose();
-    environment = new Environment({ scene, renderer, camera });
+    environment = new Environment({
+      scene, renderer, camera,
+      ambientOcclusion: profile.ambientOcclusion,
+      environmentMap: profile.environmentMap,
+      shadows: profile.shadows,
+      shadowMapSize: profile.shadowMapSize,
+      pixelRatio: profile.pixelRatio,
+      fogNear: profile.fogNear,
+      fogFar: profile.fogFar,
+    });
     resize(); lost = false; resetSampling(); animationFrame = requestAnimationFrame(frame);
   };
-  canvas.addEventListener('webglcontextlost', contextLost); canvas.addEventListener('webglcontextrestored', contextRestored);
-  document.addEventListener('visibilitychange', resetSampling); animationFrame = requestAnimationFrame(frame);
+  canvas.addEventListener('webglcontextlost', contextLost);
+  canvas.addEventListener('webglcontextrestored', contextRestored);
+  document.addEventListener('visibilitychange', resetSampling);
+  animationFrame = requestAnimationFrame(frame);
+
   return {
-    scene, camera, biomes, store, player, bridges, items, hoardings, sound,
+    scene, camera, biomes, store, player, bridges, items, hoardings, sound, profile,
     dispose() {
       if (disposed) return; disposed = true;
       cancelAnimationFrame(animationFrame); observer.disconnect(); unsubscribePing?.();
       document.removeEventListener('visibilitychange', resetSampling);
-      canvas.removeEventListener('webglcontextlost', contextLost); canvas.removeEventListener('webglcontextrestored', contextRestored);
-      ui.unmount(); sound.dispose(); player.dispose(); items.dispose(); hoardings.dispose(); bridges.dispose(); biomes.dispose(); environment.dispose(); renderer.dispose();
-      canvas.remove(); overlay.remove();
+      canvas.removeEventListener('webglcontextlost', contextLost);
+      canvas.removeEventListener('webglcontextrestored', contextRestored);
+      ui.unmount(); sound.dispose(); player.dispose(); items.dispose(); hoardings.dispose();
+      bridges.dispose(); biomes.dispose(); environment.dispose(); engine.dispose();
     },
   };
-}
-
-const container = document.getElementById('reference-game');
-if (container) {
-  try {
-    const game = mountReferenceGame(container);
-    if (import.meta.hot) import.meta.hot.dispose(() => game.dispose());
-    // Explicit diagnostic access only in development.
-    if (import.meta.env.DEV) window.referenceGame = game;
-  } catch (error) {
-    container.textContent = `Unable to start WebGL: ${error.message}`;
-    console.error(error);
-  }
 }

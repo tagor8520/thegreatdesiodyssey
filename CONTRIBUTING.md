@@ -30,66 +30,122 @@ We are an inclusive, welcoming community. Whether you're adding a detailed monum
 
 ---
 
-## 🗺️ The Low-Code State Contribution Guide
+## 🗺️ Low-Code State and Landmark Format
 
-Not a Three.js expert? No problem! Our engine is designed to parse JSON schemas to generate new states, landmarks, and collectibles. You don't need to write complex WebGL code to add your home state to the map.
+Content is **data**, and it is checked before it reaches the game. A contributor
+writes a state pack (JSON) or a landmark recipe (parametric modules), runs the
+validation tool, and reads a report — no Three.js code is required for any
+supported module.
 
-### Adding a New State via JSON
+### Validate before you commit
 
-To add a new state, create a new JSON file under `public/content/states/` (e.g., `punjab.json`). The engine will automatically parse this schema and generate the world.
+```bash
+npm run validate:content                      # every shipped state pack
+npm run validate:content -- path/to/pack.json # one pack or landmark file
+npm run validate:content -- --landmarks       # the curated landmark recipes
+npm run validate:content -- --json            # machine-readable verdicts
+npm run validate:content -- --list            # provider credit lines
+```
+
+The tool prints a report per input, previews the compiled modules as a small
+ASCII plan, and exits non-zero when anything fails, so it drops straight into CI.
+In a running page the same tool is on the debug hook:
+`__gdo.validateContent(pack)` returns `{ ok, text, summary }`, and
+`__gdo.contentChecks()` lists the checks that ran.
+
+| Check | What it refuses |
+| --- | --- |
+| `schema` | Unknown/duplicate ids, out-of-range numbers, bad colours, wrong versions (the versioned `gdo:contentSchema:v1` contract) |
+| `bounds` | A spawn outside the declared area, or two spawns closer than 2 units |
+| `budget` | Compiled module counts over the profile ceilings, or content the compiler had to prune |
+| `attribution` | A mapped provider whose credit cannot be verified against `public/map-providers.json` |
+| `openings` | Masonry that protrudes into a declared opening, or modules that had to be dropped from one |
+| `determinism` | A second compile that does not reproduce the same fingerprint |
+
+A check that cannot apply is reported as `skip` with its reason. Nothing is
+silently repaired: if the tool fails your pack, fix the pack.
+
+### State packs
+
+Packs live in `public/content/states/<stateId>.json` and must be registered in
+`GDO_STATE_PACK_IDS` (`src/engine/StateCatalog.js`): the validator refuses a pack
+file that is not registered, and a registered pack with no file, so no content can
+arrive unvalidated. Required keys are
+`stateId`, `stateName`, and `collectibles`; `schemaVersion`, `bgColor`,
+`fogColor`, and `ambientColor` are optional, and a pack that derives from mapped
+data must declare its providers in `sources` plus an `attribution` line.
 
 **Example: `punjab.json`**
 ```json
 {
+  "schemaVersion": 1,
   "stateId": "punjab",
-  "name": "Punjab",
-  "zoneBounds": {
-    "zMin": 160,
-    "zMax": 260,
-    "xMin": -80,
-    "xMax": 80
-  },
-  "landmarks": [
-    {
-      "id": "tractor",
-      "name": "Desi Tractor",
-      "position": { "x": 10, "y": 0, "z": 200 },
-      "voxels": [
-        [0,0,0,"#000000"], [2,0,0,"#000000"],
-        [0,1,0,"#FF0000"], [1,1,0,"#FF0000"], [2,1,0,"#FF0000"],
-        [2,2,0,"#333333"]
-      ]
-    }
-  ],
+  "stateName": "Punjab",
+  "bgColor": "#132238",
   "collectibles": [
     {
       "id": "makki_di_roti",
       "name": "Makki di Roti & Sarson da Saag",
       "icon": "🍲",
-      "description": "🍲 Pure Desi Ghee power! +2x Strength for 15s!",
-      "buff": { "type": "strength", "multiplier": 2.0, "duration": 15000 },
+      "description": "🍲 Pure Desi Ghee power! +2x speed for 15s!",
+      "buff": { "type": "speed", "multiplier": 2, "duration": 15000 },
+      "spawnPosition": { "x": 10, "y": 1, "z": 200 },
       "voxels": [
         [0,0,0,"#DAA520"], [1,0,0,"#DAA520"], [2,0,0,"#DAA520"],
         [0,0,1,"#DAA520"], [1,0,1,"#006400"], [2,0,1,"#DAA520"],
         [0,0,2,"#DAA520"], [1,0,2,"#DAA520"], [2,0,2,"#DAA520"]
       ]
-    },
-    {
-      "id": "patiala_lassi",
-      "name": "Patiala Lassi",
-      "icon": "🥛",
-      "description": "🥛 Heavy Lassi! +Max Stamina but slows movement slightly.",
-      "buff": { "type": "stamina", "multiplier": 3.0, "duration": 20000 },
-      "voxels": [
-        [0,0,0,"#FFFFFF"], [1,0,0,"#FFFFFF"],
-        [0,1,0,"#FFFFFF"], [1,1,0,"#FFFFFF"],
-        [0,2,0,"#FFFFFF"], [1,2,0,"#FFFFFF"],
-        [0.5,3,0,"#F5DEB3"]
-      ]
     }
   ]
 }
 ```
+
+| Limit | Value |
+| --- | --- |
+| Collectibles per pack | 16 |
+| Voxels per collectible | 96 |
+| Voxel coordinate / spawn coordinate | 12 / 64 |
+| Name / description length | 64 / 180 characters |
+| Buff multiplier / duration | 1–4 / 500–60,000 ms |
+
+Buff `type` is one of `speed`, `jump`, `shield`, `stamina`, or `focus`. A
+collectible compiles to one module per voxel, scaled and centred on its own
+bounding box, and ships as a pick-up: it declares **no** solid hitbox.
+
+### Landmark recipes
+
+A landmark is declared as bounded parametric modules plus the openings that must
+stay walkable, and lives beside the code that places it (for example
+`src/reference/landmarkRecipes.js`). Four ops cover the shipped compounds:
+
+```js
+{
+  id: 'gateway', color: '#c9a777',
+  openings: [{ id: 'gateway:arch', at: [0, 8.675, 0], size: [9, 9.35, 9] }],
+  modules: [
+    { op: 'box',  id: 'gateway:plinth', at: [0, .75, 0], size: [22, 1.5, 12] },
+    { op: 'grid', id: 'gateway:pier:{xSign}', at: [-5.75, 7.5, 0], size: [2.5, 13.5, 9], steps: [2, 1], step: [11.5, 0, 0] },
+    { op: 'step', id: 'gateway:arch:{xSign}:{index}', count: 5, at: [-3.375, 16.35, 0], step: [1.125, 1.35, 0], size: [2.25, 1.35, 9] },
+    { op: 'tier', id: 'gateway:tower:{xSign}:{index}', count: 4, at: [-11, 2.4, 0], step: [0, 2.4, 0], size: [3, 2.4, 3] }
+  ]
+}
+```
+
+* A recipe may declare at most 64 ops, each repeating at most 256 times.
+* An `openings` entry is a **reservation**: nothing may stand in it. A module
+  wholly inside one is dropped and reported by the validator, a module that
+  merely borders it is listed as its boundary, and the tool sweeps the passage to
+  prove it stays clear.
+* Modules are visual/camera proxies. A solid proxy appears only when the recipe
+  declares `collision: 'footprint'` (plus the `footprint` box); an interaction is
+  never implied by geometry.
+* Compiled modules come from data deterministically: same recipe, same
+  fingerprint. Moving a recipe does not change its identity.
+
+Nothing under `public/content/` is added by hand-editing a generated file: register
+the pack, run `npm run validate:content`, and commit the pack together with its
+report. The shipped states today are Kerala, Maharashtra, Karnataka, Punjab, and
+Tamil Nadu.
 
 ---
 

@@ -1,9 +1,98 @@
 import * as THREE from 'three';
 import { VoxelBatch, disposeGroup, randomFor } from './VoxelBatch.js';
 import { isGameplayClearance } from './GameplayLayout.js';
+import { defineWorldDomain } from '../engine/DomainInterface.js';
+import { createStructureSweep } from '../engine/StructureSweep.js';
+import { compileLandmarkRecipe } from '../engine/RecipeCompiler.js';
+import { compileCuratedLandmarks } from './landmarkRecipes.js';
+import { GDO_WATER_SURFACE_SOURCE, classifyWaterContact } from '../engine/WaterContact.js';
 
 export const WORLD = Object.freeze({ min: -128, max: 128, chunkSize: 32, tileSize: 4, waterY: 0 });
+export const GDO_CURATED_DOMAIN_ID = 'curated';
+/** `FND-08`: the curated island declares the same interface as the coordinate
+ * world at its own scale — one world unit per metre, a fixed 256 × 256 island,
+ * graded bridge/vault structures, and no coordinate or streamed capability. */
+export const GDO_CURATED_WORLD_DOMAIN = defineWorldDomain({
+  id: GDO_CURATED_DOMAIN_ID,
+  label: 'Curated island',
+  unitsPerMetre: 1,
+  bounds: { minX: WORLD.min, maxX: WORLD.max, minZ: WORLD.min, maxZ: WORLD.max },
+  // `COL-06`: the island answers the shared sweep member, so its structural
+  // masses participate in the same declared query the mapped world serves.
+  capabilities: { terrainSupport: true, verticalGrades: true, dynamicSweep: true },
+});
 export const LANDMARKS = Object.freeze({ gateway: [-66, -44], chariot: [62, -44] });
+/** Where each curated landmark recipe is placed, in world units. */
+export const LANDMARK_ORIGINS = Object.freeze({
+  gateway: Object.freeze([LANDMARKS.gateway[0], 0, LANDMARKS.gateway[1]]),
+  chariot: Object.freeze([LANDMARKS.chariot[0], 0, LANDMARKS.chariot[1]]),
+});
+
+function cameraBox(x, y, z, sizeX, sizeY, sizeZ, id) {
+  const halfX = sizeX / 2, halfY = sizeY / 2, halfZ = sizeZ / 2;
+  const box = new THREE.Box3(
+    new THREE.Vector3(x - halfX, y - halfY, z - halfZ),
+    new THREE.Vector3(x + halfX, y + halfY, z + halfZ),
+  );
+  box.userData = { id, role: 'camera-blocker' };
+  return box;
+}
+
+/**
+ * `CNT-02`: the landmark compounds are **compiled from data**. The gateway and
+ * the chariot are declared as parametric modules plus one arch reservation in
+ * `landmarkRecipes.js`, and the compiler emits these tight boxes — so a
+ * contributor changes masonry by changing numbers, never by writing geometry
+ * code here. The arch reservation is never turned into a box: only the masonry
+ * around it blocks, and the genuine opening stays walkable.
+ */
+export function createLandmarkCameraBlockers() {
+  const compiled = compileCuratedLandmarks(compileLandmarkRecipe, LANDMARK_ORIGINS);
+  return compiled.modules.map(entry => cameraBox(
+    (entry.minX + entry.maxX) / 2,
+    (entry.minY + entry.maxY) / 2,
+    (entry.minZ + entry.maxZ) / 2,
+    entry.sizeX, entry.sizeY, entry.sizeZ,
+    entry.id,
+  ));
+}
+
+/** Compiled landmark recipes, keyed by id, for diagnostics and future visuals. */
+export function curatedLandmarkCompilations() {
+  return compileCuratedLandmarks(compileLandmarkRecipe, LANDMARK_ORIGINS).landmarks;
+}
+
+export function createOrdinaryStructureCameraBlockers(seed = 2026, decorationDensity = 1) {
+  const boxes = [];
+  for (let x = WORLD.min + 2; x < WORLD.max; x += WORLD.tileSize) {
+    for (let z = WORLD.min + 2; z < WORLD.max; z += WORLD.tileSize) {
+      const height = terrainHeight(x, z);
+      if (height < 0) continue;
+      const landmarkReserved = Object.values(LANDMARKS).some(([lx, lz]) => Math.abs(x - lx) < 19 && Math.abs(z - lz) < 18);
+      if (landmarkReserved || isGameplayClearance(x, z) || (biomeAt(x, z) === 'maharashtra' && Math.abs(z + 80) < 7)) continue;
+      const structure = ordinaryStructureAt(x, z, biomeAt(x, z), height, randomFor(x, z, seed), decorationDensity);
+      if (!structure) continue;
+      const box = cameraBox(
+        x,
+        height + structure.height / 2,
+        z,
+        structure.size,
+        structure.height,
+        structure.size,
+        `${structure.kind}:${x}:${z}`,
+      );
+      boxes.push(box);
+    }
+  }
+
+  // The generated elevated railway is one continuous deck plus tight piers.
+  boxes.push(cameraBox(-64, 5.175, -80, 128, 1.85, 7, 'railway:deck'));
+  for (let x = WORLD.min + 4; x < 0; x += 8) {
+    boxes.push(cameraBox(x, 1.5, -80, 2, 7, 5, `railway:pier:${x}`));
+  }
+  return boxes;
+}
+
 export function biomeAt(x, z) { return z >= 12 ? 'kerala' : x < 0 ? 'maharashtra' : 'karnataka'; }
 export function riverX(z) { return 9 * Math.sin(z / 28) + 4 * Math.cos(z / 17); }
 
@@ -16,6 +105,17 @@ export function terrainHeight(x, z) {
   if (z < 12) return 3;
   const hill = Math.max(0, 1 - Math.hypot((x - 82) / 56, (z - 92) / 53));
   return 3 + Math.floor(hill * 8) * 2;
+}
+
+function ordinaryStructureAt(x, z, biome, height, random, decorationDensity) {
+  if (biome === 'karnataka' && x > 40 && z < -80 && x % 12 === 2 && z % 12 === -10 &&
+      (decorationDensity >= 1 || random() < decorationDensity)) {
+    return { kind: 'tech-tower', height: 15 + random() * 28, size: 6, color: '#287bb8', opacity: .65 };
+  }
+  if (biome === 'maharashtra' && z < -90 && random() < .16 * decorationDensity) {
+    return { kind: 'skyline-tower', height: 10 + random() * 22, size: 3.4, color: '#d0c8b6', opacity: 1 };
+  }
+  return null;
 }
 
 function palm(batch, x, y, z, random) {
@@ -100,14 +200,32 @@ function houseboat() {
  * elapsedSeconds should come from the server-synchronized world clock in multiplayer.
  */
 export class BiomeManager {
-  constructor(scene, { seed = 2026, loadRadius = 150, unloadRadius = 190, budgetMs = 3 } = {}) {
+  constructor(scene, { seed = 2026, loadRadius = 150, unloadRadius = 190, budgetMs = 3, decorationDensity = 1 } = {}) {
     if (!(loadRadius >= 0 && unloadRadius > loadRadius && budgetMs > 0)) throw new RangeError('Invalid streaming configuration');
+    if (!(decorationDensity >= 0 && decorationDensity <= 1)) throw new RangeError('decorationDensity must be between 0 and 1');
     this.scene = scene; this.seed = seed; this.loadRadius = loadRadius;
-    this.unloadRadius = unloadRadius; this.budgetMs = budgetMs;
+    this.unloadRadius = unloadRadius; this.budgetMs = budgetMs; this.decorationDensity = decorationDensity;
     this.chunks = new Map(); this.disposed = false; this.actors = new Map();
-    this.descriptors = [];
-    for (let z = -4; z < 4; z++) for (let x = -4; x < 4; x++) {
-      this.descriptors.push({ key: `${x}:${z}`, x: x * 32, z: z * 32 });
+    this.domain = GDO_CURATED_WORLD_DOMAIN;
+    this.unitsPerMetreScale = this.domain.unitsPerMetre;
+    this.domainBounds = this.domain.bounds;
+    this.bounds = this.domain.bounds;
+    this.cameraBlockers = [
+      ...createLandmarkCameraBlockers(),
+      ...createOrdinaryStructureCameraBlockers(seed, decorationDensity),
+    ];
+    // `COL-06`: one live structural set behind one declared sweep. Bridges and
+    // signs are pushed into this same array, so the query the world declares is
+    // the query the camera actually uses.
+    this.structureSweep = createStructureSweep({ profile: 'low', boxes: this.cameraBlockers });
+    this.descriptors = []; this.descriptorByKey = new Map();
+    this._nearbyCacheKey = null; this._nearbyCache = [];
+    for (let z = WORLD.min; z < WORLD.max; z += WORLD.chunkSize) {
+      for (let x = WORLD.min; x < WORLD.max; x += WORLD.chunkSize) {
+        const cx = x / WORLD.chunkSize, cz = z / WORLD.chunkSize;
+        const descriptor = { key: `${cx}:${cz}`, cx, cz, x, z };
+        this.descriptors.push(descriptor); this.descriptorByKey.set(descriptor.key, descriptor);
+      }
     }
   }
   *generate(descriptor) {
@@ -122,21 +240,22 @@ export class BiomeManager {
         batch.box(x, (height - 3) / 2, z, 4, height + 3, 4, color);
         const landmarkReserved = Object.values(LANDMARKS).some(([lx, lz]) => Math.abs(x - lx) < 19 && Math.abs(z - lz) < 18);
         if (landmarkReserved || isGameplayClearance(x, z) || (biome === 'maharashtra' && Math.abs(z + 80) < 7)) continue;
+        const structure = ordinaryStructureAt(x, z, biome, height, random, this.decorationDensity);
         if (biome === 'kerala') {
           if (height > 3) batch.box(x, height + .35, z, 3.5, .7, 2.5, '#93b93e');
-          else if (random() < .18) palm(batch, x, height, z, random);
-        } else if (biome === 'karnataka' && x > 40 && z < -80 && x % 12 === 2 && z % 12 === -10) {
-          const h = 15 + random() * 28;
-          batch.box(x, height + h / 2, z, 6, h, 6, '#287bb8', [0, 0, 0], .65);
-          for (let y = 3; y < h; y += 3) batch.box(x, height + y, z, 6.1, .2, 6.1, '#a3dbeb');
-        } else if (biome === 'maharashtra' && z < -90 && random() < .16) {
-          const h = 10 + random() * 22;
-          batch.box(x, height + h / 2, z, 3.4, h, 3.4, '#d0c8b6');
-        } else if (random() < .11) {
+          else if (random() < .18 * this.decorationDensity) palm(batch, x, height, z, random);
+        } else if (structure?.kind === 'tech-tower') {
+          batch.box(x, height + structure.height / 2, z, structure.size, structure.height, structure.size,
+            structure.color, [0, 0, 0], structure.opacity);
+          for (let y = 3; y < structure.height; y += 3) batch.box(x, height + y, z, 6.1, .2, 6.1, '#a3dbeb');
+        } else if (structure?.kind === 'skyline-tower') {
+          batch.box(x, height + structure.height / 2, z, structure.size, structure.height, structure.size, structure.color);
+        } else if (random() < .11 * this.decorationDensity) {
           batch.box(x, height + 1.5, z, .6, 3, .6, '#785233');
           batch.box(x, height + 4, z, 3.5, 3, 3.5, '#64873c');
         }
-        if (biome === 'maharashtra' && terrainHeight(x + 4, z) < 0) {
+        if (biome === 'maharashtra' && terrainHeight(x + 4, z) < 0 &&
+            (this.decorationDensity >= 1 || random() < this.decorationDensity)) {
           for (const angle of [0, 2.1, 4.2]) batch.box(x + 1, 1.5, z, 1.4, 5, 1.4, '#8b9290', [.8, angle, .5]);
         }
       }
@@ -153,11 +272,86 @@ export class BiomeManager {
     yield;
     return batch.build();
   }
+  /** Shared support query: the island's analytic terrain height at any x/z. */
+  querySupport(x, z, out = {}) {
+    const y = terrainHeight(x, z);
+    out.x = x; out.z = z; out.y = y;
+    out.kind = y < WORLD.waterY ? 'water' : 'ground';
+    out.slopeRadians = 0;
+    return out;
+  }
+  /**
+   * `COL-06`: the declared `dynamicSweep` member. Same record shape, same
+   * semantics, and the same bounded candidate work as the coordinate world's
+   * `querySweep`, over the island's live structural boxes.
+   */
+  querySweep(x, y, z, dx, dy, dz, radius, out = {}, queryMask) {
+    return this.structureSweep.querySweep(x, y, z, dx, dy, dz, radius, out, queryMask);
+  }
+
+  /**
+   * `COL-08`: the curated island answers the same water sensor as the coordinate
+   * world — a fixed water plane at `WORLD.waterY`, the analytic terrain under it,
+   * and the shared state machine. Both modes therefore share one set of rules.
+   */
+  waterContact(x, z, { feetY = 0, groundY = null, bodyHeight = 1.7, gravity = 30, profile = 'low' } = {},
+    out = {}) {
+    if (![x, z, feetY, bodyHeight, gravity].every(Number.isFinite)) {
+      throw new TypeError('Curated water contact needs finite coordinates, height, and gravity');
+    }
+    // Bridge decks are support, so a body standing on one is above the plane.
+    const ground = Number.isFinite(groundY) ? groundY
+      : Math.max(terrainHeight(x, z), this.bridges?.heightAt?.(x, z) ?? -Infinity);
+    const inWater = Math.abs(x) <= 126 && Math.abs(z) <= 126 && WORLD.waterY > ground;
+    return classifyWaterContact({
+      waterSurfaceY: WORLD.waterY, feetY, groundY: ground, bodyHeight, gravity, profile,
+      inWater, wet: inWater,
+      source: inWater ? GDO_WATER_SURFACE_SOURCE.CURATED_PLANE : GDO_WATER_SURFACE_SOURCE.NONE,
+    }, out);
+  }
+  /** Shared diagnostic record: bounded numbers only, never live objects. */
+  querySnapshot() {
+    return {
+      domain: this.domain.id,
+      chunks: this.chunks.size,
+      loading: this.loadingCount,
+      actors: this.actors.size,
+      decorations: this.decorationDensity,
+      seed: this.seed,
+      // `COL-06`: the declared sweep's live counters, so a debug session can see
+      // how many structural boxes a camera query actually touched.
+      sweep: this.structureSweep.diagnostics(),
+    };
+  }
   distance(descriptor, focus) {
     // Distance to chunk AABB, so boundary cells don't pop prematurely.
-    const dx = Math.max(descriptor.x - focus.x, 0, focus.x - descriptor.x - 32);
-    const dz = Math.max(descriptor.z - focus.z, 0, focus.z - descriptor.z - 32);
+    const size = WORLD.chunkSize;
+    const dx = Math.max(descriptor.x - focus.x, 0, focus.x - descriptor.x - size);
+    const dz = Math.max(descriptor.z - focus.z, 0, focus.z - descriptor.z - size);
     return Math.hypot(dx, dz);
+  }
+  nearbyDescriptors(focus) {
+    // Rebuild only after moving half a chunk. Work depends on the active radius,
+    // not on the number of chunks in the complete world manifest.
+    const size = WORLD.chunkSize;
+    const cacheKey = `${Math.floor(focus.x / (size / 2))}:${Math.floor(focus.z / (size / 2))}:${this.loadRadius}`;
+    if (cacheKey === this._nearbyCacheKey) return this._nearbyCache;
+
+    const minCx = Math.max(WORLD.min / size, Math.floor((focus.x - this.loadRadius) / size) - 1);
+    const maxCx = Math.min(WORLD.max / size - 1, Math.floor((focus.x + this.loadRadius) / size) + 1);
+    const minCz = Math.max(WORLD.min / size, Math.floor((focus.z - this.loadRadius) / size) - 1);
+    const maxCz = Math.min(WORLD.max / size - 1, Math.floor((focus.z + this.loadRadius) / size) + 1);
+    const nearby = [];
+    for (let cz = minCz; cz <= maxCz; cz++) for (let cx = minCx; cx <= maxCx; cx++) {
+      const descriptor = this.descriptorByKey.get(`${cx}:${cz}`);
+      if (!descriptor) continue;
+      const distance = this.distance(descriptor, focus);
+      if (distance <= this.loadRadius) nearby.push({ descriptor, distance });
+    }
+    nearby.sort((a, b) => a.distance - b.distance);
+    this._nearbyCacheKey = cacheKey;
+    this._nearbyCache = nearby.map(entry => entry.descriptor);
+    return this._nearbyCache;
   }
   update(focus, elapsedSeconds) {
     if (this.disposed) return;
@@ -168,8 +362,7 @@ export class BiomeManager {
         chunk.job?.return(); this.chunks.delete(key);
       }
     }
-    const nearby = this.descriptors.filter(d => this.distance(d, focus) <= this.loadRadius)
-      .sort((a, b) => this.distance(a, focus) - this.distance(b, focus));
+    const nearby = this.nearbyDescriptors(focus);
     const deadline = performance.now() + this.budgetMs;
     for (const descriptor of nearby) {
       let chunk = this.chunks.get(descriptor.key);
