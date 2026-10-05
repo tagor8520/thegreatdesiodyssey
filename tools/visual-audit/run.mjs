@@ -1,0 +1,258 @@
+#!/usr/bin/env node
+/**
+ * Visual audit CLI.
+ *
+ *   npm run visual:audit -- --list
+ *   npm run visual:audit -- curated-camera [--url http://localhost:5173/]
+ *
+ * Requires a running dev or preview server (`npm run dev`), because the harness
+ * drives the real product through its own landing flow rather than a fixture
+ * page. Results (JSON report + PNG frames) are written under
+ * `tools/visual-audit/out/<timestamp>-<scenario>/`.
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { launch, freshRunDirectory, classifyConsoleErrors } from './harness.mjs';
+import * as curatedCamera from './scenarios/curated-camera.mjs';
+import * as coordinateCamera from './scenarios/coordinate-camera.mjs';
+import * as coordinateMatrix from './scenarios/coordinate-matrix.mjs';
+import * as waterOrder from './scenarios/water-order.mjs';
+import * as shimmerLowDpr from './scenarios/shimmer-low-dpr.mjs';
+import * as remountLifecycle from './scenarios/remount-lifecycle.mjs';
+import * as domainInterface from './scenarios/domain-interface.mjs';
+import * as actionSurfaces from './scenarios/action-surfaces.mjs';
+
+const SCENARIOS = new Map([
+  ['curated-camera', {
+    module: curatedCamera,
+    prepares: 'curated',
+    summary: 'COL-06 curated camera structure obstruction: orbit sweeps, per-frame penetration sampling, compression latency, Gateway arch compound check.',
+  }],
+  ['shimmer-low-dpr', {
+    module: shimmerLowDpr,
+    prepares: 'coordinates',
+    fixture: 'dense-urban',
+    // MAT-03's gate names a low-pixel-ratio condition, so the scenario needs its
+    // own browser at a reduced device scale factor rather than the shared one.
+    deviceScaleFactor: 0.5,
+    summary: 'MAT-03 moving low-pixel-ratio shimmer capture: sub-pixel camera rotation over ground at deviceScaleFactor 0.5, temporal aliasing measured against a mip-disabled control.',
+  }],
+  ['water-order', {
+    module: waterOrder,
+    prepares: 'coordinates',
+    fixture: 'mapped-coast',
+    summary: 'LAY-03 transparent water policy: render bands, identical-input order stability across cardinal directions and grazing angles, sort-enabled/disabled comparison, duplicate-blend and blended-foliage checks.',
+  }],
+  ['coordinate-matrix', {
+    module: coordinateMatrix,
+    prepares: 'coordinates',
+    fixture: 'dense-urban',
+    summary: 'COL-05 shape-family matrix: the same orbit sweep across every fixture that carries building geometry (dense-urban, concave-building, courtyard-hole, sparse-rural, stacked-bridge).',
+  }],
+  ['remount-lifecycle', {
+    module: remountLifecycle,
+    fixture: 'mapped-coast',
+    // No `prepares`: this scenario owns its navigation because it instruments the
+    // page before any application module runs, then drives both mount paths.
+    summary: 'FND-07 zero-growth remount: 3 mount/exit cycles in both Coordinate Explorer and the curated runtime, asserting workers, observers, listeners, geometries and textures return to baseline.',
+  }],
+  ['domain-interface', {
+    module: domainInterface,
+    fixture: 'dense-urban',
+    // No `prepares`: the scenario drives both runtimes itself, in one session,
+    // because the gate is precisely that the same probe fits both.
+    summary: 'FND-08 domain interface: the shared probe run against the shipped curated and coordinate runtimes, plus the guard that keeps their scales distinct.',
+  }],
+  ['action-surfaces', {
+    module: actionSurfaces,
+    // No `prepares`: the scenario drives both runtimes itself, because the gate is
+    // that the same registry serves both.
+    summary: 'GME-05 action registry: every declared action reachable on every surface it claims, verified against the mounted DOM in both runtimes with real pointer and key events.',
+  }],
+  ['coordinate-camera', {
+    module: coordinateCamera,
+    prepares: 'coordinates',
+    fixture: 'dense-urban',
+    summary: 'COL-05 coordinate TPP camera sweep: 360-degree orbits at min/max distance around mapped buildings, near-plane corner containment, first-frame compression latency.',
+  }],
+]);
+
+function parseArguments(argv) {
+  const options = { scenario: null, url: 'http://localhost:5173/', list: false, width: 1280, height: 720, fixture: null, variant: null };
+  for (let index = 0; index < argv.length; index++) {
+    const token = argv[index];
+    if (token === '--list') options.list = true;
+    else if (token === '--url') options.url = argv[++index];
+    else if (token === '--width') options.width = Number(argv[++index]);
+    else if (token === '--height') options.height = Number(argv[++index]);
+    else if (token === '--fixture') options.fixture = argv[++index];
+    else if (token === '--variant') options.variant = argv[++index];
+    else if (!token.startsWith('-')) options.scenario ??= token;
+  }
+  return options;
+}
+
+async function main() {
+  const options = parseArguments(process.argv.slice(2));
+  if (options.list || !options.scenario) {
+    console.log('Visual audit scenarios:\n');
+    for (const [name, entry] of SCENARIOS) console.log(`  ${name.padEnd(18)} ${entry.summary}`);
+    if (!options.scenario) process.exitCode = options.list ? 0 : 1;
+    return;
+  }
+  const entry = SCENARIOS.get(options.scenario);
+  if (!entry) throw new Error(`Unknown scenario: ${options.scenario}`);
+
+  const { browser, page, logs } = await launch({
+    width: options.width, height: options.height,
+    deviceScaleFactor: entry.deviceScaleFactor ?? 1,
+  });
+  try {
+    // Scenario setup imports lazily so `--list` stays dependency-free.
+    if (entry.prepares === 'curated') {
+      const { openCurated } = await import('./harness.mjs');
+      console.log(`[audit] opening curated runtime at ${options.url}`);
+      await openCurated(page, options.url);
+    } else if (entry.prepares === 'coordinates') {
+      const { openCoordinates, selectFixture } = await import('./harness.mjs');
+      const fixture = options.fixture ?? entry.fixture ?? 'dense-urban';
+      console.log(`[audit] selecting offline fixture ${fixture} and opening Coordinate Explorer at ${options.url}`);
+      await selectFixture(page, options.url, { id: fixture, variant: options.variant ?? entry.variant ?? 'openmaptiles' });
+      await openCoordinates(page, options.url);
+    }
+    const summary = await entry.module.run({
+      page, baseUrl: options.url, log: console.log,
+      fixture: options.fixture ?? entry.fixture ?? 'dense-urban',
+      variant: options.variant ?? entry.variant ?? 'openmaptiles',
+    });
+    const { relevant, known } = classifyConsoleErrors(logs);
+    summary.consoleErrors = relevant;
+    summary.knownConsoleDefects = known;
+    if (known.length) {
+      const ids = [...new Set(known.map(item => item.defectId))].join(', ');
+      console.log(`\n[audit] ${known.length} console error(s) matched TRACKED known defects (${ids}) — reported, not ignored`);
+      for (const item of known.slice(0, 3)) console.log(`  ${item.defectId}: ${item.text.split('\n')[0]}`);
+      console.log(`  recorded in ${known[0].recordedIn}`);
+    }
+    const reportPath = path.join(summary.directory, 'report.json');
+    fs.writeFileSync(reportPath, `${JSON.stringify(summary, null, 2)}\n`);
+    console.log('\n[audit] summary');
+    console.log(`  blockers          ${summary.blockers}`);
+    console.log(`  sweep frames      ${summary.sweepFrames}`);
+    console.log(`  penetrations      ${summary.totalPenetrations}`);
+    if ('archPreserved' in summary) console.log(`  arch preserved    ${summary.archPreserved}`);
+    if ('fixtures' in summary) console.log(`  fixtures          ${summary.fixtures.join(', ')}`);
+    if ('shapes' in summary) console.log(`  shapes sampled    ${summary.shapes.join(', ')}`);
+    if ('exactRefinements' in summary) console.log(`  exact-ring tests  ${summary.exactRefinements}`);
+    if ('metricValidated' in summary) {
+      console.log(`  metric validated  ${summary.metricValidated === true
+        ? 'yes' : `NO (sensitivity ${summary.metricSensitivity?.toFixed(3) ?? 'n/a'}x)`}`);
+    }
+    if ('suppressionRatio' in summary) {
+      console.log(`  dpr               ${summary.deviceScaleFactor} (pixelRatio ${summary.pixelRatio})`);
+      console.log(`  shimmer variance  production ${summary.productionVariance.toFixed(4)} vs control ${summary.controlVariance.toFixed(4)}`);
+      console.log(`  suppression       ${summary.suppressionRatio === null ? 'n/a' : `${summary.suppressionRatio.toFixed(3)}x`}`);
+      console.log(`  hardware sign-off ${summary.hardwareSignOff}`);
+    }
+    if ('actionFailures' in summary) {
+      for (const mode of ['curated', 'coordinates']) {
+        const result = summary[mode];
+        console.log(`  ${mode.padEnd(17)} ${result.declared.length} touch action(s): ${result.rendered.join(', ') || '(none)'}` +
+          ` · joystick ${result.joystick ? 'yes' : 'no'}`);
+      }
+      console.log(`  registered        ${summary.registry.actions} action(s) across both runtimes`);
+      if (summary.phone) {
+        const phoneSummary = ['curated', 'coordinates'].map(mode => {
+          const pass = summary.phone[mode];
+          return `${mode} ${pass.attribute}/${pass.buttons.length} button(s)${pass.zone ? '/joystick' : ''}`;
+        }).join(' · ');
+        console.log(`  phone viewport    ${summary.phone.viewport.w}x${summary.phone.viewport.h}: ${phoneSummary}`);
+      }
+    }
+    if ('domainFailures' in summary) {
+      console.log(`  interface         curated ${summary.interface.curated.complete ? 'complete' : 'INCOMPLETE'} · coordinates ${summary.interface.coordinates.complete ? 'complete' : 'INCOMPLETE'}`);
+      console.log(`  scale guard       ${summary.scaleVerdict.ok ? 'pass' : 'FAIL'} · footprint ratio ${summary.scaleVerdict.ratios.footprintHalfExtent?.toFixed(3)}x`);
+      for (const mode of ['curated', 'coordinates']) {
+        const probe = summary[mode].probe;
+        console.log(`  ${mode.padEnd(17)} move hit=${probe.move.hit} advanced=${probe.move.advanced.toFixed(3)}` +
+          ` · camera blocked=${probe.camera.blocked} clear=${!probe.camera.clearRayBlocked}`);
+      }
+    }
+    if ('zeroGrowth' in summary) {
+      console.log(`  zero growth       ${summary.zeroGrowth === true ? 'yes' : 'NO'}`);
+      if (summary.collectability) {
+        for (const mode of ['coordinates', 'curated']) {
+          const result = summary.collectability[mode];
+          console.log(`  collectability    ${mode}: ${result.retained}/${result.sampled} orphaned target(s) survived forced GC`);
+        }
+      }
+      for (const retention of summary.frameworkRetention ?? []) {
+        console.log(`  framework         ${retention.mode}: ${retention.retained} dev-only retained target(s) — ${retention.disposition}`);
+      }
+      for (const mode of ['coordinates', 'curated']) {
+        const state = summary[mode];
+        console.log(`  ${mode.padEnd(17)} ${summary.cyclesPerMode} cycles · mounted ${state.steadyState.workers}w/${state.steadyState.observers}o/` +
+          `${state.steadyState.listenersPersistent}l/${state.steadyState.geometries}g/${state.steadyState.textures}t · ` +
+          `after exit ${state.afterExit.workers}w/${state.afterExit.observers}o/${state.afterExit.listenersPersistent}l, ` +
+          `${state.afterExit.released} released, ${state.afterExit.outstanding} outstanding`);
+        console.log(`  ${''.padEnd(17)} warm reference ${state.warmReference.workers}w/${state.warmReference.observers}o/` +
+          `${state.warmReference.listenersPersistent}l · one-time init ${state.oneTimeInitialisation.listeners} listener(s), ` +
+          `${state.oneTimeInitialisation.domNodes} DOM node(s)`);
+      }
+    }
+    if ('stabilitySamples' in summary) {
+      console.log(`  stable renders    ${summary.stabilitySamples - summary.orderInstabilitySamples}/${summary.stabilitySamples}`);
+      console.log(`  alpha foliage     ${summary.alphaBlendedFoliage.length}`);
+    }
+    if (summary.skipped?.length) console.log(`  uncovered         ${summary.skipped.map(s => s.fixture).join(', ')}`);
+    console.log(`  console errors    ${relevant.length} gate-relevant, ${known.length} tracked-known`);
+    console.log(`  report            ${reportPath}`);
+    if (summary.totalPenetrations > 0) {
+      console.error('\n[audit] FAIL: the camera rendered from inside a blocker.');
+      process.exitCode = 1;
+    }
+    // A scenario that ran but could not reach a verdict must not look like a
+    // pass. Exit 2 is distinct from 1 so callers can tell "decided bad" from
+    // "could not decide".
+    // Zero growth is a hard assertion, not a measurement to interpret: the scenario
+    // reports the offending class and call sites in `leaks`.
+    if (summary.zeroGrowth === false) {
+      console.error('\n[audit] FAIL: remount grew a resource that FND-07 requires to hold steady.');
+      for (const leak of summary.leaks) console.error(`  ${leak}`);
+      process.exitCode = 1;
+    }
+    // The domain interface is a hard assertion: the probe either drove both
+    // runtimes to the same semantics or it did not.
+    if (summary.domainFailures?.length) {
+      console.error('\n[audit] FAIL: the curated/coordinate domain interface does not hold.');
+      for (const failure of summary.domainFailures) console.error(`  ${failure}`);
+      process.exitCode = 1;
+    }
+    // The action registry is a hard assertion: an action a surface claims but
+    // cannot reach is unreachable gameplay, not a measurement to interpret.
+    if (summary.actionFailures?.length) {
+      console.error('\n[audit] FAIL: a registered gameplay action is not reachable on a surface it claims.');
+      for (const failure of summary.actionFailures) console.error(`  ${failure}`);
+      process.exitCode = 1;
+    }
+    if (summary.metricValidated === false) {
+      console.error('\n[audit] INCONCLUSIVE: the scenario ran but its metric is not');
+      console.error('  validated, so its numbers do not support any conclusion.');
+      console.error(`  metric sensitivity ${summary.metricSensitivity?.toFixed(3) ?? 'n/a'}x ` +
+        '(positive control over production; 1.5x required).');
+      process.exitCode = 2;
+    }
+    if (relevant.length) {
+      console.error('\n[audit] FAIL: runtime logged gate-relevant errors during capture.');
+      for (const entryLog of relevant.slice(0, 5)) console.error(`  ${entryLog.level}: ${entryLog.text}`);
+      process.exitCode = 1;
+    }
+  } finally {
+    await browser.close();
+  }
+}
+
+main().catch(error => {
+  console.error(`[audit] ${error.stack || error.message}`);
+  process.exitCode = 1;
+});

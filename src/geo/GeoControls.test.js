@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { FlexibleJoystick, normalizeJoystick, shouldUseTouchControls } from './GeoControls.js';
 import { GeoPlayer } from './GeoPlayer.js';
+import { createFlatDomain } from '../engine/FlatDomain.js';
 
 test('mobile detection requires a mobile hint or touch-oriented device', () => {
   assert.equal(shouldUseTouchControls({
@@ -51,15 +52,19 @@ test('coordinate explorer defaults to FPP and switches cleanly to TPP', () => {
   const camera = new THREE.PerspectiveCamera(52, 1, .02, 210);
   const modes = [];
   let blockCamera = false;
-  const world = {
-    collidesCircle: () => false,
+  // `FND-08`: this used to be a two-method object literal plus a compatibility
+  // path inside `GeoPlayer`. The player now requires the domain interface, so
+  // the double implements it.
+  const world = createFlatDomain({
     clipCamera(target, desired, radius, out = {}) {
       assert.ok(radius >= .03 && radius <= .04);
       if (blockCamera) desired.lerpVectors(target, desired, .5);
       out.blocked = blockCamera;
+      out.amount = blockCamera ? .5 : 1;
+      out.time = out.amount;
       return out;
     },
-  };
+  });
   const player = new GeoPlayer(scene, camera, canvas, world, {
     onCameraModeChange: mode => modes.push(mode),
   });
@@ -128,7 +133,11 @@ test('coordinate player snaps to shared support and rejects an invalid ground tr
     moveCircle(x, z, dx, dz, radius, skin, contacts, out = {}) {
       return Object.assign(out, { x: x + dx, z: z + dz, hit: false, projectedX: dx, projectedZ: dz });
     },
-    clipCamera(target, desired, radius, out = {}) { out.blocked = false; return out; },
+    clipCamera(target, desired, radius, out = {}) {
+      out.blocked = false; out.amount = 1; out.time = 1;
+      return Object.assign(out, { normalX: 0, normalY: 1, normalZ: 0 });
+    },
+    readDiagnostics() { return {}; },
   };
   const player = new GeoPlayer(new THREE.Scene(), new THREE.PerspectiveCamera(), canvas, world);
   try {

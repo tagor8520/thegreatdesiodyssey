@@ -4,6 +4,16 @@
 **Baseline:** `6cca7483cf0eb515277b248ab2282586d66a1b81`
 **Scope:** Current `/` game, legacy `/classic.html` game, content model, performance architecture, product aim, and defensibility.
 
+> **Post-audit status (verified 2026-10-03).** This document is a dated snapshot of the baseline commit above and its findings are intentionally preserved rather than rewritten. For current status, [`feature-roadmap/README.md`](./feature-roadmap/README.md) is the authority. What has changed since:
+>
+> **Resolved.** A `test`/`check` pipeline now exists (`npm test`, `npm run check`) and passes **141 tests** plus a **119-module** production build, so §3's "no `test` script" and "eight tests" no longer describe the repository. Low/balanced/high quality profiles and a lazy landing shell closed §1 blockers 4 and 5 (unconditional SSAO/DPR/shadow cost, and world allocation behind the landing page). §1 blocker 2 and §7.4's streaming concerns are addressed for Coordinate Explorer through four-tile residency, capped prefetch, worker generation, and roads-first delivery.
+>
+> **Partially resolved.** §4's "two competing implementations" is no longer a *live* ambiguity: the canonical runtimes are `src/geo/` (Coordinate Explorer) and `src/reference/` (curated), and `README.md` now documents the lane split, lists the legacy-only modules, and names the three currently unreferenced engine modules. However, `/classic.html` and `src/world/`, `src/ui/`, and the legacy `src/engine/` modules still ship in the build, and the freeze/remove decision below remains unmade.
+>
+> **Still open.** §4's "advertised low-code JSON path is not active" is still true — `StateManager`, `MapGenerator`, and `MultiplayerClient` are imported by no entry point, and `public/content/states/*.json` is not consumed. There is still no lint, typecheck, or CI job. All eight decisions in §12 remain unanswered.
+>
+> **Still unverified.** §6's structural measurements (425 `InstancedMesh` objects, 9,310 instances, full-scene shadows) describe the pre-profile baseline and have not been re-measured against the current curated runtime. The roadmap's current budget figures cover Coordinate Explorer worker output and the plant/furniture fixtures, not a curated-mode draw submission count.
+
 ## 1. Executive summary
 
 The Great Desi Odyssey is a browser-based 3D voxel exploration prototype about Indian regions, landmarks, food, and internet culture. Its current playable loop is:
@@ -51,7 +61,9 @@ The implemented `/` experience is a polished **three-region vertical slice**, no
 - Score and pickups live only in browser memory and reset on refresh.
 - Trains and a houseboat are cosmetic actors.
 - Multiplayer timing/ping hooks exist at the mount boundary, but no transport is attached.
-- Desktop keyboard/mouse is required; there are no mobile movement controls.
+- Desktop keyboard/mouse is the primary input; touch controls now exist in **both** live runtimes (`GME-05`, 2026-10-05) — a left-side movement joystick plus Run/Jump/Map in the curated adventure and Run/Jump/TPP in the Coordinate Explorer, with a 44px minimum target size, rendered from one shared action registry and withheld from mouse-driven browsers.
+
+> **Updated 2026-10-05 (`GME-05`).** The line above replaces *"Desktop keyboard/mouse is required; there are no mobile movement controls"*, which was true when written: the curated runtime — the mode the landing page opens — shipped with no touch controls until the shared action registry gate was implemented, and that gap was found by building the gate rather than by playing the game. Every gameplay action is now declared once in `src/engine/ActionRegistry.js` and reached from the keyboard, the on-screen controls and the in-game inventory through the same name; a source scan fails the build if any module outside the registry names a registered key. The legacy `/classic.html` explorer keeps its own keymaps by design and is excluded by name.
 
 The clearest current positioning is:
 
@@ -205,6 +217,8 @@ Player terrain height is an O(1) analytical query aligned to rendered four-unit 
 - respawns after falling below the world.
 
 This is appropriately simple for the current game. It will scale poorly only when global bridge/collider arrays become large, because bridge queries linearly scan all bridge segments/rails.
+
+> **Updated 2026-10-05 (`FND-08`).** The bullets above still describe the *rules*, which were deliberately preserved, but not the *shape* of the code. The curated player no longer performs this arithmetic itself: it asks a named domain (`src/reference/CuratedDomain.js`) for horizontal motion, the step verdict and ground support, and `GeoWorld` answers the same six questions for the coordinate runtime. The four-footprint-corner test, the bridge deck/rail AABBs, the `.55` step ceiling and the respawn below the world are unchanged — they now live behind `supportUnderFoot`, `collidesCircle`, `moveCircle` and `resolveGroundStep` instead of inside `moveAxis`. The linear bridge scan noted above is unchanged and still the scaling limit; the interface makes it replaceable without touching a caller, which it was not before.
 
 ### 5.6 Content and game state
 
@@ -564,7 +578,7 @@ better tools → more regional contributors → richer authentic world
 3. Move generation/decoding to workers using transferable typed arrays.
 4. Cap and stage GPU uploads.
 5. Replace fixed world bounds/water with manifest bounds and camera-centered/chunk water.
-6. Add a spatial hash for collision and interactions.
+6. Add a spatial hash for collision and interactions. **Implemented** — the static per-tile grid plus the capped dynamic proxy hash (`COL-09`, `src/geo/GeoDynamicProxies.js`); the hash ships empty and the vehicle/agent/projectile consumers are separate slices.
 
 ### Phase 4 — Build the real state content pipeline
 

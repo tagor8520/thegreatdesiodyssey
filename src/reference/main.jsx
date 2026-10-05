@@ -2,11 +2,14 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import * as THREE from 'three';
 import { createProceduralEngine } from '../engine/ProceduralEngine.js';
-import { GameUI, createUIStore } from './GameUI.jsx';
+import { GameUI, ITEMS, createUIStore } from './GameUI.jsx';
 import { BiomeManager } from './BiomeManager.js';
 import { Environment } from './Environment.js';
 import { Player } from './Player.js';
 import { BridgeManager } from './BridgeManager.js';
+import { createCuratedDomain } from './CuratedDomain.js';
+import { mountTouchControls } from '../engine/TouchControls.js';
+import '../engine/touch-controls.css';
 import { HoardingManager } from './HoardingManager.js';
 import { ItemManager } from './ItemManager.js';
 import { GameAudio } from './GameAudio.js';
@@ -52,8 +55,21 @@ export function mountReferenceGame(container, {
   });
   const bridges = new BridgeManager(scene, { cameraBlockers: biomes.cameraBlockers });
   const store = createUIStore();
+  // `FND-08`: the curated runtime gets its domain explicitly at mount, so the
+  // interface it is driven through is a construction decision and not an
+  // assumption about what a `bridges` object happens to expose.
+  const domain = createCuratedDomain({ bridges, worldScene: scene });
+  // `GME-05`: the inventory has exactly one entry point. The keyboard reaches it
+  // through `ActionInput` → `Player.onAction` → here, and the on-screen buttons in
+  // `GameUI` call the same function, so the two surfaces cannot disagree.
+  const selectSlot = slot => {
+    store.set({ selected: slot });
+    onSelect?.(ITEMS[slot]);
+  };
   const player = new Player(scene, camera, bridges, {
     canvas,
+    domain,
+    onSelectSlot: selectSlot,
     onCameraHint: cameraHint => store.set({ cameraHint }),
     orbitOptions: {
       overviewGlobal: profile.overviewGlobal,
@@ -64,6 +80,16 @@ export function mountReferenceGame(container, {
   });
   player.enabled = false; player.root.visible = false; player.orbit.mapMode = true;
   player.orbit.update(0, player.position, true);
+  // `GME-05`: the curated runtime had no touch controls at all, so it could not be
+  // played on a phone. The layer is rendered from the shared action registry, the
+  // same one the coordinate runtime uses, so the two modes expose the same actions.
+  const touch = mountTouchControls({ runtime: 'curated', container, input: player.input });
+  // Two separate questions: is this a touch device, and has the player started?
+  // The controls are only useful during play, and a joystick drawn across the
+  // landing page would be both useless and in the way. Keeping them separate also
+  // means a desktop browser never gets them, whatever the start state.
+  const touchDevice = touch.mobile;
+  touch.setMobile(false);
 
   const hoardings = new HoardingManager(scene, { textureScale: profile.signTextureScale });
   bridges.cameraBlockers.push(...hoardings.cameraBlockers);
@@ -97,6 +123,8 @@ export function mountReferenceGame(container, {
     if (store.getSnapshot().started) return;
     void sound.unlock().then(ok => { if (!sound.disposed && !ok) store.set({ soundEnabled: false }); });
     player.blur(); player.enabled = true; player.root.visible = true; player.orbit.mapMode = false;
+    touch.setMobile(touchDevice);
+    player.input.clear();
     store.set({ started: true }); canvas.tabIndex = 0; canvas.focus({ preventScroll: true });
   };
   const onToggleSound = () => {
@@ -113,9 +141,10 @@ export function mountReferenceGame(container, {
     }
     player.enabled = false; player.root.visible = false;
     player.mapMode = false; player.orbit.mapMode = true;
+    touch.setMobile(false);
     store.set({ started: false, cameraHint: 'Click to look · Scroll to zoom' });
   };
-  ui.render(<GameUI store={store} onSelect={onSelect} onStart={onStart} onExit={onExit} onToggleSound={onToggleSound} />);
+  ui.render(<GameUI store={store} onSelectSlot={selectSlot} onStart={onStart} onExit={onExit} onToggleSound={onToggleSound} />);
   if (initialStarted) onStart();
 
   const unsubscribePing = subscribePing?.(rtt => {
@@ -213,14 +242,14 @@ export function mountReferenceGame(container, {
   animationFrame = requestAnimationFrame(frame);
 
   return {
-    scene, camera, biomes, store, player, bridges, items, hoardings, sound, profile,
+    scene, camera, biomes, store, player, bridges, items, hoardings, sound, profile, domain, touch,
     dispose() {
       if (disposed) return; disposed = true;
       cancelAnimationFrame(animationFrame); observer.disconnect(); unsubscribePing?.();
       document.removeEventListener('visibilitychange', resetSampling);
       canvas.removeEventListener('webglcontextlost', contextLost);
       canvas.removeEventListener('webglcontextrestored', contextRestored);
-      ui.unmount(); sound.dispose(); player.dispose(); items.dispose(); hoardings.dispose();
+      ui.unmount(); touch.dispose(); sound.dispose(); player.dispose(); items.dispose(); hoardings.dispose();
       bridges.dispose(); biomes.dispose(); environment.dispose(); engine.dispose();
     },
   };

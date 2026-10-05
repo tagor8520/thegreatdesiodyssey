@@ -42,6 +42,7 @@ import {
   clampTileY,
 } from './GeoMath.js';
 import {
+  GEO_PLAYER_COLLISION_PROFILE,
   GEO_QUERY_MASK,
   circleAabbPenetration,
   circleFootprintPenetration,
@@ -49,6 +50,10 @@ import {
   sweepCircleAgainstFootprint,
   sweepPointAgainstAabb,
 } from './GeoCollision.js';
+import {
+  GEO_DYNAMIC_PROXY_DEFAULT_PROFILE,
+  GeoDynamicProxyHash,
+} from './GeoDynamicProxies.js';
 
 export { circleIntersectsFootprint } from './GeoCollision.js';
 
@@ -418,6 +423,8 @@ export class GeoWorld {
     camera = null,
     viewportHeight = 720,
     reducedMotion = prefersReducedPlantMotion(),
+    dynamicProxyProfile = GEO_DYNAMIC_PROXY_DEFAULT_PROFILE,
+    dynamicProxyCap,
   }) {
     this.scene = scene;
     this.materialLibraryHandle = materialLibrary ? null : acquireProceduralMaterialLibrary();
@@ -427,6 +434,10 @@ export class GeoWorld {
     this.onStatus = onStatus;
     this.onInitialReady = onInitialReady;
     this.providers = providers;
+    // Dynamic solids (vehicles, train cars, platforms, local agents) live in their
+    // own capped hash beside the per-tile static grid. The profile decides the hard
+    // cap: 64 low / 128 balanced / 256 high. Coordinate mode ships the low profile.
+    this.dynamicProxies = new GeoDynamicProxyHash({ profile: dynamicProxyProfile, cap: dynamicProxyCap });
     this.tiles = new Map();
     this.queue = [];
     this.activeRequests = 0;
@@ -458,11 +469,27 @@ export class GeoWorld {
     this.penetrationCandidate = {};
     this.motionDepenetration = {};
     this.sphereCandidate = {};
+    this.dynamicSweepCandidate = {};
     this.supportCandidate = {};
     this.cameraSupportCandidate = {};
+    // `FND-08`: the world *is* the coordinate side of the domain interface —
+    // supportAt, collidesCircle, moveCircle, resolveGroundStep, clipCamera and
+    // readDiagnostics below are the members. The scale descriptor states this
+    // mode's own units so a shared consumer cannot assume curated's.
+    this.name = 'coordinate';
+    /** @type {{footprintHalfExtent:number,supportSampleSpacing:number,sweepRadiusMin:number,sweepRadiusMax:number}} */
+    this.scale = Object.freeze({
+      footprintHalfExtent: GEO_PLAYER_COLLISION_PROFILE.radius,
+      supportSampleSpacing: GEO_TERRAIN_DEFAULTS.normalSample,
+      sweepRadiusMin: .03,
+      sweepRadiusMax: .04,
+    });
     this.transitionCandidate = { from: {}, to: {} };
     this.sweepCandidates = new Set();
     this.supportCandidates = new Set();
+    // Snapshot accessor required by the domain interface; the live object stays
+    // available as `queryDiagnostics` for the overlay and the audit harness.
+    this.readDiagnostics = () => ({ ...this.queryDiagnostics });
     this.queryDiagnostics = {
       overlaps: 0,
       sweeps: 0,
@@ -482,6 +509,10 @@ export class GeoWorld {
       groundRejects: 0,
       terrainCameraTests: 0,
       terrainCameraHits: 0,
+      dynamicCandidates: 0,
+      maxDynamicCandidates: 0,
+      dynamicTests: 0,
+      dynamicHits: 0,
     };
 
     this.root = new THREE.Group();
@@ -522,11 +553,17 @@ export class GeoWorld {
     this.plantLodSelector = this.plantRenderPools.selector;
     this.activeBiome = { id: 'temperate', label: 'Reading map landscape…', ground: [.16, .30, .10] };
 
-    this.worker = new Worker(new URL('./GeoTileWorker.js', import.meta.url), { type: 'module', name: 'map-tile-generator' });
-    this.worker.addEventListener('message', event => this._handleWorkerMessage(event.data));
-    this.worker.addEventListener('error', event => {
+    // Named handlers, not inline arrows: a listener that cannot be referenced
+    // cannot be removed, and `terminate()` alone leaves the worker's message and
+    // error channels registered on an object the caller may still hold (FND-07).
+    this._workerMessage = event => this._handleWorkerMessage(event.data);
+    this._workerError = event => {
+      if (this.disposed) return;
       this._emitStatus(`Map worker error: ${event.message || 'unknown error'}`, true);
-    });
+    };
+    this.worker = new Worker(new URL('./GeoTileWorker.js', import.meta.url), { type: 'module', name: 'map-tile-generator' });
+    this.worker.addEventListener('message', this._workerMessage);
+    this.worker.addEventListener('error', this._workerError);
 
     const initial = worldToTile(this.reference, 0, 0);
     this.initialKey = tileKey(initial.x, initial.y);
@@ -1228,10 +1265,33 @@ export class GeoWorld {
         )) return true;
       }
     }
+    // Dynamic solids are queried through the same mask and Y-span contract, so a
+    // placement query does not see a vehicle unless the vehicle carries PLACEMENT.
+    if (this._dynamicQueryMask(queryMask)) {
+      const count = this.dynamicProxies.collect(x, z, radius, queryMask, minY, maxY);
+      this.queryDiagnostics.dynamicCandidates += count;
+      this.queryDiagnostics.maxDynamicCandidates = Math.max(this.queryDiagnostics.maxDynamicCandidates, count);
+      this.queryDiagnostics.dynamicTests += count;
+      if (count && this.dynamicProxies.overlapsCircle(x, z, radius, queryMask, minY, maxY)) {
+        this.queryDiagnostics.dynamicHits++;
+        return true;
+      }
+    }
     return false;
   }
 
-  /** Earliest continuous horizontal hit against resident static footprints. */
+  /**
+   * True when the dynamic hash could hold anything for this role. Dynamic solids
+   * are solid, camera-blocking, or line-of-sight blockers; a support-only or
+   * fade-only query can skip the hash entirely.
+   */
+  _dynamicQueryMask(queryMask) {
+    if (this.dynamicProxies.activeCount === 0) return false;
+    return (queryMask & (GEO_QUERY_MASK.SOLID_PLAYER | GEO_QUERY_MASK.CAMERA_BLOCKER |
+      GEO_QUERY_MASK.LOS_BLOCKER | GEO_QUERY_MASK.INTERACTION | GEO_QUERY_MASK.PLACEMENT)) !== 0;
+  }
+
+  /** Earliest continuous horizontal hit against resident static footprints and dynamic solids. */
   sweepCircle(
     x, z, dx, dz, radius, out = {},
     queryMask = GEO_QUERY_MASK.SOLID_PLAYER,
@@ -1246,6 +1306,8 @@ export class GeoWorld {
     out.startedOverlapping = false;
     out.tileKey = null;
     out.polygonIndex = -1;
+    out.dynamicHandle = 0;
+    out.dynamicOwner = null;
 
     const sweepMinX = Math.min(x, x + dx) - radius;
     const sweepMaxX = Math.max(x, x + dx) + radius;
@@ -1286,6 +1348,36 @@ export class GeoWorld {
         out.startedOverlapping = candidate.startedOverlapping;
         out.tileKey = tile.key;
         out.polygonIndex = index / 4;
+        out.dynamicHandle = 0;
+        out.dynamicOwner = null;
+      }
+    }
+    // Merge the earliest dynamic contact. The static hit, if any, is already in
+    // `out`, so the dynamic sweep only needs to beat its time — a proxy that hits
+    // later is discarded and one that hits earlier replaces it.
+    if (this._dynamicQueryMask(queryMask)) {
+      const count = this.dynamicProxies.collect(
+        x + dx / 2, z + dz / 2, Math.hypot(dx, dz) / 2 + radius, queryMask, minY, maxY,
+      );
+      this.queryDiagnostics.dynamicCandidates += count;
+      this.queryDiagnostics.maxDynamicCandidates = Math.max(this.queryDiagnostics.maxDynamicCandidates, count);
+      if (count) {
+        const dynamic = this.dynamicProxies.sweepCircle(
+          x, z, dx, dz, radius, this.dynamicSweepCandidate, queryMask, minY, maxY,
+        );
+        this.queryDiagnostics.dynamicTests++;
+        if (dynamic.hit && (!out.hit || dynamic.time < out.time)) {
+          out.hit = true;
+          out.time = dynamic.time;
+          out.normalX = dynamic.normalX;
+          out.normalZ = dynamic.normalZ;
+          out.startedOverlapping = dynamic.startedOverlapping;
+          out.tileKey = null;
+          out.polygonIndex = -1;
+          out.dynamicHandle = dynamic.dynamicHandle;
+          out.dynamicOwner = dynamic.dynamicOwner;
+          this.queryDiagnostics.dynamicHits++;
+        }
       }
     }
     return out;
@@ -1435,6 +1527,8 @@ export class GeoWorld {
     out.normalZ = 0;
     out.tileKey = null;
     out.polygonIndex = -1;
+    out.dynamicHandle = 0;
+    out.dynamicOwner = null;
     const sweepMinX = Math.min(x, x + dx) - radius;
     const sweepMaxX = Math.max(x, x + dx) + radius;
     const sweepMinZ = Math.min(z, z + dz) - radius;
@@ -1505,8 +1599,64 @@ export class GeoWorld {
         if (overlapsFootprint) considerSweepHit(out, planeTime, 0, normalY, 0, tile, index);
       }
     }
+
+    // Dynamic solids are 2.5D — an XZ primitive with an explicit Y span — so the
+    // contact test is the XZ sweep evaluated at the contact time, accepted when the
+    // swept sphere still overlaps that span. Vertical plane contacts (landing on a
+    // deck, rising into a roof) are deliberately not claimed for dynamic proxies:
+    // platform support and pushback belong to PHY-01/PHY-02.
+    if (this._dynamicQueryMask(queryMask)) {
+      const count = this.dynamicProxies.collect(
+        x + dx / 2, z + dz / 2, Math.hypot(dx, dz) / 2 + radius, queryMask, sweepMinY, sweepMaxY,
+      );
+      this.queryDiagnostics.dynamicCandidates += count;
+      this.queryDiagnostics.maxDynamicCandidates = Math.max(this.queryDiagnostics.maxDynamicCandidates, count);
+      if (count) {
+        const dynamic = this.dynamicProxies.sweepCircle(
+          x, z, dx, dz, radius, this.dynamicSweepCandidate, queryMask, sweepMinY, sweepMaxY,
+        );
+        this.queryDiagnostics.dynamicTests++;
+        if (dynamic.hit && (!out.hit || dynamic.time < out.time)) {
+          const contactY = y + dy * dynamic.time;
+          const span = this.dynamicProxies.spanAt(dynamic.dynamicHandle);
+          if (contactY + radius >= span.y0 && contactY - radius <= span.y1) {
+            out.hit = true;
+            out.time = dynamic.time;
+            out.normalX = dynamic.normalX;
+            out.normalY = 0;
+            out.normalZ = dynamic.normalZ;
+            out.tileKey = null;
+            out.polygonIndex = -1;
+            out.dynamicHandle = dynamic.dynamicHandle;
+            out.dynamicOwner = dynamic.dynamicOwner;
+            this.queryDiagnostics.dynamicHits++;
+          }
+        }
+      }
+    }
     return out;
   }
+
+  // --- dynamic solids (COL-09) ---------------------------------------------
+
+  /**
+   * Registers one dynamic primitive. `ownerKey` groups a vehicle's parts so a
+   * single call releases all of them, and the profile cap counts primitives.
+   */
+  addDynamicProxy(spec) { return this.dynamicProxies.add(spec); }
+
+  /** Registers a short compound list as one owner; all-or-nothing. */
+  addDynamicCompound(spec, primitives) { return this.dynamicProxies.addCompound(spec, primitives); }
+
+  /** Moves or re-tags a proxy. Re-buckets only when a cell boundary is crossed. */
+  updateDynamicProxy(handle, patch) { return this.dynamicProxies.update(handle, patch); }
+
+  removeDynamicProxy(handle) { return this.dynamicProxies.remove(handle); }
+
+  /** Releases every primitive owned by one key — e.g. a vehicle that despawns. */
+  removeDynamicProxiesFor(ownerKey) { return this.dynamicProxies.removeOwner(ownerKey); }
+
+  get dynamicProxyDiagnostics() { return this.dynamicProxies.diagnostics; }
 
   clipCamera(target, desired, radius = .03, out = {}) {
     const dx = desired.x - target.x;
@@ -1690,11 +1840,16 @@ export class GeoWorld {
     if (this.plantMountTimer != null) clearTimeout(this.plantMountTimer);
     this.plantMountTimer = null;
     this.pendingPlantOwners.clear();
+    // Detach before terminating: the removal is what proves the worker's channels
+    // are empty, and it stays correct even if a caller keeps the worker handle.
+    this.worker.removeEventListener('message', this._workerMessage);
+    this.worker.removeEventListener('error', this._workerError);
     this.worker.terminate();
     for (const tile of [...this.tiles.values()]) this._evictTile(tile);
     this.tiles.clear(); this.queue.length = 0;
     this.plantRenderPools.dispose();
     this.streetFurniturePools.dispose();
+    this.dynamicProxies.dispose();
     this.root.removeFromParent(); this.root.clear();
     this.groundMaterial.dispose();
     this.roadMaterial.dispose(); this.landMaterial.dispose(); this.buildingMaterial.dispose();

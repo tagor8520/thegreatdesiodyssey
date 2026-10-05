@@ -120,19 +120,40 @@ function coastLayers() {
   };
 }
 
+/**
+ * The same real-world content expressed in each provider's **native** vocabulary.
+ *
+ * This is the fixture `MAP-08` needs, and the reason it is written per-variant
+ * rather than once: the two providers tag the same things differently, so a
+ * fixture that reuses one set of tags under both layer names never exercises the
+ * normalization it claims to test.
+ *
+ *   roads     OpenMapTiles `class`        vs Shortbread `kind`
+ *   buildings OpenMapTiles `render_height`, Shortbread has no height field at all
+ *
+ * The road tags are chosen to be semantically equivalent (`primary` in each), so
+ * normalization must collapse them to identical geometry. Building heights are
+ * deliberately *not* equivalent: `buildingHeight()` documents that Shortbread
+ * carries no height, so it falls back to a stable tile-addressed hash. Footprint
+ * and colliders must still agree exactly; the height difference is by design and
+ * asserted as such rather than papered over.
+ */
 function providerLayers(variant) {
-  const roadLayer = variant === 'shortbread' ? 'streets' : 'transportation';
-  const buildingLayer = variant === 'shortbread' ? 'buildings' : 'building';
-  const waterLayer = variant === 'shortbread' ? 'water_polygons' : 'water';
-  const placeLayer = variant === 'shortbread' ? 'place_labels' : 'place';
+  const shortbread = variant === 'shortbread';
+  const roadLayer = shortbread ? 'streets' : 'transportation';
+  const buildingLayer = shortbread ? 'buildings' : 'building';
+  const waterLayer = shortbread ? 'water_polygons' : 'water';
+  const placeLayer = shortbread ? 'place_labels' : 'place';
+  const roadTag = shortbread
+    ? (kind, extra) => ({ kind, ...extra })
+    : (kind, extra) => ({ class: kind, ...extra });
   return {
     [roadLayer]: [
-      line(70, [[0, 2048], [4096, 2048]], { kind: 'primary', name: 'Schema Road' }),
-      line(71, [[3072, 0], [3072, 4096]], { kind: 'secondary', bridge: true, layer: 1, name: 'Schema Bridge' }),
+      line(70, [[0, 2048], [4096, 2048]], roadTag('primary', { name: 'Schema Road' })),
+      line(71, [[3072, 0], [3072, 4096]], roadTag('secondary', { bridge: true, layer: 1, name: 'Schema Bridge' })),
     ],
-    [buildingLayer]: [polygon(72, [[[600, 500], [1600, 500], [1600, 1400], [600, 1400]]], {
-      class: 'building', render_height: 18,
-    })],
+    [buildingLayer]: [polygon(72, [[[600, 500], [1600, 500], [1600, 1400], [600, 1400]]],
+      shortbread ? { class: 'building' } : { class: 'building', render_height: 18 })],
     landuse: [polygon(73, [[[0, 0], [4096, 0], [4096, 4096], [0, 4096]]], { class: 'park' })],
     [waterLayer]: [polygon(74, [[[0, 3300], [4096, 3300], [4096, 4096], [0, 4096]]], {
       class: 'lake', name: 'Schema Lake',

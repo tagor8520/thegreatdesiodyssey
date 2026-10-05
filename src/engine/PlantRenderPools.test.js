@@ -119,8 +119,8 @@ test('compiled variant tiers upload deterministically as paired exposed-face ver
       assert.equal(first.userData.gdoPlantUpload.variants, 2);
       assert.equal(first.userData.gdoPlantUpload.runtimeCsgOperations, 0);
       assert.equal(first.userData.gdoPlantUpload.collisionProxies, 0);
-      assert.equal(first.userData.gdoPlantUpload.windDisplacementMargin, .06);
-      assert.ok(first.boundingBox.min.x <= Math.min(...first.getAttribute('position').array.filter((_, index) => index % 3 === 0)) - .059);
+      // Wind is opt-in, so the default tier withholds no culling reserve.
+      assert.equal(first.userData.gdoPlantUpload.windDisplacementMargin, 0);
       assert.ok(first.boundingSphere.radius > 0);
     } finally {
       first.dispose(); repeated.dispose();
@@ -128,33 +128,70 @@ test('compiled variant tiers upload deterministically as paired exposed-face ver
   } finally { handle.release(); }
 });
 
+function compileShaderSource(material) {
+  const shader = {
+    vertexShader: '#include <common>\nvoid main(){\n#include <beginnormal_vertex>\n#include <begin_vertex>\n}',
+    fragmentShader: '#include <common>\nvoid main(){ vec4 diffuseColor=vec4(1.0);\n#include <color_fragment>\n}',
+  };
+  material.onBeforeCompile(shader);
+  return shader;
+}
+
 test('plant material consumes custom palette/age/stiffness data without instanceColor', () => {
   const material = createPlantPoolMaterial();
   try {
-    const shader = {
-      vertexShader: '#include <common>\nvoid main(){\n#include <beginnormal_vertex>\n#include <begin_vertex>\n}',
-      fragmentShader: '#include <common>\nvoid main(){ vec4 diffuseColor=vec4(1.0);\n#include <color_fragment>\n}',
-    };
-    material.onBeforeCompile(shader);
+    const shader = compileShaderSource(material);
     assert.match(shader.vertexShader, /attribute float gdoPlantPalette/);
     assert.match(shader.vertexShader, /attribute vec3 gdoPlantTraits/);
     assert.match(shader.vertexShader, /attribute float gdoPlantVariant/);
     assert.match(shader.vertexShader, /attribute vec4 gdoPlantClearance/);
     assert.match(shader.vertexShader, /gdoPlantAdaptiveRole/);
     assert.match(shader.vertexShader, /mix\(position, gdoPlantPosition1/);
+    assert.match(shader.fragmentShader, /vGdoPlantTraits\.x/);
+    assert.equal(material.userData.gdoPlantPoolMaterial.windNamespace, 'gdo:vegetationWind:v1');
+    assert.equal(material.userData.gdoPlantPoolMaterial.builtInInstanceColor, false);
+    assert.equal(material.vertexColors, false);
+  } finally { material.dispose(); }
+});
+
+test('wind is opt-in and the default path compiles no wind ALU', () => {
+  const disabled = createPlantPoolMaterial();
+  try {
+    const shader = compileShaderSource(disabled);
+    assert.equal(disabled.userData.gdoPlantPoolMaterial.windEnabled, false);
+    // The guard must be present in source but the define must not be set, so the
+    // driver's preprocessor removes every wind instruction.
+    assert.ok(disabled.defines?.GDO_PLANT_WIND === undefined, 'default path sets no wind define');
+    assert.match(shader.vertexShader, /#ifdef GDO_PLANT_WIND/);
+    assert.ok(!shader.uniforms.gdoPlantWindClock, 'no clock uniform is bound when wind is off');
+    assert.ok(!shader.uniforms.gdoPlantWindField);
+    assert.ok(!shader.uniforms.gdoPlantWindAmplitude);
+    assert.match(shader.vertexShader, /vec2 gdoPlantWindOffset = vec2\(0\.0\);/);
+    // The displacement call site must sit inside the guard, not before it.
+    assert.ok(
+      shader.vertexShader.indexOf('gdoPlantWholeWind(\n') >
+      shader.vertexShader.indexOf('#ifdef GDO_PLANT_WIND'),
+      'wind call site remains inside the compile-time guard',
+    );
+    assert.notEqual(disabled.customProgramCacheKey(), '', 'cache key never collapses to empty');
+  } finally { disabled.dispose(); }
+});
+
+test('enabling wind restores the define, uniforms and guarded displacement', () => {
+  const enabled = createPlantPoolMaterial(null, { wind: true });
+  try {
+    const shader = compileShaderSource(enabled);
+    assert.equal(enabled.userData.gdoPlantPoolMaterial.windEnabled, true);
+    assert.equal(enabled.defines.GDO_PLANT_WIND, '');
     assert.match(shader.vertexShader, /gdoPlantWholeWind/);
     assert.match(shader.vertexShader, /plantMeta\.y \/ 255\.0/);
     assert.match(shader.vertexShader, /plantTraits\.z \+ spatialPhase/);
     assert.doesNotMatch(shader.vertexShader, /plantMeta\.z/, 'VEG-10 branch-group phase remains deferred');
     assert.match(shader.vertexShader, /rootMask/);
-    assert.match(shader.fragmentShader, /vGdoPlantTraits\.x/);
-    assert.equal(shader.uniforms.gdoPlantWindClock, material.userData.gdoPlantWind.uniforms.clock);
-    assert.equal(shader.uniforms.gdoPlantWindField, material.userData.gdoPlantWind.uniforms.field);
-    assert.equal(shader.uniforms.gdoPlantWindAmplitude, material.userData.gdoPlantWind.uniforms.amplitude);
-    assert.equal(material.userData.gdoPlantPoolMaterial.windNamespace, 'gdo:vegetationWind:v1');
-    assert.equal(material.userData.gdoPlantPoolMaterial.builtInInstanceColor, false);
-    assert.equal(material.vertexColors, false);
-  } finally { material.dispose(); }
+    assert.equal(shader.uniforms.gdoPlantWindClock, enabled.userData.gdoPlantWind.uniforms.clock);
+    assert.equal(shader.uniforms.gdoPlantWindField, enabled.userData.gdoPlantWind.uniforms.field);
+    assert.equal(shader.uniforms.gdoPlantWindAmplitude, enabled.userData.gdoPlantWind.uniforms.amplitude);
+  } finally { enabled.dispose(); }
 });
 
 test('plant custom shader composes with the shared semantic material hook', () => {
@@ -244,7 +281,23 @@ test('staggered projected-size changes move membership without steady-frame matr
   assert.equal(pools.diagnostics.steadyFrameAllocations, 0);
 }));
 
-test('GPU wind advances one shared uniform without CPU instance-matrix work', () => withPools({}, pools => {
+test('disabling wind performs zero wind work on steady frames', () => withPools({}, pools => {
+  pools.addOwner('tile:nowind', [
+    placement('tile:nowind', 'nowind:0', { position: [1, 0, 2], yaw: .7 }),
+    placement('tile:nowind', 'nowind:1', { position: [2, 0, 2], yaw: 1.1 }),
+  ], VIEW);
+  pools.update({ ...VIEW, nowMilliseconds: 10 });
+  pools.update({ ...VIEW, nowMilliseconds: 20 });
+  assert.equal(pools.diagnostics.windEnabled, false);
+  assert.equal(pools.diagnostics.windUniformWrites, 0, 'no clock uniform write when wind is off');
+  assert.equal(pools.diagnostics.windCpuMatrixUpdates, 0);
+  assert.equal(pools.diagnostics.windSteadyFrameAllocations, 0);
+  // Inert rather than half-enabled: callers cannot configure a disabled field.
+  assert.equal(pools.configureWind({ direction: [0, 1], strength: 1 }), false);
+  assert.equal(pools.diagnostics.wind.malformedInputs, 0, 'disabled wind rejects without touching state');
+}));
+
+test('GPU wind advances one shared uniform without CPU instance-matrix work', () => withPools({ wind: true }, pools => {
   pools.addOwner('tile:wind', [
     placement('tile:wind', 'wind:0', { position: [1, 0, 2], yaw: .7, windStiffness: .2 }),
     placement('tile:wind', 'wind:1', { position: [2, 0, 2], yaw: 1.1, windStiffness: .8 }),

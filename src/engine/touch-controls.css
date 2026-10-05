@@ -1,0 +1,139 @@
+/*
+ * Shared touch controls (`GME-05`).
+ *
+ * These rules used to live in `src/geo/geo.css` and were reachable only from the
+ * coordinate runtime, which is why the curated runtime had no touch UI at all.
+ * They are not coordinate-specific — a joystick, a look hint and a button cluster
+ * are the same controls in both modes — so they live here and both runtimes
+ * import this file. The gear `GME-05` gate asserts that the controls a runtime
+ * renders match the actions its registry declares, so this file intentionally
+ * carries no per-action rules: grid placement comes from the registry.
+ *
+ * Values are unchanged from the coordinate runtime's original rules; the
+ * selectors are frame-neutral (`.gdo-touch*` instead of `.geo-touch*`) and the
+ * mobile gate is now an attribute the mount function sets rather than a
+ * `.geo-mobile` ancestor class.
+ */
+
+.gdo-touch {
+  display: none;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.gdo-touch[data-mobile='true'] { display: block; }
+.gdo-touch[data-mobile='false'] { display: none; }
+
+.gdo-joystick-zone {
+  position: absolute;
+  top: 25%;
+  bottom: 0;
+  left: 0;
+  width: 56%;
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.gdo-joystick-hint {
+  position: absolute;
+  left: max(64px, calc(env(safe-area-inset-left) + 64px));
+  bottom: max(58px, calc(env(safe-area-inset-bottom) + 58px));
+  transform: translate(-50%, -50%);
+  color: rgba(255, 247, 229, .45);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .12em;
+  text-align: center;
+  transition: opacity .12s ease;
+}
+
+.gdo-joystick-hint span {
+  display: block;
+  width: 70px;
+  height: 70px;
+  margin: 0 auto -49px;
+  border: 2px dashed rgba(255, 247, 229, .2);
+  border-radius: 50%;
+  background: rgba(9, 28, 25, .08);
+}
+
+.gdo-joystick-zone.is-engaged .gdo-joystick-hint { opacity: 0; }
+
+.gdo-joystick-base {
+  display: none;
+  position: absolute;
+  width: 112px;
+  height: 112px;
+  transform: translate(-50%, -50%);
+  border: 2px solid rgba(255, 247, 229, .28);
+  border-radius: 50%;
+  background: rgba(9, 28, 25, .20);
+  box-shadow: inset 0 0 22px rgba(255, 255, 255, .05);
+}
+
+.gdo-joystick-base.is-engaged { display: block; }
+
+.gdo-joystick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 50px;
+  height: 50px;
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(255, 247, 229, .4);
+  border-radius: 50%;
+  background: rgba(255, 226, 170, .20);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, .18);
+}
+
+.gdo-look-hint {
+  position: absolute;
+  right: max(28px, env(safe-area-inset-right));
+  bottom: max(128px, calc(env(safe-area-inset-bottom) + 128px));
+  color: rgba(255, 247, 229, .38);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .12em;
+}
+
+.gdo-actions {
+  position: absolute;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(18px, env(safe-area-inset-bottom));
+  display: grid;
+  grid-template: 46px 58px / 52px 72px;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.gdo-actions button {
+  pointer-events: auto;
+  /* Belt and braces under the registry's `touch.size` floor: a button added
+     without a declared size still cannot render below a usable target. */
+  min-width: 44px;
+  min-height: 44px;
+  touch-action: none;
+  border: 1px solid rgba(255, 247, 229, .35);
+  border-radius: 50%;
+  background: rgba(9, 28, 25, .20);
+  color: rgba(255, 247, 229, .88);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, .12);
+  font-size: 10px;
+  font-weight: 900;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+}
+
+.gdo-actions button.is-active { background: rgba(217, 148, 60, .48); color: #fff; }
+
+@media (max-height: 480px) {
+  .gdo-look-hint { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gdo-joystick-hint { transition: none; }
+}

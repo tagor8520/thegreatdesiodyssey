@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GEO_PLAYER_COLLISION_PROFILE } from './GeoCollision.js';
+import { ActionInput, codesFor } from '../engine/ActionRegistry.js';
 
 // Horizontal source geometry is 1:10, so a roughly 1.8 m avatar is 0.18 units.
 // The movement shape and its skin together remain inside the measured profile;
@@ -43,12 +44,13 @@ function createAvatar() {
 }
 
 export class GeoPlayer {
-  constructor(scene, camera, canvas, world, { onCameraModeChange = () => {} } = {}) {
+  constructor(scene, camera, canvas, world, { onCameraModeChange = () => {}, onDebugToggle = null } = {}) {
     this.scene = scene;
     this.camera = camera;
     this.canvas = canvas;
     this.world = world;
     this.onCameraModeChange = onCameraModeChange;
+    this.onDebugToggle = onDebugToggle;
     this.position = new THREE.Vector3(0, 0, 0);
     this.velocity = new THREE.Vector3();
     this.keys = new Set();
@@ -89,23 +91,33 @@ export class GeoPlayer {
     this.cameraSupportResult = {};
     this.cameraClipResult = {};
 
-    this.keydown = event => {
-      if (!this.enabled || event.ctrlKey || event.metaKey || event.altKey ||
-          event.target?.closest?.('input,textarea,select,[contenteditable="true"]')) return;
-      if (event.code === 'KeyV' || event.code === 'KeyC') {
-        event.preventDefault();
-        if (!event.repeat) this.toggleCameraMode();
-        return;
-      }
-      if (!['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','ShiftLeft','ShiftRight'].includes(event.code)) return;
-      event.preventDefault();
-      this.keys.add(event.code);
-      if (event.code === 'Space' && !event.repeat) this.jumpQueued = true;
-    };
-    this.keyup = event => this.keys.delete(event.code);
-    this.blur = () => {
-      this.keys.clear();
-      this.virtual.clear();
+    // Input is resolved through the shared action registry (`GME-05`) instead of
+    // a hard-coded code list living in this constructor. `keys`, `virtual` and
+    // `setVirtualInput` remain the same surface, so callers and tests that drive
+    // input directly are unaffected — but every code is now interpreted by the
+    // registry, and an action this runtime does not have is rejected by name.
+    this.input = new ActionInput({
+      runtime: 'coordinates',
+      target: window,
+      shouldIgnore: () => !this.enabled,
+      onAction: action => {
+        if (action === 'jump') this.jumpQueued = true;
+        else if (action === 'camera') this.toggleCameraMode();
+        // `GME-05`: `F3` used to be a second keydown listener in `GeoGame`, sitting
+        // alongside the registry's own binding for the same key. The registry is
+        // the only keymap now, and this is the runtime's handler for the action.
+        else if (action === 'debug') this.onDebugToggle?.();
+      },
+      onBlur: () => this.resetMotion(),
+    });
+    this.keys = this.input.keys;
+    this.virtual = this.input.virtual;
+    // The analogue stick lives on the input object, so a joystick wired through
+    // the shared touch layer and a direct `setMoveInput()` call are the same path.
+    this.input.setAnalog(0, 0);
+    this.analogMove = this.input.analog;
+    /** Clears movement and look state without touching the input sets. */
+    this.resetMotion = () => {
       this.analogMove.x = 0;
       this.analogMove.z = 0;
       this.velocity.x = 0;
@@ -113,6 +125,8 @@ export class GeoPlayer {
       this.jumpQueued = false;
       this.lookPointerId = null;
     };
+    /** Kept for callers and tests that reset the player directly. */
+    this.blur = () => { this.input.clear(); this.resetMotion(); };
     this.mousedown = event => {
       if (event.button !== 0 || this.disposed) return;
       if (canvas.requestPointerLock) {
@@ -151,9 +165,9 @@ export class GeoPlayer {
       );
     };
 
-    window.addEventListener('keydown', this.keydown);
-    window.addEventListener('keyup', this.keyup);
-    window.addEventListener('blur', this.blur);
+    // Keyboard, keyup and blur listeners belong to `this.input`, which removes
+    // them in its own dispose; `FND-07` counts listeners, and a handler registered
+    // in two places is a handler that gets removed from one of them.
     document.addEventListener('mousemove', this.mousemove);
     canvas.addEventListener('mousedown', this.mousedown);
     canvas.addEventListener('pointerdown', this.pointerdown);
@@ -191,18 +205,21 @@ export class GeoPlayer {
   setMoveInput(x, z) {
     const length = Math.hypot(x, z);
     const scale = length > 1 ? 1 / length : 1;
-    this.analogMove.x = x * scale;
-    this.analogMove.z = z * scale;
+    this.input.setAnalog(x * scale, z * scale);
   }
 
+  /**
+   * Touch/UI input. The registry validates the action name against this runtime,
+   * so a control wired to a typo or to another mode's action throws instead of
+   * silently doing nothing — which is how the old version could accept any
+   * string at all.
+   */
   setVirtualInput(action, active) {
-    if (active) this.virtual.add(action);
-    else this.virtual.delete(action);
-    if (action === 'jump' && active && this.enabled) this.jumpQueued = true;
+    this.input.setVirtual(action, active && this.enabled);
   }
 
   setPosition(x, z) {
-    const groundY = this.world.supportAt?.(x, z, this.supportResult)?.y ?? 0;
+    const groundY = this.world.supportAt(x, z, this.supportResult).y;
     this.position.set(x, groundY, z);
     this.velocity.set(0, 0, 0);
     this.grounded = true;
@@ -211,13 +228,19 @@ export class GeoPlayer {
     this.updateCamera(0, true);
   }
 
-  held(action, ...codes) {
-    return this.virtual.has(action) || codes.some(code => this.keys.has(code));
+  /**
+   * Held state for one registered action. The code list comes from the registry,
+   * so a rebind is a registry edit rather than a search for every call site.
+   */
+  held(action) {
+    if (this.virtual.has(action)) return true;
+    for (const code of codesFor(action)) if (this.keys.has(code)) return true;
+    return false;
   }
 
   step(dt) {
-    let inputX = this.analogMove.x + Number(this.held('right','KeyD','ArrowRight')) - Number(this.held('left','KeyA','ArrowLeft'));
-    let inputZ = this.analogMove.z + Number(this.held('back','KeyS','ArrowDown')) - Number(this.held('forward','KeyW','ArrowUp'));
+    let inputX = this.analogMove.x + Number(this.held('right')) - Number(this.held('left'));
+    let inputZ = this.analogMove.z + Number(this.held('back')) - Number(this.held('forward'));
     const inputLength = Math.hypot(inputX, inputZ);
     if (inputLength > 1) {
       inputX /= inputLength;
@@ -225,7 +248,7 @@ export class GeoPlayer {
     }
     const x = inputX * Math.cos(this.yaw) + inputZ * Math.sin(this.yaw);
     const z = inputZ * Math.cos(this.yaw) - inputX * Math.sin(this.yaw);
-    const running = this.held('run','ShiftLeft','ShiftRight');
+    const running = this.held('run');
     const speed = running ? 3.8 : 2.25;
     const alpha = 1 - Math.exp(-12 * dt);
     this.velocity.x = THREE.MathUtils.lerp(this.velocity.x, x * speed, alpha);
@@ -234,34 +257,27 @@ export class GeoPlayer {
     const deltaX = this.velocity.x * dt;
     const deltaZ = this.velocity.z * dt;
     const previousX = this.position.x, previousZ = this.position.z;
-    if (typeof this.world.moveCircle === 'function') {
-      const motion = this.world.moveCircle(
-        this.position.x, this.position.z, deltaX, deltaZ,
-        GEO_PLAYER_COLLISION_PROFILE.radius,
-        GEO_PLAYER_COLLISION_PROFILE.skin,
-        GEO_PLAYER_COLLISION_PROFILE.maxContacts,
-        this.motionResult,
-        GEO_PLAYER_COLLISION_PROFILE.maxDepenetration,
-      );
-      this.position.x = motion.x;
-      this.position.z = motion.z;
-      if (motion.hit && dt > 0) {
-        this.velocity.x = motion.projectedX / dt;
-        this.velocity.z = motion.projectedZ / dt;
-      }
-    } else {
-      // Compatibility path for lightweight test/embedding worlds that expose
-      // only the original overlap query.
-      const queryRadius = GEO_PLAYER_COLLISION_PROFILE.radius + GEO_PLAYER_COLLISION_PROFILE.skin;
-      const nextX = this.position.x + deltaX;
-      if (!this.world.collidesCircle(nextX, this.position.z, queryRadius)) this.position.x = nextX;
-      else this.velocity.x = 0;
-      const nextZ = this.position.z + deltaZ;
-      if (!this.world.collidesCircle(this.position.x, nextZ, queryRadius)) this.position.z = nextZ;
-      else this.velocity.z = 0;
+    // The domain interface is required, not optional. This used to branch on
+    // whether the world exposed `moveCircle`, with a hand-rolled overlap path
+    // for "lightweight test/embedding worlds" — which meant the shipped
+    // contract was whatever happened to be present at call time, and no test
+    // ever exercised the fallback against a real world.
+    const motion = this.world.moveCircle(
+      this.position.x, this.position.z, deltaX, deltaZ,
+      GEO_PLAYER_COLLISION_PROFILE.radius,
+      GEO_PLAYER_COLLISION_PROFILE.skin,
+      GEO_PLAYER_COLLISION_PROFILE.maxContacts,
+      this.motionResult,
+      GEO_PLAYER_COLLISION_PROFILE.maxDepenetration,
+    );
+    this.position.x = motion.x;
+    this.position.z = motion.z;
+    if (motion.hit && dt > 0) {
+      this.velocity.x = motion.projectedX / dt;
+      this.velocity.z = motion.projectedZ / dt;
     }
 
-    if (this.grounded && typeof this.world.resolveGroundStep === 'function') {
+    if (this.grounded) {
       this.groundTransitionOptions.referenceY = this.position.y;
       const transition = this.world.resolveGroundStep(
         previousX, previousZ, this.position.x, this.position.z,
@@ -274,8 +290,6 @@ export class GeoPlayer {
         this.velocity.z = 0;
         this.position.y = transition.from.y;
       } else this.position.y = transition.to.y;
-    } else if (this.grounded && typeof this.world.supportAt === 'function') {
-      this.position.y = this.world.supportAt(this.position.x, this.position.z, this.supportResult).y;
     }
 
     if (this.jumpQueued && this.grounded) {
@@ -288,9 +302,9 @@ export class GeoPlayer {
       this.velocity.y -= 5.2 * dt;
       this.position.y += this.velocity.y * dt;
       this.landingSupportOptions.referenceY = this.airborneSupportY;
-      const groundY = this.world.supportAt?.(
+      const groundY = this.world.supportAt(
         this.position.x, this.position.z, this.supportResult, this.landingSupportOptions,
-      )?.y ?? 0;
+      ).y;
       if (this.velocity.y <= 0 && this.position.y <= groundY) {
         this.position.y = groundY;
         this.velocity.y = 0;
@@ -330,12 +344,12 @@ export class GeoPlayer {
       Math.sin(this.thirdPersonPitch) * this.distance,
       Math.cos(this.yaw) * Math.cos(this.thirdPersonPitch) * this.distance,
     ).add(this.cameraTarget);
-    const cameraGround = this.world.supportAt?.(
+    const cameraGround = this.world.supportAt(
       this.cameraIdeal.x, this.cameraIdeal.z, this.cameraSupportResult,
-    )?.y ?? 0;
+    ).y;
     this.cameraIdeal.y = Math.max(cameraGround + .3, this.cameraIdeal.y);
     this.cameraDesired.copy(this.cameraIdeal);
-    const clip = this.world.clipCamera?.(
+    const clip = this.world.clipCamera(
       this.cameraTarget,
       this.cameraDesired,
       cameraNearPlaneSweepRadius(this.camera),
@@ -375,9 +389,7 @@ export class GeoPlayer {
     this.disposed = true;
     this.blur();
     if (document.pointerLockElement === this.canvas) document.exitPointerLock();
-    window.removeEventListener('keydown', this.keydown);
-    window.removeEventListener('keyup', this.keyup);
-    window.removeEventListener('blur', this.blur);
+    this.input.dispose();
     document.removeEventListener('mousemove', this.mousemove);
     this.canvas.removeEventListener('mousedown', this.mousedown);
     this.canvas.removeEventListener('pointerdown', this.pointerdown);

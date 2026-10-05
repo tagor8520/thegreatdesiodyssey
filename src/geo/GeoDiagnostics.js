@@ -146,6 +146,7 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
     mainThreadMountMilliseconds: world?.mountDiagnostics?.maximumMilliseconds,
     maxCollisionCandidates: world?.queryDiagnostics?.maxCandidates ?? 0,
     maxSupportCandidates: world?.queryDiagnostics?.maxSupportCandidates ?? 0,
+    dynamicProxies: world?.dynamicProxyDiagnostics?.active ?? 0,
   });
 }
 

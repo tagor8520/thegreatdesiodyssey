@@ -92,6 +92,17 @@ export function createOrdinaryStructureCameraBlockers(seed = 2026, decorationDen
   return boxes;
 }
 
+/**
+ * Terrain height at the centre of the 4 m tile a point falls in, so a body reads
+ * one flat height per rendered tile instead of a value that moves inside it.
+ * Lived in `Player.js` until `FND-08`; moved here because it is a terrain query
+ * and both the player and the curated domain need it.
+ */
+export function tileHeight(x, z) {
+  return terrainHeight(Math.floor(x / WORLD.tileSize) * WORLD.tileSize + WORLD.tileSize / 2,
+    Math.floor(z / WORLD.tileSize) * WORLD.tileSize + WORLD.tileSize / 2);
+}
+
 export function biomeAt(x, z) { return z >= 12 ? 'kerala' : x < 0 ? 'maharashtra' : 'karnataka'; }
 export function riverX(z) { return 9 * Math.sin(z / 28) + 4 * Math.cos(z / 17); }
 

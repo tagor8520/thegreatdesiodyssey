@@ -7,8 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test src/engine/*.test.js src/reference/*.test.js src/geo/*.test.js",
-    "check": "npm test && npm run build"
+    "test": "node --test src/engine/*.test.js src/reference/*.test.js src/geo/*.test.js tools/fixture-provider/*.test.js",
+    "check": "npm test && npm run build",
+    "visual:audit": "node tools/visual-audit/run.mjs",
+    "fixture:tiles": "node tools/fixture-provider/build-fixture-tiles.mjs"
   },
   "dependencies": {
     "@mapbox/vector-tile": "^3.0.0",

@@ -1,0 +1,15 @@
+{
+  "name": "gdo-visual-audit",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Deterministic moving-capture harness for The Great Desi Odyssey visual acceptance gates. Isolated from the game's own dependency tree.",
+  "scripts": {
+    "scenarios": "node run.mjs --list",
+    "curated-camera": "node run.mjs curated-camera"
+  },
+  "dependencies": {
+    "@sparticuz/chromium": "153.0.0",
+    "puppeteer-core": "^25.12.0"
+  }
+}

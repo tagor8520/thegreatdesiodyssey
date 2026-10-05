@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { createProceduralEngine, createProceduralLightRig, GDO_PALETTE } from '../engine/ProceduralEngine.js';
 import { GeoWorld } from './GeoWorld.js';
 import { GeoPlayer } from './GeoPlayer.js';
-import { FlexibleJoystick, shouldUseTouchControls } from './GeoControls.js';
+import { mountTouchControls } from '../engine/TouchControls.js';
 import { validateCoordinate } from './GeoMath.js';
 import './geo.css';
 
@@ -36,23 +36,20 @@ function uiMarkup() {
         tiles by <a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OpenFreeMap</a> ·
         <a href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noreferrer">Fix the map</a>
       </div>
-      <div class="geo-touch" aria-label="Touch controls" aria-hidden="true">
-        <div class="geo-joystick-zone" aria-label="Flexible movement joystick">
-          <div class="geo-joystick-hint"><span></span>MOVE</div>
-          <div class="geo-joystick-base"><div class="geo-joystick-knob"></div></div>
-        </div>
-        <div class="geo-look-hint">DRAG TO LOOK</div>
-        <div class="geo-actions">
-          <button data-hold-action="run" aria-label="Hold to move faster">RUN</button>
-          <button data-tap-action="camera" aria-label="Switch to third-person camera">TPP</button>
-          <button class="geo-jump" data-hold-action="jump" aria-label="Jump">JUMP</button>
-        </div>
-      </div>
+      <!-- The touch layer is rendered from the shared action registry (GME-05);
+           see mountTouchControls(). Hard-coding the buttons here is what let
+           curated mode ship with no touch controls at all. -->
     </div>
   `;
 }
 
-export function mountGeoGame(container, { latitude, longitude, onExitRequest, providers } = {}) {
+export function mountGeoGame(container, {
+  latitude, longitude, onExitRequest, providers,
+  // Coordinate mode runs one low-power configuration rather than a quality ladder,
+  // so the dynamic-proxy cap follows the low profile (64). A future device profile
+  // can pass 'balanced' or 'high' without touching the world.
+  dynamicProxyProfile = 'low',
+} = {}) {
   const coordinate = validateCoordinate(latitude, longitude);
   const engine = createProceduralEngine(container, {
     ariaLabel: `Procedural OpenStreetMap world at ${coordinate.latitude}, ${coordinate.longitude}`,
@@ -77,15 +74,11 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   const debugOutput = overlay.querySelector('.geo-debug-output');
   const uiElement = overlay.querySelector('.geo-ui');
   const cameraStatusElement = overlay.querySelector('.geo-camera-status');
-  const cameraButton = overlay.querySelector('[data-tap-action="camera"]');
+  // Filled in after the registry-driven touch layer mounts, which happens with
+  // the player because the layer needs the player's input object.
+  let cameraButton = null;
+  let touchControls = null;
   const mapLabelLayer = overlay.querySelector('.geo-map-labels');
-  const touchElement = overlay.querySelector('.geo-touch');
-  const joystickZone = overlay.querySelector('.geo-joystick-zone');
-  const joystickBase = overlay.querySelector('.geo-joystick-base');
-  const joystickKnob = overlay.querySelector('.geo-joystick-knob');
-  const touchControlsEnabled = shouldUseTouchControls(window);
-  uiElement.classList.toggle('geo-mobile', touchControlsEnabled);
-  touchElement.setAttribute('aria-hidden', String(!touchControlsEnabled));
 
   renderer.shadowMap.enabled = false;
   // Three r170 ignores renderOrder when sorting is disabled. The coordinate
@@ -110,6 +103,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     materialLibrary: engine.materialLibrary,
     camera,
     viewportHeight: renderer.domElement.height || 720,
+    dynamicProxyProfile,
     onStatus: status => {
       if (disposed) return;
       latestStatus = status;
@@ -144,10 +138,24 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   const updateCameraUI = mode => {
     const firstPerson = mode === 'first-person';
     cameraStatusElement.textContent = `${firstPerson ? 'First' : 'Third'}-person camera · V to switch`;
-    cameraButton.textContent = firstPerson ? 'TPP' : 'FPP';
-    cameraButton.setAttribute('aria-label', `Switch to ${firstPerson ? 'third' : 'first'}-person camera`);
+    if (cameraButton) {
+      cameraButton.textContent = firstPerson ? 'TPP' : 'FPP';
+      cameraButton.setAttribute('aria-label', `Switch to ${firstPerson ? 'third' : 'first'}-person camera`);
+    }
   };
-  player = new GeoPlayer(scene, camera, canvas, world, { onCameraModeChange: updateCameraUI });
+  player = new GeoPlayer(scene, camera, canvas, world, {
+    onCameraModeChange: updateCameraUI,
+    // Declared here, invoked by the registry's `debug` action.
+    onDebugToggle: () => toggleDebug(),
+  });
+  // `GME-05`: the touch layer is rendered from the shared action registry rather
+  // than hard-coded in `uiMarkup()`, so the controls a player sees are exactly the
+  // actions this runtime declares.
+  touchControls = mountTouchControls({ runtime: 'coordinates', container: overlay, input: player.input });
+  cameraButton = touchControls.root.querySelector('[data-action="camera"]');
+  const touchControlsEnabled = touchControls.mobile;
+  uiElement.classList.toggle('geo-mobile', touchControlsEnabled);
+  updateCameraUI();
   let debugOverlay = null, debugRequested = false, debugLoad = null, debugLoadFailed = false;
   const updateDebugButton = () => {
     debugButton.setAttribute('aria-pressed', String(debugRequested && Boolean(debugOverlay)));
@@ -189,13 +197,10 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     event?.stopPropagation();
     setDebugEnabled(!(debugRequested && (debugOverlay?.enabled ?? true)));
   };
-  const debugKeydown = event => {
-    if (event.code !== 'F3' || event.ctrlKey || event.metaKey || event.altKey ||
-        event.target?.closest?.('input,textarea,select,[contenteditable="true"]')) return;
-    toggleDebug(event);
-  };
+  // The `F3` binding lives in the action registry, not here: `ActionInput` resolves
+  // the code and calls `onDebugToggle`, which is the same `toggleDebug` the button
+  // uses. One keymap, one handler, two surfaces.
   debugButton.addEventListener('click', toggleDebug);
-  window.addEventListener('keydown', debugKeydown);
   let initialDebug = false;
   try { initialDebug = new URLSearchParams(window.location.search).get('debug') === '1'; } catch { /* optional */ }
   setDebugEnabled(initialDebug);
@@ -237,47 +242,6 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       element.style.opacity = String(Math.min(1, Math.max(.35, 1 - distance / 90)));
     }
   };
-
-  const joystick = new FlexibleJoystick(
-    joystickZone,
-    joystickBase,
-    joystickKnob,
-    (x, z) => player.setMoveInput(x, z),
-  );
-  const touchCleanups = [];
-  for (const button of overlay.querySelectorAll('[data-hold-action]')) {
-    const action = button.dataset.holdAction;
-    const activate = event => {
-      event.preventDefault();
-      event.stopPropagation();
-      button.classList.add('is-active');
-      player.setVirtualInput(action, true);
-      button.setPointerCapture?.(event.pointerId);
-    };
-    const deactivate = event => {
-      event.preventDefault();
-      event.stopPropagation();
-      button.classList.remove('is-active');
-      player.setVirtualInput(action, false);
-    };
-    button.addEventListener('pointerdown', activate);
-    button.addEventListener('pointerup', deactivate);
-    button.addEventListener('pointercancel', deactivate);
-    button.addEventListener('lostpointercapture', deactivate);
-    touchCleanups.push(() => {
-      button.removeEventListener('pointerdown', activate);
-      button.removeEventListener('pointerup', deactivate);
-      button.removeEventListener('pointercancel', deactivate);
-      button.removeEventListener('lostpointercapture', deactivate);
-    });
-  }
-  const toggleCamera = event => {
-    event.preventDefault();
-    event.stopPropagation();
-    player.toggleCameraMode();
-  };
-  cameraButton.addEventListener('pointerdown', toggleCamera);
-  touchCleanups.push(() => cameraButton.removeEventListener('pointerdown', toggleCamera));
 
   const exit = () => onExitRequest?.();
   exitButton.addEventListener('click', exit);
@@ -362,7 +326,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     sampleFrames = 0;
     sampleCpuMilliseconds = 0;
     worstFrameGap = 0;
-    joystick.reset();
+    player.input.clear();
     player.blur();
   };
   const contextLost = event => {
@@ -380,17 +344,19 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
 
   return {
     scene, camera, renderer, world, player,
+    // `FND-08`: the world is the coordinate domain; exposing it under this name
+    // lets the shared probe address both runtimes the same way.
+    domain: world,
     get debugOverlay() { return debugOverlay; },
     dispose() {
       if (disposed) return; disposed = true;
       cancelAnimationFrame(animationFrame); observer.disconnect();
       document.removeEventListener('visibilitychange', visibility);
-      window.removeEventListener('keydown', debugKeydown);
+
       debugButton.removeEventListener('click', toggleDebug);
       canvas.removeEventListener('webglcontextlost', contextLost); canvas.removeEventListener('webglcontextrestored', contextRestored);
       exitButton.removeEventListener('click', exit);
-      touchCleanups.forEach(cleanup => cleanup());
-      joystick.dispose();
+      touchControls.dispose();
       longTaskObserver?.disconnect();
       debugOverlay?.dispose(); player.dispose(); world.dispose(); lightRig.dispose(); engine.dispose();
     },

@@ -11,3 +11,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Visual audit harness generated state
+tools/visual-audit/.cache/
+tools/visual-audit/out/

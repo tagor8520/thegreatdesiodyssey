@@ -1,8 +1,11 @@
 import { defineConfig } from 'vite';
 import { resolve } from 'path';
+import { fixtureProvider, pruneFixtureTiles } from './tools/fixture-provider/vite-plugin.mjs';
 
 export default defineConfig({
-  plugins: [],
+  // Dev-only by construction: the fixture provider declares `apply: 'serve'`,
+  // so it never participates in `vite build` and ships nothing to production.
+  plugins: [fixtureProvider(), pruneFixtureTiles()],
   server: {
     host: '0.0.0.0',
     allowedHosts: true,

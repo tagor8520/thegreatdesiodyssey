@@ -21,6 +21,7 @@ import {
   geoFixtureTypedViews,
   geoFixturesByteEquivalent,
 } from './GeoFixtures.js';
+import { applyCompilation } from './GeoTestSupport.js';
 import { circleIntersectsFootprint, GeoWorld } from './GeoWorld.js';
 import { GEO_WATER_CLASS, queryWaterDomain } from './GeoWaterDomains.js';
 
@@ -37,27 +38,6 @@ function fixtureGeometryEquivalent(first, second) {
     entry.name === b[index].name && viewsEqual(entry.view, b[index].view));
 }
 
-function applyCompilation(world, tile, compilation) {
-  const common = {
-    type: 'tile-phase', requestId: tile.requestId, key: tile.key,
-    bytes: 2048, provider: `Fixture/${compilation.fixture.variant}`,
-  };
-  world._handleWorkerMessage({
-    ...common, phase: 'roads', geometry: compilation.roads,
-    timings: { fetchMilliseconds: 1, roadsMilliseconds: 2 },
-  });
-  world._handleWorkerMessage({
-    ...common, phase: 'context', context: compilation.context,
-    timings: { fetchMilliseconds: 1, roadsMilliseconds: 2, contextMilliseconds: 3 },
-  });
-  world._handleWorkerMessage({
-    ...common, phase: 'buildings', geometry: compilation.buildings,
-    timings: {
-      fetchMilliseconds: 1, roadsMilliseconds: 2, contextMilliseconds: 3,
-      buildingsMilliseconds: 4, totalMilliseconds: 10,
-    },
-  });
-}
 
 function mountedTileSnapshot(tile) {
   const output = [];
@@ -135,8 +115,59 @@ test('canonical geographic fixture matrix covers every required topology and pro
 
   const openMapTiles = compileGeoFixture('provider-equivalence', 'openmaptiles');
   const shortbread = compileGeoFixture('provider-equivalence', 'shortbread');
-  assert.equal(fixtureGeometryEquivalent(openMapTiles, shortbread), true,
-    'equivalent provider schemas must compile byte-identical geometry and proxies');
+
+  // The two providers do NOT agree on building height, and should not be forced
+  // to: OpenMapTiles carries `render_height`, while Shortbread deliberately has
+  // no height field at all, so `buildingHeight()` falls back to a stable
+  // tile-addressed footprint hash. Every view that carries vertical extent is
+  // therefore provider-dependent by design.
+  //
+  // An earlier version of this assertion required *all* views to be byte-identical
+  // and passed only because the fixture fed both variants the same `render_height`
+  // tag — a fixture that no longer resembled either real provider. The claim is
+  // now split into the two things that are actually true.
+  const HEIGHT_DEPENDENT_BUILDING_VIEWS = new Set([
+    'buildings.positions', 'buildings.normals',
+    'buildings.detailPositions', 'buildings.detailNormals',
+    'buildings.collisionSpans',
+    // Packed support slots carry the roof/wall Y they sit on.
+    'buildings.supportSlots', 'buildings.supportSlotStates',
+  ]);
+  const providerInvariantViews = compilation => geoFixtureTypedViews(compilation)
+    .filter(entry => !HEIGHT_DEPENDENT_BUILDING_VIEWS.has(entry.name));
+  const equivalentViewNames = () => {
+    const a = providerInvariantViews(openMapTiles), b = providerInvariantViews(shortbread);
+    const names = a.map(entry => entry.name);
+    assert.deepEqual(names, b.map(entry => entry.name), 'both compilations expose the same provider-invariant views');
+    for (const entry of a) {
+      const other = b.find(candidate => candidate.name === entry.name);
+      assert.equal(viewsEqual(entry.view, other.view), true,
+        `${entry.name} must be byte-identical across provider vocabularies`);
+    }
+    return names;
+  };
+  const invariantNames = equivalentViewNames();
+  // Guard the guard: the comparison must be doing real work, and must genuinely
+  // cover horizontal geometry and every collision proxy.
+  assert.ok(invariantNames.includes('roads.positions'), 'road geometry is compared');
+  assert.ok(invariantNames.includes('roads.indices'), 'road topology is compared');
+  assert.ok(invariantNames.includes('water.positions'), 'water polygons are compared');
+  assert.ok(invariantNames.includes('buildings.colliders'), 'exact colliders are compared');
+  assert.ok(invariantNames.includes('buildings.collisionVertices'), 'collision rings are compared');
+  assert.ok(invariantNames.includes('buildings.collisionMasks'), 'collision masks are compared');
+  assert.ok(!invariantNames.some(name => HEIGHT_DEPENDENT_BUILDING_VIEWS.has(name)),
+    'height-dependent views are excluded from the invariant comparison');
+
+  // And the divergent half is asserted too, so equalizing the two providers by
+  // accident would fail rather than silently pass.
+  const buildingView = (compilation, viewName) => {
+    const entry = geoFixtureTypedViews(compilation).find(candidate => candidate.name === `buildings.${viewName}`);
+    return [...entry.view];
+  };
+  assert.notDeepEqual(buildingView(shortbread, 'positions'), buildingView(openMapTiles, 'positions'),
+    'Shortbread heights use the documented hash fallback, not the OpenMapTiles height tag');
+  assert.notDeepEqual(buildingView(shortbread, 'collisionSpans'), buildingView(openMapTiles, 'collisionSpans'),
+    'packed vertical spans reflect each provider height');
   const canonicalLabels = compilation => compilation.context.labels.map(({ sourceLayer, ...label }) => label);
   assert.deepEqual(canonicalLabels(openMapTiles), canonicalLabels(shortbread));
   assert.deepEqual(openMapTiles.context.decorationClearances, shortbread.context.decorationClearances);
@@ -165,8 +196,12 @@ test('fixture tile eviction and remount reproduce bytes and release owned resour
   const previousWorker = globalThis.Worker;
   class FixtureWorker {
     static active = 0;
-    constructor() { FixtureWorker.active++; this.messages = []; }
-    addEventListener() {}
+    constructor() { FixtureWorker.active++; this.messages = []; this.listeners = new Map(); }
+    addEventListener(type, handler) {
+      if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+      this.listeners.get(type).add(handler);
+    }
+    removeEventListener(type, handler) { this.listeners.get(type)?.delete(handler); }
     postMessage(message) { this.messages.push(message); }
     terminate() { if (!this.terminated) { this.terminated = true; FixtureWorker.active--; } }
   }
@@ -213,7 +248,7 @@ test('fixture tile eviction and remount reproduce bytes and release owned resour
 
 test('only the focused source tile exposes its bounded near building-detail batch', () => {
   const previousWorker = globalThis.Worker;
-  globalThis.Worker = class { addEventListener() {} postMessage() {} terminate() {} };
+  globalThis.Worker = class { addEventListener() {} removeEventListener() {} postMessage() {} terminate() {} };
   const world = new GeoWorld(new THREE.Scene(), { latitude: 28.9845, longitude: 77.7064 });
   try {
     const first = [...world.tiles.values()][0];
@@ -235,7 +270,7 @@ test('only the focused source tile exposes its bounded near building-detail batc
 
 test('dense canonical vegetation and furniture uploads preserve collision isolation and low-profile caps', () => {
   const previousWorker = globalThis.Worker;
-  globalThis.Worker = class { addEventListener() {} postMessage() {} terminate() {} };
+  globalThis.Worker = class { addEventListener() {} removeEventListener() {} postMessage() {} terminate() {} };
   const world = new GeoWorld(new THREE.Scene(), { latitude: 28.9845, longitude: 77.7064 });
   try {
     const tile = [...world.tiles.values()][0];

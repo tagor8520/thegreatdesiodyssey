@@ -139,7 +139,7 @@ function deindexSource(source, output, slot, vertexCount) {
  * share one draw by selecting de-indexed vertex streams with a custom instance
  * attribute. Shorter streams are padded with degenerate triangles at the pivot.
  */
-export function uploadPlantGeometryTier({ family, lod, sources } = {}) {
+export function uploadPlantGeometryTier({ family, lod, sources, windEnabled = false } = {}) {
   if (!FAMILY_NAMES.includes(family) || !LODS.includes(lod) || !Array.isArray(sources) ||
       sources.length < 1 || sources.length > GDO_PLANT_RENDER_PROFILES.low.maxVariantsPerTier) {
     throw new RangeError('Invalid plant family/LOD GPU upload');
@@ -166,9 +166,11 @@ export function uploadPlantGeometryTier({ family, lod, sources } = {}) {
       box.expandByPoint(point);
     }
   }
-  // Vertex wind is visual-only, so the static geometry bounds reserve its
-  // worst-case horizontal displacement instead of moving any instance matrix.
-  const windDisplacementMargin = GDO_PLANT_WIND_PROFILES.low.maximumDisplacement;
+  // Vertex wind is visual-only, so when it is enabled the static geometry bounds
+  // reserve its worst-case horizontal displacement instead of moving any
+  // instance matrix. Wind is opt-in (`wind: true`); when it is disabled no
+  // vertex is displaced, so no culling reserve is withheld from the bounds.
+  const windDisplacementMargin = windEnabled ? GDO_PLANT_WIND_PROFILES.low.maximumDisplacement : 0;
   box.min.x -= windDisplacementMargin;
   box.min.z -= windDisplacementMargin;
   box.max.x += windDisplacementMargin;
@@ -203,6 +205,10 @@ export function createPlantPoolMaterial(materialLibrary = null, options = {}) {
     ? { profile: options }
     : options && typeof options === 'object' ? options : {};
   const profile = windOptions.profile ?? 'low';
+  // Wind is opt-in. The product decision on 2026-10-03 was that whole-plant wind
+  // is not worth its per-vertex cost, so the default path compiles no wind ALU
+  // at all. Enabling it adds the `GDO_PLANT_WIND` define and the uniform bindings.
+  const windEnabled = windOptions.wind === true;
   const wind = new PlantWindState(windOptions);
   const material = new THREE.MeshStandardMaterial({
     color: '#ffffff',
@@ -211,15 +217,18 @@ export function createPlantPoolMaterial(materialLibrary = null, options = {}) {
     vertexColors: false,
     side: THREE.FrontSide,
   });
+  if (windEnabled) material.defines = { ...material.defines, GDO_PLANT_WIND: '' };
   if (materialLibrary) configureSemanticMaterial(material, 'leaf', materialLibrary, profile);
   const previousCompile = material.onBeforeCompile;
   const previousKey = material.customProgramCacheKey.bind(material);
   material.onBeforeCompile = shader => {
     previousCompile(shader);
     shader.uniforms ??= {};
-    shader.uniforms.gdoPlantWindClock = wind.uniforms.clock;
-    shader.uniforms.gdoPlantWindField = wind.uniforms.field;
-    shader.uniforms.gdoPlantWindAmplitude = wind.uniforms.amplitude;
+    if (windEnabled) {
+      shader.uniforms.gdoPlantWindClock = wind.uniforms.clock;
+      shader.uniforms.gdoPlantWindField = wind.uniforms.field;
+      shader.uniforms.gdoPlantWindAmplitude = wind.uniforms.amplitude;
+    }
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
         attribute vec3 gdoPlantPosition1;
@@ -232,9 +241,11 @@ export function createPlantPoolMaterial(materialLibrary = null, options = {}) {
         attribute vec3 gdoPlantTraits;
         attribute float gdoPlantVariant;
         attribute vec4 gdoPlantClearance;
+        #ifdef GDO_PLANT_WIND
         uniform float gdoPlantWindClock;
         uniform vec4 gdoPlantWindField;
         uniform float gdoPlantWindAmplitude;
+        #endif
         varying vec3 vGdoPlantTint;
         varying vec3 vGdoPlantTraits;
 
@@ -244,6 +255,7 @@ export function createPlantPoolMaterial(materialLibrary = null, options = {}) {
           return smoothed * 2.0 - 1.0;
         }
 
+        #ifdef GDO_PLANT_WIND
         vec2 gdoPlantWholeWind(vec3 plantPosition, vec4 plantMeta, vec3 plantTraits) {
           mat4 plantWorldMatrix = modelMatrix;
           #ifdef USE_INSTANCING
@@ -274,7 +286,8 @@ export function createPlantPoolMaterial(materialLibrary = null, options = {}) {
           float flexibility = mix(1.05, 0.35, clamp(plantTraits.y, 0.0, 1.0));
           return localWind * (gdoPlantWindAmplitude * gdoPlantWindField.z * wave *
             heightResponse * bendResponse * flexibility * rootMask);
-        }`)
+        }
+        #endif`)
       .replace('#include <beginnormal_vertex>', `
         float gdoPlantVariantMix = step(0.5, gdoPlantVariant);
         vec4 gdoPlantVertexMeta = mix(gdoPlantMeta0, gdoPlantMeta1, gdoPlantVariantMix);
@@ -284,23 +297,27 @@ export function createPlantPoolMaterial(materialLibrary = null, options = {}) {
           step(4.5, gdoPlantVertexMeta.w)
         );
         vec2 gdoPlantCrownScale = mix(vec2(1.0), gdoPlantClearance.xy, gdoPlantAdaptiveRole);
-        vec3 gdoPlantWindPosition = mix(position, gdoPlantPosition1, gdoPlantVariantMix);
-        gdoPlantWindPosition.xz = gdoPlantWindPosition.xz * gdoPlantCrownScale +
-          gdoPlantClearance.zw * gdoPlantAdaptiveRole;
-        vec2 gdoPlantWindOffset = gdoPlantWholeWind(
-          gdoPlantWindPosition, gdoPlantVertexMeta, gdoPlantTraits
-        );
         vec3 objectNormal = normalize(mix(normal, gdoPlantNormal1, gdoPlantVariantMix));
         objectNormal = normalize(vec3(
           objectNormal.x / max(0.01, gdoPlantCrownScale.x),
           objectNormal.y,
           objectNormal.z / max(0.01, gdoPlantCrownScale.y)
         ));
+        #ifdef GDO_PLANT_WIND
+        vec3 gdoPlantWindPosition = mix(position, gdoPlantPosition1, gdoPlantVariantMix);
+        gdoPlantWindPosition.xz = gdoPlantWindPosition.xz * gdoPlantCrownScale +
+          gdoPlantClearance.zw * gdoPlantAdaptiveRole;
+        vec2 gdoPlantWindOffset = gdoPlantWholeWind(
+          gdoPlantWindPosition, gdoPlantVertexMeta, gdoPlantTraits
+        );
         objectNormal = normalize(vec3(
           objectNormal.x - gdoPlantWindOffset.x * objectNormal.y * 1.2,
           objectNormal.y,
           objectNormal.z - gdoPlantWindOffset.y * objectNormal.y * 1.2
-        ));`)
+        ));
+        #else
+        vec2 gdoPlantWindOffset = vec2(0.0);
+        #endif`)
       .replace('#include <begin_vertex>', `
         vec3 transformed = mix(position, gdoPlantPosition1, gdoPlantVariantMix);
         transformed.xz = transformed.xz * gdoPlantCrownScale +
@@ -326,11 +343,12 @@ export function createPlantPoolMaterial(materialLibrary = null, options = {}) {
         diffuseColor.rgb *= mix(0.96, 1.03, vGdoPlantTraits.y);`);
   };
   material.customProgramCacheKey = () =>
-    `${previousKey()}:${GDO_PLANT_RENDER_NAMESPACE}:${GDO_PLANT_WIND_NAMESPACE}:${profile}:custom-instance-data`;
+    `${previousKey()}:${GDO_PLANT_RENDER_NAMESPACE}:${GDO_PLANT_WIND_NAMESPACE}:${profile}:wind-${windEnabled ? 'on' : 'off'}:custom-instance-data`;
   material.userData.gdoPlantWind = wind;
   material.userData.gdoPlantPoolMaterial = Object.freeze({
     namespace: GDO_PLANT_RENDER_NAMESPACE,
     windNamespace: GDO_PLANT_WIND_NAMESPACE,
+    windEnabled,
     builtInInstanceColor: false,
     attributes: Object.freeze(['gdoPlantPalette', 'gdoPlantTraits', 'gdoPlantVariant', 'gdoPlantClearance']),
   });
@@ -373,6 +391,7 @@ export class PlantRenderPools {
     maxOwners,
     renderOrder = 30,
     reducedMotion = false,
+    wind = false,
     windDirection,
     windStrength,
     windGustiness,
@@ -395,11 +414,13 @@ export class PlantRenderPools {
     this.material = createPlantPoolMaterial(materialLibrary, {
       profile,
       reducedMotion,
+      wind,
       direction: windDirection,
       strength: windStrength,
       gustiness: windGustiness,
     });
     this.wind = this.material.userData.gdoPlantWind;
+    this.windEnabled = this.material.userData.gdoPlantPoolMaterial.windEnabled;
     this.renderOrder = renderOrder;
     this.libraryHandle = acquirePlantLodLibrary({ profile, environmentKey, seedSalt });
     this.library = this.libraryHandle.library;
@@ -447,8 +468,9 @@ export class PlantRenderPools {
       get lastMatrixUploads() { return pools.lastMatrixUploads; },
       get totalMatrixUploads() { return pools.totalMatrixUploads; },
       get steadyFrameAllocations() { return 0; },
+      get windEnabled() { return pools.windEnabled; },
       get wind() { return pools.wind.diagnostics; },
-      get windUniformWrites() { return pools.wind.lastUniformWrites; },
+      get windUniformWrites() { return pools.windEnabled ? pools.wind.lastUniformWrites : 0; },
       get windCpuMatrixUpdates() { return 0; },
       get windSteadyFrameAllocations() { return 0; },
       get reducedMotion() { return pools.wind.reducedMotion; },
@@ -526,7 +548,7 @@ export class PlantRenderPools {
       if (sourceCount > this.limits.maxSourceGeometries || this.resources.size + 1 > this.limits.maxDrawPools) {
         throw new Error('Plant GPU geometry-tier cap reached');
       }
-      const geometry = uploadPlantGeometryTier({ family, lod, sources });
+      const geometry = uploadPlantGeometryTier({ family, lod, sources, windEnabled: this.windEnabled });
       if (this.#gpuGeometryBytes() + geometry.userData.gdoPlantUpload.staticBytes > this.limits.maxGpuGeometryBytes) {
         geometry.dispose();
         throw new Error(`Plant GPU geometry byte cap reached: ${this.limits.maxGpuGeometryBytes}`);
@@ -697,7 +719,7 @@ export class PlantRenderPools {
     for (const [family, lodSets] of familySets) this.#ensureFamilyResources(family, lodSets);
 
     this.#setEvaluationView(view, true);
-    this.wind.update(this.evaluationInput.nowMilliseconds);
+    if (this.windEnabled) this.wind.update(this.evaluationInput.nowMilliseconds);
     this.lastMatrixUploads = 0;
     prepared.sort((first, second) => first.id.localeCompare(second.id));
     try {
@@ -763,8 +785,9 @@ export class PlantRenderPools {
     return ids.length;
   }
 
+  /** Wind is opt-in; without it these are inert so callers cannot half-enable it. */
   configureWind(options = {}) {
-    if (this.disposed) return false;
+    if (this.disposed || !this.windEnabled) return false;
     return this.wind.configure(options);
   }
 
@@ -776,7 +799,9 @@ export class PlantRenderPools {
   update(view = {}) {
     if (this.disposed || !this.records.size) return 0;
     this.#setEvaluationView(view, false);
-    this.wind.update(this.evaluationInput.nowMilliseconds);
+    // Disabled wind compiles no clock uniform, so a steady frame performs zero
+    // wind work rather than writing a uniform that no shader reads.
+    if (this.windEnabled) this.wind.update(this.evaluationInput.nowMilliseconds);
     this.lastMatrixUploads = 0;
     const sliceMilliseconds = 1000 / (this.selector.policy.maxReevaluationsHz * this.schedule.length);
     const step = Math.floor(this.evaluationInput.nowMilliseconds / sliceMilliseconds);

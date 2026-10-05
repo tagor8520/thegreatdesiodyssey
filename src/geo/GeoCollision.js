@@ -205,7 +205,12 @@ function sweepPointAgainstSegmentSide(
   }
 }
 
-function sweepPointAgainstSegmentCapsule(x, z, dx, dz, x1, z1, x2, z2, radius, out) {
+/**
+ * Sweep a point against a segment capsule. Shared by the static footprint path and
+ * the dynamic proxy hash: folding a moving radius into `radius` makes the same
+ * routine an exact moving-circle test for circle and capsule targets.
+ */
+export function sweepPointAgainstSegmentCapsule(x, z, dx, dz, x1, z1, x2, z2, radius, out) {
   const edgeX = x2 - x1, edgeZ = z2 - z1;
   const edgeLength = Math.hypot(edgeX, edgeZ);
   if (edgeLength < EPSILON) {

@@ -16,6 +16,7 @@ import { roadStyle, buildRoadGeometry, buildBuildingGeometry } from './GeoTileBu
 import { buildContextData } from './GeoTileContext.js';
 import { GDO_VEGETATION_MORPHOLOGY_NAMESPACE } from './PlantMorphology.js';
 import { GEO_BUILDING_DETAIL_LIMITS } from './GeoBuildingGrammar.js';
+import { createGeoFixture } from './GeoFixtures.js';
 import {
   GeoWorld,
   GEO_STREAMING_LIMITS,
@@ -199,7 +200,7 @@ test('terrain fallback is deterministic, seam-free, bounded, and exposes support
 
 test('GeoWorld resolves terrain, ground roads, and bridge decks without collapsing support levels', () => {
   const originalWorker = globalThis.Worker;
-  globalThis.Worker = class { addEventListener() {} postMessage() {} terminate() {} };
+  globalThis.Worker = class { addEventListener() {} removeEventListener() {} postMessage() {} terminate() {} };
   const world = new GeoWorld(new THREE.Scene(), { latitude: 28.9845, longitude: 77.7064 });
   try {
     const tile = [...world.tiles.values()][0];
@@ -243,6 +244,81 @@ test('tile size uses latitude-adjusted one-to-ten scale and validation rejects u
   assert.throws(() => validateCoordinate(90, 0), RangeError);
   assert.throws(() => validateCoordinate(0, 181), RangeError);
   assert.throws(() => validateCoordinate('not-a-number', 0), TypeError);
+});
+
+/**
+ * `MAP-08` — one semantic adapter covers OpenMapTiles and Shortbread classes and
+ * levels.
+ *
+ * The `provider-equivalence` fixture carries the same real-world content tagged
+ * in each provider's **native vocabulary**: roads use OpenMapTiles `class` versus
+ * Shortbread `kind`, and the Shortbread building carries no height field at all.
+ * A single adapter must therefore collapse both vocabularies to one semantic
+ * model. Comparing output is the only way to show that, and reusing one set of
+ * tags under two layer names would prove nothing — which is why the fixture is
+ * written per-variant.
+ */
+test('provider vocabularies normalize to identical semantic geometry', () => {
+  const compile = variant => {
+    const fixture = createGeoFixture('provider-equivalence', variant);
+    const roads = buildRoadGeometry(fixture.vectorTile, request);
+    const buildings = buildBuildingGeometry(fixture.vectorTile, request);
+    const context = buildContextData(fixture.vectorTile, request);
+    const buildingHeights = [];
+    const buildingFootprintXZ = [];
+    for (let index = 0; index < buildings.positions.length; index += 3) {
+      buildingFootprintXZ.push(buildings.positions[index], buildings.positions[index + 2]);
+      buildingHeights.push(buildings.positions[index + 1]);
+    }
+    return {
+      roadFeatures: roads.meta.features,
+      roadKinds: roads.positions.length,
+      roadPositions: [...roads.positions],
+      roadIndices: [...roads.indices],
+      buildingFeatures: buildings.meta.features,
+      buildingFootprintXZ,
+      buildingHeights,
+      buildingColliders: [...buildings.colliders],
+      water: [...context.water.positions],
+      land: [...context.land.positions],
+      waterClasses: [...(context.waterDomain?.waterClasses ?? [])],
+      waterVertices: [...(context.waterDomain?.waterVertices ?? [])],
+    };
+  };
+
+  const openMapTiles = compile('openmaptiles');
+  const shortbread = compile('shortbread');
+
+  // Guard the guard: the fixture must actually produce geometry, or every
+  // comparison below would pass vacuously on empty arrays.
+  assert.ok(openMapTiles.roadFeatures > 0, 'fixture supplies mapped roads');
+  assert.ok(openMapTiles.buildingFeatures > 0, 'fixture supplies mapped buildings');
+  assert.ok(openMapTiles.water.length > 0, 'fixture supplies mapped water');
+  assert.ok(openMapTiles.buildingColliders.length > 0, 'fixture supplies exact colliders');
+
+  // `class` and `kind` are different tags for the same road class, so the whole
+  // ribbon — width, colour, curbs, markings — must match exactly.
+  assert.deepEqual(shortbread.roadPositions, openMapTiles.roadPositions, 'road positions');
+  assert.deepEqual(shortbread.roadIndices, openMapTiles.roadIndices, 'road indices');
+
+  // Horizontal geometry is map-derived and must agree exactly.
+  assert.deepEqual(shortbread.buildingFootprintXZ, openMapTiles.buildingFootprintXZ, 'building footprints');
+  assert.deepEqual(shortbread.buildingColliders, openMapTiles.buildingColliders, 'exact colliders');
+  assert.deepEqual(shortbread.water, openMapTiles.water, 'water polygons');
+  assert.deepEqual(shortbread.land, openMapTiles.land, 'land cover');
+  assert.deepEqual(shortbread.waterClasses, openMapTiles.waterClasses, 'semantic water classes');
+  assert.deepEqual(shortbread.waterVertices, openMapTiles.waterVertices, 'water domain vertices');
+
+  // Levels are the one deliberate divergence: Shortbread carries no height field,
+  // so `buildingHeight()` falls back to a stable tile-addressed hash. Asserted
+  // explicitly so a future change that silently equalizes or randomizes them fails.
+  assert.notDeepEqual(shortbread.buildingHeights, openMapTiles.buildingHeights,
+    'untagged Shortbread heights use the documented hash fallback, not the OpenMapTiles tag');
+  // Base vertices sit on the ground plane, so only the roof heights are positive.
+  assert.ok(Math.max(...openMapTiles.buildingHeights) > 0, 'tagged building has height');
+  assert.ok(Math.max(...shortbread.buildingHeights) > 0, 'hash-derived building has height');
+  assert.ok(openMapTiles.buildingHeights.every(Number.isFinite), 'tagged heights are finite');
+  assert.ok(shortbread.buildingHeights.every(Number.isFinite), 'hash heights are finite');
 });
 
 test('road builder supports OpenMapTiles and Shortbread schemas with metre-scaled ribbons', () => {
@@ -532,7 +608,7 @@ test('support slots are deterministic, concave-safe, and reject occupied capacit
 
 test('GeoWorld claims and releases tile-owned support slots without arbitrary fallback', () => {
   const originalWorker = globalThis.Worker;
-  globalThis.Worker = class { addEventListener() {} postMessage() {} terminate() {} };
+  globalThis.Worker = class { addEventListener() {} removeEventListener() {} postMessage() {} terminate() {} };
   const world = new GeoWorld(new THREE.Scene(), { latitude: 28.99, longitude: 77.71 });
   try {
     const tile = [...world.tiles.values()][0];
@@ -642,7 +718,7 @@ test('OpenMapTiles context layers select mapped arid biome without random drift'
 
 test('context phase mounts fallback ambience even when map surfaces are empty', () => {
   const originalWorker = globalThis.Worker;
-  globalThis.Worker = class { addEventListener() {} postMessage() {} terminate() {} };
+  globalThis.Worker = class { addEventListener() {} removeEventListener() {} postMessage() {} terminate() {} };
   const world = new GeoWorld(new THREE.Scene(), { latitude: 28.99, longitude: 77.71 });
   try {
     const tile = [...world.tiles.values()][0];
@@ -680,7 +756,7 @@ test('context phase mounts fallback ambience even when map surfaces are empty', 
 
 test('coordinate plant records mount in global owner pools and release exactly on tile eviction', () => {
   const originalWorker = globalThis.Worker;
-  globalThis.Worker = class { addEventListener() {} postMessage() {} terminate() {} };
+  globalThis.Worker = class { addEventListener() {} removeEventListener() {} postMessage() {} terminate() {} };
   const scene = new THREE.Scene();
   const world = new GeoWorld(scene, { latitude: 28.99, longitude: 77.71 });
   try {
@@ -709,10 +785,14 @@ test('coordinate plant records mount in global owner pools and release exactly o
     assert.equal(world.plantRenderPools.diagnostics.owners, 1);
     assert.equal(world.plantRenderPools.diagnostics.entries, 2);
     assert.equal(tile.plantPoolCount, 2);
-    assert.equal(world.setReducedMotion(true), true);
+    assert.equal(world.setReducedMotion(true), true, 'the motion preference is recorded even when wind is off');
     assert.equal(world.stats.plantWindReducedMotion, true);
     assert.equal(world.stats.plantWindCpuMatrixUpdates, 0);
-    assert.equal(world.configurePlantWind({ direction: [1, 0], strength: .4, gustiness: .2 }), true);
+    // Wind is opt-in and coordinate mode does not enable it, so its per-vertex
+    // cost is absent and configuration is inert rather than half-applied.
+    assert.equal(world.plantRenderPools.diagnostics.windEnabled, false);
+    assert.equal(world.stats.plantWindUniformWrites, 0);
+    assert.equal(world.configurePlantWind({ direction: [1, 0], strength: .4, gustiness: .2 }), false);
     assert.ok(tile.decorations.some(mesh => mesh.name === `benches:${tile.key}`));
     assert.ok(!tile.decorations.some(mesh => /^(trees|herbs):/.test(mesh.name)));
     assert.equal(world.plantRenderPools.group.parent, world.root);
@@ -736,6 +816,7 @@ test('collision grid checks cells touched by the player radius', () => {
   const originalWorker = globalThis.Worker;
   globalThis.Worker = class {
     addEventListener() {}
+    removeEventListener() {}
     postMessage() {}
     terminate() {}
   };
@@ -777,6 +858,7 @@ test('boundary prefetch is capped at four resident tiles and two active requests
   const posted = [];
   globalThis.Worker = class {
     addEventListener() {}
+    removeEventListener() {}
     postMessage(message) { posted.push(message); }
     terminate() {}
   };

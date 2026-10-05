@@ -1,4 +1,4 @@
-import React, { useEffect, useSyncExternalStore } from 'react';
+import React, { useSyncExternalStore } from 'react';
 import { LandingPage } from './LandingPage.jsx';
 
 export const ITEMS = Object.freeze([
@@ -75,22 +75,15 @@ function ItemIcon({ id }) {
   </svg>;
 }
 
-export function GameUI({ store, onSelect, onStart, onExit, onToggleSound }) {
+export function GameUI({ store, onSelectSlot, onStart, onExit, onToggleSound }) {
   const {
     started, soundEnabled, fps, pingMs, drawCalls, triangles, residentChunks,
     quality, renderScale, selected, score, collected, total, lastPickup, cameraHint,
   } = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
-  useEffect(() => {
-    function keydown(event) {
-      if (!store.getSnapshot().started) return;
-      if (event.repeat || event.ctrlKey || event.altKey || event.metaKey ||
-          event.target.closest?.('input, textarea, select, [contenteditable="true"]')) return;
-      const slot = ['Digit1', 'Digit2', 'Digit3'].indexOf(event.code);
-      if (slot >= 0) { event.preventDefault(); store.set({ selected: slot }); onSelect?.(ITEMS[slot]); }
-    }
-    window.addEventListener('keydown', keydown);
-    return () => window.removeEventListener('keydown', keydown);
-  }, [store, onSelect]);
+  // `GME-05`: the inventory keys used to be a second keymap living here, separate
+  // from the one the player used — two lists that could disagree about what `1`
+  // does. The registry owns the binding now and `ActionInput` dispatches it, so
+  // this component only has to render the buttons and forward a click.
   if (!started) return <LandingPage onStart={onStart} />;
   return <div style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 10, fontFamily: 'system-ui, sans-serif', color: '#f7f7ef' }}>
     <div style={{ position: 'absolute', right: 12, top: 12, display: 'flex', gap: 8, pointerEvents: 'auto' }}>
@@ -114,8 +107,9 @@ export function GameUI({ store, onSelect, onStart, onExit, onToggleSound }) {
     </div>
     <div role="group" aria-label="Regional inventory" style={{ position: 'absolute', bottom: 'max(16px, env(safe-area-inset-bottom))', left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: 4, padding: 5, background: 'rgba(16,29,36,.83)', border: '2px solid #8c9a9b', borderRadius: 14, boxShadow: '0 4px 20px #0006' }}>
       {ITEMS.map((item, index) => <button key={item.id} type="button" aria-label={`${index + 1}: ${item.name}, ${item.region}`} aria-pressed={selected === index} title={`${item.name} · ${index + 1}`}
+        data-slot={index + 1}
         onPointerDown={event => event.stopPropagation()}
-        onClick={() => { store.set({ selected: index }); onSelect?.(item); }}
+        onClick={() => onSelectSlot?.(index)}
         style={{ pointerEvents: 'auto', position: 'relative', width: 'clamp(76px, 8vw, 124px)', aspectRatio: '1.2', padding: '8px 4px 0', cursor: 'pointer', border: `2px solid ${selected === index ? '#f0d690' : '#748188'}`, borderRadius: 8, background: selected === index ? '#36484bde' : '#17232bba', color: 'inherit' }}>
         <span style={{ position: 'absolute', left: 6, top: 5, fontSize: 15, lineHeight: '20px', padding: '0 5px', border: '1px solid #8b9aa2', borderRadius: 4, background: '#263239' }}>{index + 1}</span>
         <ItemIcon id={item.id} />

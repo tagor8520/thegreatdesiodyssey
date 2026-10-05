@@ -105,7 +105,7 @@ test('third-person camera sweep radius is derived from its near-plane footprint'
 
 test('world motion sweeps at speed and slides without axis-order bias', () => {
   const originalWorker = globalThis.Worker;
-  globalThis.Worker = class { addEventListener() {} postMessage() {} terminate() {} };
+  globalThis.Worker = class { addEventListener() {} removeEventListener() {} postMessage() {} terminate() {} };
   const world = new GeoWorld(new THREE.Scene(), { latitude: 0, longitude: 0 });
   try {
     const tile = [...world.tiles.values()][0];

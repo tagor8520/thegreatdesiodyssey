@@ -228,7 +228,7 @@ test('fixture integration transfers aligned morphology and remains provider-equi
 
 test('GeoWorld shares one fixed morphology recipe library and composes nonuniform placements', () => {
   const PreviousWorker = globalThis.Worker;
-  globalThis.Worker = class { addEventListener() {} postMessage() {} terminate() {} };
+  globalThis.Worker = class { addEventListener() {} removeEventListener() {} postMessage() {} terminate() {} };
   const first = new GeoWorld(new THREE.Scene(), { latitude: 28.98, longitude: 77.70 });
   const second = new GeoWorld(new THREE.Scene(), { latitude: -33.86, longitude: 151.20 });
   try {

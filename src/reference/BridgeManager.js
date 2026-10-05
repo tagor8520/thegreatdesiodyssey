@@ -33,6 +33,7 @@ export class BridgeManager {
         new THREE.Vector3(cx + sx / 2, top, cz + sz / 2),
       );
       this.colliders.push(deck);
+      deck.userData = { id: `${id}:deck:${i}`, role: 'camera-blocker' };
       this.cameraBlockers.push(deck);
       for (const side of [-1, 1]) {
         const rx = cx + (axis === 'z' ? side * (width / 2 - .2) : 0);
@@ -44,6 +45,7 @@ export class BridgeManager {
           new THREE.Vector3(rx + rw / 2, top + 1.7, rz + rd / 2),
         );
         this.rails.push(rail);
+        rail.userData = { id: `${id}:rail:${i}:${side}`, role: 'camera-blocker' };
         this.cameraBlockers.push(rail);
         if (i % 4 === 0) batch.box(rx, top + .8, rz, .5, 1.8, .5, color);
       }
@@ -51,10 +53,12 @@ export class BridgeManager {
         const pierWidth = axis === 'x' ? 1 : width - 1;
         const pierDepth = axis === 'z' ? 1 : width - 1;
         batch.box(cx, (top - 3) / 2, cz, pierWidth, top + 3, pierDepth, color);
-        this.cameraBlockers.push(new THREE.Box3(
+        const pier = new THREE.Box3(
           new THREE.Vector3(cx - pierWidth / 2, -3, cz - pierDepth / 2),
           new THREE.Vector3(cx + pierWidth / 2, top, cz + pierDepth / 2),
-        ));
+        );
+        pier.userData = { id: `${id}:pier:${i}`, role: 'camera-blocker' };
+        this.cameraBlockers.push(pier);
       }
     }
     const mesh = batch.build(); mesh.name = id; this.root.add(mesh);

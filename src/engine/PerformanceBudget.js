@@ -52,6 +52,7 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   mainThreadMountMilliseconds: 8,
   maxCollisionCandidates: 256,
   maxSupportCandidates: 256,
+  dynamicProxies: 64,
 });
 
 const CHECKS = Object.freeze([
@@ -102,6 +103,7 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'mainThreadMountMilliseconds', budget: 'mainThreadMountMilliseconds', label: 'main-thread mount ms' }),
   Object.freeze({ metric: 'maxCollisionCandidates', budget: 'maxCollisionCandidates', label: 'collision candidates' }),
   Object.freeze({ metric: 'maxSupportCandidates', budget: 'maxSupportCandidates', label: 'support candidates' }),
+  Object.freeze({ metric: 'dynamicProxies', budget: 'dynamicProxies', label: 'active dynamic proxies' }),
 ]);
 
 function finiteNonNegative(value) { return Number.isFinite(value) && value >= 0; }

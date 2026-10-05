@@ -46,31 +46,61 @@ function landingMarkup() {
   `;
 }
 
-function renderLanding(message = '') {
-  if (!container) return;
-  container.innerHTML = landingMarkup();
-  const curatedButton = container.querySelector('.odyssey-start');
-  const form = container.querySelector('.odyssey-coordinate-form');
-  const sample = container.querySelector('.odyssey-sample-coordinate');
-  const note = container.querySelector('.odyssey-start-note');
-  if (message) note.textContent = message;
-  curatedButton.addEventListener('click', () => launchGame({ mode: 'curated' }), { once: true });
-  form.addEventListener('submit', event => {
+/**
+ * Landing input is delegated from the persistent host element rather than bound
+ * to each rendered node.
+ *
+ * `renderLanding()` replaces the markup wholesale, so per-node handlers were
+ * registered afresh on every exit from the game and left attached to the
+ * discarded nodes. Nothing kept those nodes alive, so this never leaked in
+ * practice — but it made a remount cycle accumulate subscriptions that could only
+ * be reclaimed by GC, which is exactly the kind of growth FND-07 requires us to
+ * disprove rather than assume. One delegated listener per event type keeps the
+ * landing shell's subscription count constant across remounts.
+ *
+ * `landingWired` is module state, not a DOM flag: the flag must outlive the
+ * element it guards, because the element is thrown away on every render.
+ */
+let landingWired = false;
+function wireLanding() {
+  if (!container || landingWired) return;
+  landingWired = true;
+  container.addEventListener('click', event => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+    if (target.closest('.odyssey-start')) { void launchGame({ mode: 'curated' }); return; }
+    const sample = target.closest('.odyssey-sample-coordinate');
+    if (!sample) return;
+    const form = container.querySelector('.odyssey-coordinate-form');
+    if (!form) return;
+    form.elements.latitude.value = sample.dataset.lat;
+    form.elements.longitude.value = sample.dataset.lon;
+    form.elements.latitude.focus();
+  });
+  container.addEventListener('submit', event => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement) || !form.classList.contains('odyssey-coordinate-form')) return;
     event.preventDefault();
     const data = new FormData(form);
     const latitude = Number(String(data.get('latitude')).trim());
     const longitude = Number(String(data.get('longitude')).trim());
     if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < -85.05112878 || latitude > 85.05112878 || longitude < -180 || longitude > 180) {
-      note.textContent = 'Enter a valid latitude (-85.0511 to 85.0511) and longitude (-180 to 180).';
+      const note = container.querySelector('.odyssey-start-note');
+      if (note) note.textContent = 'Enter a valid latitude (-85.0511 to 85.0511) and longitude (-180 to 180).';
       return;
     }
     void launchGame({ mode: 'coordinates', latitude, longitude });
   });
-  sample.addEventListener('click', () => {
-    form.elements.latitude.value = sample.dataset.lat;
-    form.elements.longitude.value = sample.dataset.lon;
-    form.elements.latitude.focus();
-  });
+}
+
+function renderLanding(message = '') {
+  if (!container) return;
+  container.innerHTML = landingMarkup();
+  if (message) {
+    const note = container.querySelector('.odyssey-start-note');
+    if (note) note.textContent = message;
+  }
+  wireLanding();
 }
 
 async function loadMapProviders() {
@@ -120,6 +150,18 @@ async function launchGame(options) {
         onExitRequest: () => queueMicrotask(exitGame),
       });
     }
+    // Development-only audit bridge. `tools/visual-audit` drives deterministic
+    // camera/player scenarios through this handle instead of synthesising input
+    // events. `import.meta.env.DEV` is statically false in production builds, so
+    // Vite tree-shakes this branch and no audit handle ships to players.
+    if (import.meta.env.DEV) {
+      globalThis.__gdoAudit = {
+        mode: options.mode ?? 'curated',
+        game,
+        /** Mounted runtimes, newest last; lets a scenario re-enter without reloading. */
+        version: 'gdo:visualAudit:v1',
+      };
+    }
   } catch (error) {
     console.error(error);
     renderLanding(`Unable to start: ${error.message}`);
@@ -131,6 +173,7 @@ async function launchGame(options) {
 function exitGame() {
   const mountedGame = game;
   game = null;
+  if (import.meta.env.DEV) delete globalThis.__gdoAudit;
   mountedGame?.dispose();
   renderLanding();
 }
