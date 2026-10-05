@@ -502,7 +502,7 @@ Two defects were found by this pass and fixed in the same change: the first CSS-
 
 **Migration is a ladder, not a flag.** `MIGRATIONS` maps each version to the next, each step pure and returning its own notes, so the next format change adds one entry instead of rewriting the upgrade path (`NET-01` reuses the shape for save files). The v0 → v1 step repairs what legacy files got wrong rather than only relabelling them: it drops coincident voxels (they z-fight and cost geometry; a same-coordinate different-colour pair is reported, first colour kept) and normalises hex case, which matters because `VoxelBuilder` caches materials by the **exact string**, so `#D4A017` and `#d4a017` would be two materials for one colour. A file stamped from the **future** is refused rather than passed through: validating it against an older schema would reject fields the author legitimately used, and accepting it would let an unknown shape reach the renderer.
 
-**Node tier — `src/engine/ContentSchema.test.js` (13 tests) + `src/engine/StateManager.test.js` (4 tests), part of `npm run check` (220 tests total).** The shipped files are the real fixture: they are read from disk, not mocked, so a schema that the project's own content fails is caught immediately.
+**Node tier — `src/engine/ContentSchema.test.js` (13 tests) + `src/engine/StateManager.test.js` (4 tests), part of `npm run check`.** The shipped files are the real fixture: they are read from disk, not mocked, so a schema that the project's own content fails is caught immediately.
 
 | Check | Result |
 |---|---|
@@ -535,6 +535,70 @@ Two defects were found by this pass and fixed in the same change: the first CSS-
 It also exercises the two paths that only exist in the browser: a v0 pack fetched over HTTP migrates to v1 **in-page**, and a corrupted pack is rejected in-page by `StateContentError` naming `buff.type`. The negative control — changing one shipped field to a string — makes the scenario exit **1** with the field named and the hash reported as `DIFFERS`.
 
 **The recorded gap, printed by the gate.** Nothing mounts `StateManager`: no entry point imports it, so the validator is tree-shaken and **ships zero bytes today** (verified by grepping `dist/assets/*.js` for schema-specific strings — the only match is the `contentSchema: 1` entry in the feature-version registry). That is stated in the scenario's own output and in the summary line (`runtime mount: dormant`), and it is the honest boundary of this item: `CNT-01` gives content a contract and proves it against the shipped files; `CNT-02` (recipe compiler) and `CNT-04` (packs) are what put content on a live surface. Claiming a runtime consumer that does not exist would be exactly the kind of status inflation this register exists to prevent.
+
+---
+
+#### A4g. `GME-04` — Throttled label line-of-sight and the richer map readout *(coordinate)*
+*also closes `LAY-05`, which describes the same deliverable in another category*
+
+| | |
+|---|---|
+| **Roadmap** | Order 133, P1, **`ADDED` — closed 2026-10-05** (was `PARTIAL`), depends on `TER-01`. Order 044 **`LAY-05`** (DOM label line-of-sight, deps `COL-04`/`COL-01`, both `ADDED`) is closed on the same evidence |
+
+**★ CLOSED 2026-10-05 — status `ADDED`.** The registered gate read: *added projection/overlap; LOS and richer map remain open.* Both remaining halves are delivered and asserted. The two rows were closed by **one** implementation: `GME-04` owns the label layer's line of sight in the feature matrix, `LAY-05` names the same behaviour as a layering criterion, and the register says so rather than pretending two slices landed.
+
+**Why this mattered.** The DOM label layer sits *outside* WebGL depth. Both research documents name the resulting defect explicitly — the layering audit table lists *"Labels | projected DOM labels, overlap suppression only | labels do not participate in WebGL depth and can show through buildings"*, the defect-class table lists *"DOM label occlusion | a place name appears through a building | sparse line-of-sight query or in-scene label | CSS z-index"* — and its Phase 2 line prescribes exactly the shape delivered here: *"throttled label LOS using `LOS_BLOCKER` masks"*. A place name readable through a building is therefore a real product defect, not a polish item.
+
+**What ships — `src/geo/GeoLabelLos.js`.** `LabelLosScheduler` casts one small sphere per candidate label from the camera and reports whether a `LOS_BLOCKER` is in the way:
+
+- **Budgeted, not per-frame.** The research's own ceilings are the profiles: `low` `20/s × 5`, `balanced` `40/s × 10`, `high` `80/s × 14` (tests per second × simultaneous labels). The scheduler keeps a token bucket refilled by *elapsed wall-clock time* and capped at one pass's worth, so neither a burst nor a 60-second stall can be repaid as unbounded work.
+- **Verdicts are held for the update interval.** `GEO_LABEL_LOS_REFRESH_MILLISECONDS = 250` is the interval §15.6.1 names: within it the previous verdict stands, which is what makes a hidden name stay hidden while the camera moves instead of flickering per frame.
+- **`LOS_BLOCKER` only.** §15.6.2 forbids consulting collectible, grass, bird or bee proxies; the mask is the hard contract and the browser tier intercepts the live call to check the *argument*, not the source.
+- **`out.hit`, never truthiness.** `world.sweepSphere` returns its `out` object, which is truthy whether or not anything was hit. Reading the return value as a boolean would have hidden **every** label in the scene — the exact failure class this gate exists to catch — so the scheduler reads `out.hit` and trusts a strict boolean return only as a fallback. A dedicated test drives a world-style sweep to keep that asymmetry honest.
+- **`time` distinguishes two different things.** `t = 0` means the eye is *inside* geometry: a legal query result, but not a standing position a player can occupy. The gate only accepts an interior contact (`0 < t < 1`), which is what "a name behind a building" actually means.
+- **The DOM trails by one pass, by construction.** `isHidden` is read while building the label layer, before the pass that refreshes verdicts, so a verdict lands on the next refresh. The gate waits for *agreement* rather than judging the frame it teleported on, and it also requires the verdict to be **fresh** (age inside the refresh interval) — a fresh row proves the label was a candidate in the last pass, so it was on screen and not overlapped, and a hidden verdict can only be about occlusion rather than a stale verdict on a culled label.
+- **Diagnostics.** Per-label rows carry the **ray**, its **blocker** and the **LOS update age** (§12.1), the counters carry **label LOS tests / hidden labels** (§12.2), `lastBlocker` reports the newest *currently blocked* row rather than only what the newest pass happened to test, and the debug panel prints `labels los:<profile> <tests>/s max:<labels> tests:<n> hidden:<n> now:<n> age:<ms>ms blocker:<name>@<tile> t=<t>`.
+- **Retirement.** `retain()` drops verdicts for labels that are no longer candidates, so an element recycled by index cannot inherit another name's occlusion; `reset()` clears counters *and* verdicts, because clearing one without the other left `blockedNow` reporting a label it no longer tracked.
+
+**The richer map readout.** The coordinate panel now prints `lat, lon · nearest <name> <distance> <compass point>`, with the bearing computed from the **coordinate pair** — the authority on orientation (`worldToCoordinate`) — rather than from world axes, so it cannot disagree with the numbers printed beside it. The compass point is one of sixteen slices and the distance is formatted as `840 m` / `1.4 km`. The label layer also marks its verdict in the DOM: an occluded label carries `data-los="blocked"` and its name in `data-label`, which is what makes the browser gate's comparison possible and a devtools reader able to see why a name vanished.
+
+**Node tier — `src/geo/GeoLabelLos.test.js` (8 tests, part of `npm run check`, now 228 tests / 125 modules).** The scheduler is driven with a **synthetic wall** rather than a compiled fixture, because the contract is about what the layer asks and how much it asks:
+
+| Check | Result |
+|---|---|
+| a label behind geometry hides, one in front stays visible | pass: one hidden of two, `blockedNow 1`, the blocker and the full ray reported, contact strictly inside the segment |
+| **the query asks for `LOS_BLOCKER` only** | pass: the mask argument equals `LOS_BLOCKER` and every one of the other six roles reads `0`, so a pickup or a bird cannot blank a name |
+| a verdict is held for the refresh interval | pass: no re-test 16 ms later, `skippedForRefresh 1`, re-tested at 250 ms, age readout `0 → 150 ms` |
+| the ceilings are hard, under bursts and stalls | pass: a 10-pass burst inside one second stays inside 20 tests with the excess reported as skipped; a 60-second stall still tests at most one pass's worth |
+| a label can clear, and a retired label cannot keep a verdict | pass: the same key returns visible after moving clear, `retain` forgets it, `reset` zeroes counters and verdicts |
+| **a sweep that returns its `out` object is read correctly** | pass: an unobstructed world-style sweep hides nothing; a blocked one hides the label — the regression guard for the truthiness trap |
+| malformed configuration is refused | pass: no sweep, unknown profile, zero refresh interval each throw by name; radius and interval asserted against their reasons |
+| the map bearing and distance are geographically correct | pass: `0.01°` north is `1113 m`, east shrinks by `cos(lat)`, all four quadrants, diagonals, 16 reachable slice names, wrapping at 359° and −1°, `formatMetres` rounding |
+
+**Browser tier — `npm run visual:audit -- label-los`, exit 0 (2026-10-05).** The pair is **found, never authored**: the scenario searches standing positions around each committed label with the world's own `LOS_BLOCKER` sweep, teleports to a hit, and then compares the layer's DOM verdict against an independent probe taken from the live camera.
+
+| Check | Result |
+|---|---|
+| committed labels in `dense-urban` | 11 (`Fixture Nagar`, ten grid streets); labels commit per tile, so the scenario polls rather than assuming a frame count (6 frames yields zero) |
+| obstructed standing positions found | 44, of which **5** have the wall strictly between eye and name — the other 39 start inside geometry and are excluded as player-unreachable |
+| **occluded half** | pass: `Fixture Nagar`, live contact `t=0.375`, fresh scheduler row `blocked @134-163 ms`, `dom.hidden=true`, `data-los="blocked"` — the label is in the DOM and deliberately hidden |
+| **visible half** | pass: `Grid Avenue 1` with a clear live ray, a fresh non-blocked row, and `dom.hidden=false` / no `data-los` marker |
+| ray discipline (§15.6.2) | pass: 3–4 label sweeps in a 1.5 s window and **every** recorded mask equals `LOS_BLOCKER` (`16`); a foreign mask fails the run |
+| budget (§13) | pass: profile `low`, `20/s × 5`, tests in the window far under the allowance |
+| counters and diagnostics (§12.1/§12.2) | pass: `hidden ≥ 1`, per-label rays present, a named blocker with its rail `11728:6812`, `updateAgeMilliseconds` reported |
+| review panel | pass: `labels los:low 20/s max:5 tests:8 hidden:1 now:0 age:300ms blocker:…` — read from `#geo-debug-output` after clicking the runtime's own debug toggle |
+| **richer HUD, checked independently** | pass: printed `28.996130, 77.717593 · nearest Grid Avenue 1 30 m W`; the scenario recomputes `30 m` and `W` from the two coordinate pairs the runtime itself reports (a 3-unit separation is 30 m at this runtime's documented 1:10 scale) |
+
+**Four negative controls, each measured (all exit 1).** A gate that cannot fail proves nothing, so each criterion was broken in turn and the run re-executed:
+
+| Break | Observed failure |
+|---|---|
+| occlusion disabled (`const occluded = false`) | `occluded NONE — the criterion is unproven` → *no player-reachable label was hidden by a building within the update interval* |
+| label ray asks for `CAMERA_BLOCKER` instead | `masks [4] vs LOS_BLOCKER 16` → *label rays used masks 4; only LOS_BLOCKER is permitted* |
+| profile switched to `high` | `profile high 80/s × 14` → *the runtime profile is 80/s × 14, not the low profile's 20/s × 5* |
+| overlay extras dropped | `labels los: unavailable` → *the review panel line does not carry the profile, counters and blocker* |
+
+**Recorded gaps, stated rather than implied.** (1) The browser search runs in one fixture at one coordinate; the *rule* is fixture-independent and proved in Node against a synthetic wall, but fixture coverage is one. (2) The coordinate runtime pins the label LOS profile to `low` (a literal) rather than deriving it from the active quality profile — a deliberate first cut, so the budget is currently constant across profiles. (3) Only `LOS_BLOCKER` geometry (buildings, bridge decks) hides a name; vegetation and other proxies deliberately cannot, which is what §15.6.2 demands. (4) The nearest-place line refreshes on the once-per-second stats tick, unchanged by this work.
 
 ---
 
@@ -576,7 +640,7 @@ These are the **systemic gap**. The features below passed their automated gates 
 | Textures §19.5 #4 | Facade details fit wall slots, face outward, preserve entrances | `DET-04` | Never run |
 | Textures §19.6 | Full performance + visual audit across 6 locations, 7 metrics per profile | all | Never run |
 | Clipping §15.5 #1–3 | Roof details inside concave polygons/outside holes; facade modules attached and outward | `DET-04` | Never run |
-| Clipping §15.6 #1–2 | Label behind a building hides within the LOS interval; LOS ignores grass/bird/bee proxies | `LAY-05`/`GME-04` | Blocked, `LAY-05` still `QUEUED` |
+| Clipping §15.6 #1–2 | Label behind a building hides within the LOS interval; LOS ignores grass/bird/bee proxies | `LAY-05`/`GME-04` | **Run 2026-10-05, pass** — see §4 A4g: an occluded pair found at `t=0.375` is hidden with `data-los="blocked"` while a clear name stays visible, and every label ray asks for `LOS_BLOCKER` alone |
 
 The `VEG-09` wind items are now **moot**: on 2026-10-03 the owner rejected whole-plant wind as a default path because its per-vertex cost is not worth the effect. The default compiles no wind ALU at all, so there is no wind behaviour to review. The remaining Group B items are all *static* properties — silhouette family identity, branch cracks, clearance conformance, facade facing — and every one of them is observable in the offline fallback world, so none of them is blocked by anything except the work of running and reading the captures.
 
@@ -590,7 +654,7 @@ These will need a moving audit when built. Listed so the harness is designed to 
 
 | ID | Feature | Visual gate |
 |---|---|---|
-| `LAY-05` | DOM label line-of-sight | Sparse capped LOS hides labels behind blockers |
+| ~~`LAY-05`~~ | ~~DOM label line-of-sight~~ | **Delivered 2026-10-05** in the `GME-04` slice (§4 A4g) — struck from this list because it is no longer a not-yet-implemented feature |
 | `LAY-06` | Camera-fade eligibility/dither | Opaque/alpha-tested screen-door fade; no broad blended foliage |
 | `VEG-10` | Branch-group/detail wind | Up to 4 coherent phase groups; reduced-motion gate |
 | `DET-06` | Rocks/geology grammar | Major-mass proxies only; small chips visual-only |
@@ -617,6 +681,7 @@ Dependency-correct order, split by whether a data prerequisite exists.
 ### Phase 1 — no data prerequisite (possible now)
 
 0. ~~**`COL-09`** — capped dynamic spatial hash.~~ **CLOSED 2026-10-05** (see §4 A4c). Not a pixel gate: the caps, the primitive restriction, the reinsert discipline and the merged query contract are asserted, and one live run proves the wiring and that a placed solid changes a sweep that was first shown to be clear. Its five dependents (`DET-07`, `PHY-01`, `PHY-02`, `LIF-02`, `NET-02`) are now dependency-complete. The hash ships empty; none of them has placed a proxy yet.
+0e. ~~**`GME-04`** — place labels and coordinate HUD, which also satisfies **`LAY-05`**.~~ **CLOSED 2026-10-05** (see §4 A4g). A real pixel-adjacent gate this time: the run *finds* a standing position with a wall strictly between the eye and a name, and then requires the layer to hide that label (`dom.hidden` plus `data-los="blocked"`) within the 250 ms update interval while a clear-ray name stays visible. Ray discipline is checked by intercepting the live call — every label sweep must ask for `LOS_BLOCKER` and nothing else — and the research's own budget (`20/s × 5` at the low profile) is measured over a wall-clock window. Four negative controls (occlusion disabled, wrong mask, wrong profile, panel line removed) each exit 1. Closing it made `GME-06`, `GME-07` and `MAT-06` dependency-complete, so the largest remaining lever is now `GME-06` (5 in its closure, 2 direct), with `LIF-02` (4, 4) and `ENV-02` (4, 1) immediately behind it.
 0d. ~~**`CNT-01`** — versioned state-content schema.~~ **CLOSED 2026-10-05** (see §4 A4f). Not a pixel gate: the format is declared as a field table the validator walks, every error class is proven by a fixture that must produce it, legacy v0 migrates to a file deep-equal to the shipped v1 pack, and the browser tier proves the bytes served over HTTP are byte-identical (SHA-256) to the bytes validated on disk. Both shipped packs validate in both tiers. Recorded gap: no entry point mounts `StateManager`, so the validator ships zero bytes today — putting these packs on a live surface is `CNT-02`/`CNT-04`.
 0c. ~~**`GME-05`** — shared interaction/action registry.~~ **CLOSED 2026-10-05** (see §4 A4e). Not a pixel gate: the registry's invariants, the input object's behaviour and the generated markup are asserted in Node, one source scan proves no module outside the registry names a gameplay key, and the browser tier drives both shipped runtimes' mounted controls with real pointer and key events on desktop **and** on a 390x844 touch viewport. Implementing it closed two real defects: the curated runtime had no touch controls at all, and touch buttons first rendered 15px tall on a phone. Its three waiting-only-on-it dependents (`DET-10`, `PHY-01`, `PHY-03`) are now dependency-complete.
 0a. ~~**`FND-08`** — curated/coordinate domain interface.~~ **CLOSED 2026-10-05** (see §4 A4d). Not a pixel gate: the interface is asserted on both real runtimes in Node, and one shared probe drives both shipped runtimes in the browser tier. Its two direct dependents (`GME-05`, `CNT-01`) are now dependency-complete, and `GME-05` becomes the largest remaining lever at 14 items in its closure.
@@ -722,6 +787,10 @@ Canonical `.pbf` artefacts are also written to `public/fixture-tiles/` by `npm r
 
 | Date | Check | Result |
 |---|---|---|
+| 2026-10-05 | `GME-04`/`LAY-05` Node gate | `GeoLabelLos.test.js` 8 tests pass: occlusion hides and a clear ray does not, `LOS_BLOCKER`-only masks, verdicts held for 250 ms, the 20/s and 5-label ceilings under a burst and a 60-second stall, clear/retire/reset behaviour, the world-style return-value contract, config rejection, and the bearing/distance geography. Suite total `228 pass / 0 fail`, 125 modules |
+| 2026-10-05 | `GME-04`/`LAY-05` browser gate | `label-los` exit 0 with `blockers 0`: 11 committed labels, 44 obstructed standing positions (5 with the wall between), `Fixture Nagar` hidden at contact `t=0.375` with a fresh row (`blocked @134–163 ms`) and `data-los="blocked"`, `Grid Avenue 1` visible with a clear ray, 3–4 label sweeps with masks `[16]` only, panel `labels los:low 20/s max:5 …`, HUD `nearest Grid Avenue 1 30 m W` matching an independent recompute from the runtime's own coordinates |
+| 2026-10-05 | `GME-04` negative controls (4) | Occlusion disabled → exit 1 (*no player-reachable label was hidden*); mask changed to `CAMERA_BLOCKER` → exit 1 (*label rays used masks 4*); profile `high` → exit 1 (*80/s × 14, not 20/s × 5*); overlay extras dropped → exit 1 (*panel line does not carry the profile, counters and blocker*). Each restored and re-verified clean before the commit |
+| 2026-10-05 | `GME-04` regression sweep | `label-los`, `content-schema`, `action-surfaces`, `domain-interface`, `remount-lifecycle`, `curated-camera`, `coordinate-matrix` and `water-order` all exit 0 with the label layer live |
 | 2026-10-05 | `FND-08` Node gate | `WorldDomain.test.js` 7 tests pass: both real runtimes satisfy the six members, one probe reaches the same semantics on each, the scale guard holds at a `10.000x` footprint ratio, and five negative controls fail as required. Suite total `189 pass / 0 fail` |
 | 2026-10-05 | `FND-08` interface gate (dev, both runtimes) | `domain-interface` exit 0: curated `moveCircle` hit with `advanced 5.200` in 53 steps and `0.800` left to the rail, coordinates hit with `4.942` in 50 steps and `1.058` left to the proxy; both cameras blocked forward and clear on the control; interface reports complete for both |
 | 2026-10-05 | `FND-08` scale guard | footprint ratio `10.000x` (documented 1:10), spacing ratio `33.333x`, sweep clamps `[.03,.04]` and `[.6,1.25]` disjoint. Both guard negative controls rejected |

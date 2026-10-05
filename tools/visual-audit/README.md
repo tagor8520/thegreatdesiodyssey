@@ -37,6 +37,7 @@ npm run visual:audit -- remount-lifecycle       # FND-07 zero-growth remount
 npm run visual:audit -- domain-interface        # FND-08 curated + coordinate domain interface
 npm run visual:audit -- action-surfaces         # GME-05 every action on every surface it claims, both runtimes
 npm run visual:audit -- content-schema          # CNT-01 the served state packs validate in-page, byte-identical to disk
+npm run visual:audit -- label-los               # GME-04/LAY-05 a name behind a wall hides; a clear name stays visible
 ```
 
 Options: `--url <base>` (default `http://localhost:5173/`), `--width`, `--height`,
@@ -111,6 +112,18 @@ The summary carries `contentFailures` and `run.mjs` exits 1 if it is non-empty. 
 recorded gap: nothing mounts `StateManager` yet, so there is no live surface to drive and the
 validator ships zero bytes — that is `CNT-02`/`CNT-04`'s work, and stating it here is what keeps the
 gate from implying coverage that does not exist.
+
+### `label-los` — `GME-04` / `LAY-05`
+
+A real line-of-sight gate, and the only scenario whose subject is *found* rather than authored. Labels are DOM elements drawn over the canvas, so without an explicit test a place name is readable through the building in front of it. The scenario installs a page-side probe, intercepts `world.sweepSphere` to record the **masks the label layer actually asks for**, then searches standing positions around each committed label with the world's own `LOS_BLOCKER` sweep, teleports to a hit, and compares the layer's DOM verdict (`element.hidden` plus `data-los="blocked"`) against an independent probe taken from the live camera.
+
+Three details make the comparison falsifiable rather than decorative:
+
+- **Only interior contacts count.** A contact at `t = 0` means the sampled eye is *inside* geometry — a legal query result, but not a standing position a player can occupy. The scenario reports both counts and requires the wall to be strictly between (`0 < t < 1`); in `dense-urban` it finds 44 obstructed samples of which 5 qualify.
+- **A verdict is only trusted while it is fresh.** The DOM trails the scheduler by one label pass (`isHidden` is read before the pass that refreshes it) and a stale verdict on a culled label would look identical to an occluded one. A fresh per-label row (age under the 250 ms refresh interval) proves the label was a candidate in the last pass — on screen and not overlapped — so a hidden verdict can only be about occlusion.
+- **Every criterion is a hard failure.** The summary carries `labelFailures` and `run.mjs` exits 1 if it is non-empty: no interior contact, no clear-ray visible label, a label ray that used any mask other than `LOS_BLOCKER`, no rays at all in the window, a profile other than `low` `20/s × 5`, an over-budget test count, a missing per-label ray/blocker/age, an invisible or malformed review panel line, or a coordinate readout whose printed distance and compass point disagree with the ones recomputed from the runtime's own coordinates.
+
+Four negative controls were run and each exits 1: occlusion disabled (*no player-reachable label was hidden*), the ray changed to `CAMERA_BLOCKER` (*label rays used masks 4*), the profile switched to `high` (*80/s × 14, not 20/s × 5*), and the overlay extras dropped (*panel line does not carry the profile, counters and blocker*).
 
 ### `remount-lifecycle` — FND-07
 

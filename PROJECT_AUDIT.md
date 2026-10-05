@@ -115,6 +115,7 @@ src/reference/*     Current coherent runtime, despite the “reference” name
 src/engine/*        Mostly legacy engine modules
 src/world/*         Mostly legacy world modules
 src/ui/*            Legacy UI and docs UI
+src/geo/*           Coordinate Explorer lane: map-derived world, collision, and the DOM label/HUD overlay
 src/network/*       Disconnected WebSocket prototype
 public/content/*    Images plus disconnected state JSON
 ```
@@ -203,6 +204,8 @@ A `BiomeManager` generator processes one strip of eight terrain tiles, yields, t
 - shadow casting and receiving enabled.
 
 This is much better than one Three.js `Mesh` per block, but it creates one renderable/material **per color per chunk or asset batch**. It optimizes object count but not enough draw submissions, material count, shadow work, or hidden box faces.
+
+> **Coordinate-runtime overlay, added 2026-10-05 (`GME-04`).** Coordinate Explorer draws its map-derived place names and its coordinate readout as **DOM elements over the canvas**, not as in-scene geometry. That is cheap and always legible, but it means those labels take no part in WebGL depth: without an explicit test a place name is readable through the building in front of it — a defect both research documents list. `src/geo/GeoLabelLos.js` now supplies the missing test: one small sphere cast per candidate name from the camera, filtered by the `LOS_BLOCKER` role only, held for a 250 ms update interval and capped at 20 tests/second and 5 simultaneous labels on the low profile. The debug panel reports the profile, the test and hidden counters, the update age and the newest blocker with its contact time.
 
 ### 5.5 Movement and collision
 

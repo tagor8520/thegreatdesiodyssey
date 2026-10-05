@@ -1,9 +1,13 @@
 import * as THREE from 'three';
 import { createProceduralEngine, createProceduralLightRig, GDO_PALETTE } from '../engine/ProceduralEngine.js';
 import { GeoWorld } from './GeoWorld.js';
+import { GEO_QUERY_MASK } from './GeoCollision.js';
 import { GeoPlayer } from './GeoPlayer.js';
 import { mountTouchControls } from '../engine/TouchControls.js';
 import { validateCoordinate } from './GeoMath.js';
+import {
+  LabelLosScheduler, compassBearing, formatMetres,
+} from './GeoLabelLos.js';
 import './geo.css';
 
 function formatBytes(bytes) {
@@ -208,6 +212,16 @@ export function mountGeoGame(container, {
   const projectedLabel = new THREE.Vector3();
   const labelElements = [];
   let displayedLabels = [], nextLabelRefresh = 0;
+  let nearestPlace = null;
+  // `GME-04`: the DOM label layer does not take part in WebGL depth, so a name
+  // would otherwise draw straight through the building in front of it. The
+  // scheduler is budgeted per the layering research (20 tests/second and 5 labels
+  // at the low profile) and asks only for `LOS_BLOCKER`, so a pickup or a bird
+  // between the eye and a name cannot blank it.
+  const labelLos = new LabelLosScheduler({
+    profile: 'low',
+    sweep: (x, y, z, dx, dy, dz, radius, out, mask) => world.sweepSphere(x, y, z, dx, dy, dz, radius, out, mask),
+  });
   const updateMapLabels = now => {
     if (now >= nextLabelRefresh) {
       displayedLabels = world.visibleLabels;
@@ -221,10 +235,16 @@ export function mountGeoGame(container, {
       labelElements.push(element);
     }
     const occupied = [];
+    const losCandidates = [];
+    nearestPlace = null;
     const width = Math.max(1, container.clientWidth), height = Math.max(1, container.clientHeight);
     for (let index = 0; index < labelElements.length; index++) {
       const element = labelElements[index], label = labels[index];
-      if (!label) { element.hidden = true; continue; }
+      if (!label) {
+        element.hidden = true;
+        if (element.dataset.label !== undefined) { delete element.dataset.label; delete element.dataset.los; }
+        continue;
+      }
       const distance = Math.hypot(label.x - player.position.x, label.z - player.position.z);
       const labelOffset = label.kind === 'place' ? 1.25 : label.kind === 'poi' ? .72 : label.kind === 'water' ? .28 : .42;
       projectedLabel.set(label.x, (label.y ?? 0) + labelOffset, label.z).project(camera);
@@ -233,14 +253,37 @@ export function mountGeoGame(container, {
       let visible = projectedLabel.z > -1 && projectedLabel.z < 1 &&
         Math.abs(projectedLabel.x) < 1.06 && Math.abs(projectedLabel.y) < 1.06 && distance < 72;
       if (visible && occupied.some(position => Math.abs(position.x - screenX) < 96 && Math.abs(position.y - screenY) < 28)) visible = false;
+      // Occlusion is checked only for labels that are otherwise on screen and not
+      // overlapped: the budget is spent on names a player is about to read, and a
+      // label outside the frustum needs no ray at all.
+      if (visible) losCandidates.push({ key: label.name, x: label.x, y: (label.y ?? 0) + labelOffset, z: label.z });
+      const occluded = visible && labelLos.isHidden(label.name);
+      if (occluded) visible = false;
       element.hidden = !visible;
-      if (!visible) continue;
+      if (!visible) {
+        // `data-los` is the diagnostic the research asks for on a hidden label; the
+        // browser gate reads it, and the overlay line reports the aggregate.
+        if (occluded) element.dataset.los = 'blocked';
+        else delete element.dataset.los;
+        continue;
+      }
+      delete element.dataset.los;
       occupied.push({ x: screenX, y: screenY });
       element.textContent = label.name;
       element.dataset.kind = label.kind;
+      // The name is the label's identity in the DOM: the gate needs to address a
+      // specific name, and a devtools reader should not have to match pixels.
+      if (element.dataset.label !== label.name) element.dataset.label = label.name;
       element.style.transform = `translate3d(${screenX}px, ${screenY}px, 0) translate(-50%, -50%)`;
       element.style.opacity = String(Math.min(1, Math.max(.35, 1 - distance / 90)));
+      if (nearestPlace === null || distance < nearestPlace.distance) {
+        nearestPlace = { name: label.name, kind: label.kind, distance, x: label.x, z: label.z };
+      }
     }
+    // One scheduler pass per label refresh, over the candidates that survived the
+    // frustum and overlap gates. The camera position is the eye of every ray.
+    labelLos.retain(losCandidates.map(candidate => candidate.key));
+    labelLos.update(losCandidates, camera.position, now);
   };
 
   const exit = () => onExitRequest?.();
@@ -277,7 +320,7 @@ export function mountGeoGame(container, {
     lastFrame = now;
     player.update(dt);
     world.update(player.position, camera, renderer.domElement.height, now);
-    debugOverlay?.update(world, player.position, renderer, now);
+    debugOverlay?.update(world, player.position, renderer, now, { labels: labelLos.diagnostics(now) });
     renderer.render(scene, camera);
     updateMapLabels(now);
     sampleCpuMilliseconds += performance.now() - cpuStart;
@@ -287,10 +330,20 @@ export function mountGeoGame(container, {
     if (now - sampleStart >= 1000) {
       const fps = sampleFrames * 1000 / (now - sampleStart);
       const location = world.coordinateAt(player.position.x, player.position.z);
-      coordinateElement.textContent = `${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}`;
+      // `GME-04`'s "richer map" half: the coordinate readout says where the nearest
+      // named place is, not only where the player is. The bearing comes from the
+      // latitude/longitude pair — the authority on orientation — rather than from
+      // world axes, so it cannot disagree with the numbers printed beside it.
+      let nearest = '';
+      if (nearestPlace) {
+        const target = world.coordinateAt(nearestPlace.x, nearestPlace.z);
+        const bearing = compassBearing(location.latitude, location.longitude, target.latitude, target.longitude);
+        nearest = ` · ${nearestPlace.kind === 'water' ? 'water' : 'nearest'} ${nearestPlace.name} ${formatMetres(bearing.metres)} ${bearing.point}`;
+      }
+      coordinateElement.textContent = `${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}${nearest}`;
       const averageCpu = sampleFrames ? sampleCpuMilliseconds / sampleFrames : 0;
       const queries = world.queryDiagnostics;
-      runtimeElement.textContent = `${Math.round(fps)} FPS · ${averageCpu.toFixed(1)}ms CPU · ${Math.round(worstFrameGap)}ms worst · ${renderer.info.render.calls} calls · ${Math.round(renderer.info.render.triangles / 1000)}k tris · ${renderer.info.memory.geometries} geo · ${longTaskCount} stalls · q ${queries.sweeps}/${queries.sphereSweeps} sweeps · ${queries.maxCandidates} max collision · ${queries.maxSupportCandidates} max support · ${queries.groundRejects} ground rejects · ${queries.depenetrations} recoveries · ${latestStatus?.roads ?? 0} roads · ${latestStatus?.buildings ?? 0} buildings · ${latestStatus?.decorations ?? 0} details · ${latestStatus?.labels ?? 0} names${latestStatus?.truncated ? ' · safety cap reached' : ''}`;
+      runtimeElement.textContent = `${Math.round(fps)} FPS · ${averageCpu.toFixed(1)}ms CPU · ${Math.round(worstFrameGap)}ms worst · ${renderer.info.render.calls} calls · ${Math.round(renderer.info.render.triangles / 1000)}k tris · ${renderer.info.memory.geometries} geo · ${longTaskCount} stalls · q ${queries.sweeps}/${queries.sphereSweeps} sweeps · ${queries.maxCandidates} max collision · ${queries.maxSupportCandidates} max support · ${queries.groundRejects} ground rejects · ${queries.depenetrations} recoveries · label LOS ${labelLos.counters.tests}/${labelLos.counters.hidden} hidden ${labelLos.counters.blockedNow} now · ${latestStatus?.roads ?? 0} roads · ${latestStatus?.buildings ?? 0} buildings · ${latestStatus?.decorations ?? 0} details · ${latestStatus?.labels ?? 0} names${latestStatus?.truncated ? ' · safety cap reached' : ''}`;
       // Ignore samples contaminated by a tab/screenshot stall, and require
       // sustained slowness before reallocating the drawing buffer.
       const stableSample = worstFrameGap < 100;
@@ -347,6 +400,15 @@ export function mountGeoGame(container, {
     // `FND-08`: the world is the coordinate domain; exposing it under this name
     // lets the shared probe address both runtimes the same way.
     domain: world,
+    // `GME-04`: the label layer's own diagnostics — the LOS profile, the tests and
+    // hidden counts, the newest blocker with its ray, and the update age. Exposed
+    // because the gate has to compare the DOM's verdict against the scheduler's.
+    get labelDiagnostics() { return { ...labelLos.diagnostics(performance.now()), nearest: nearestPlace }; },
+    get labelScheduler() { return labelLos; },
+    // The collision vocabulary the label ray is filtered by. An audit that wants to
+    // reproduce the label query must ask for the *same* mask rather than hard-coding
+    // a bit, so the mask is part of the runtime's public surface.
+    get queryMasks() { return GEO_QUERY_MASK; },
     get debugOverlay() { return debugOverlay; },
     dispose() {
       if (disposed) return; disposed = true;

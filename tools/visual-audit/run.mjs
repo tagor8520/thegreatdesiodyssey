@@ -22,6 +22,7 @@ import * as remountLifecycle from './scenarios/remount-lifecycle.mjs';
 import * as domainInterface from './scenarios/domain-interface.mjs';
 import * as actionSurfaces from './scenarios/action-surfaces.mjs';
 import * as contentSchema from './scenarios/content-schema.mjs';
+import * as labelLos from './scenarios/label-los.mjs';
 
 const SCENARIOS = new Map([
   ['curated-camera', {
@@ -75,6 +76,13 @@ const SCENARIOS = new Map([
     // No `prepares` and no fixture: this gate validates the content *files* over the
     // dev server, so it needs neither a coordinate fixture nor a mounted runtime.
     summary: 'CNT-01 content schema: both shipped state packs fetched over the dev server and validated in-page by the real ContentSchema module, byte-identical to the files the Node tier validates, plus the legacy-migration and rejection paths.',
+  }],
+  ['label-los', {
+    module: labelLos,
+    fixture: 'dense-urban',
+    // No `prepares`: the scenario opens coordinates itself, because it instruments
+    // `world.sweepSphere` before any label ray is cast.
+    summary: 'GME-04 label LOS: a found occluded place name hides within the update interval while a clear name stays visible, label rays ask for LOS_BLOCKER only, the per-second budget holds, and the coordinate readout names the nearest place.',
   }],
   ['coordinate-camera', {
     module: coordinateCamera,
@@ -214,6 +222,17 @@ async function main() {
           `${state.oneTimeInitialisation.domNodes} DOM node(s)`);
       }
     }
+    if ('labelFailures' in summary) {
+      const occluded = summary.occluded;
+      console.log(`  labels            ${summary.committedLabels.length} committed · ${summary.searchHits} obstructed sample(s) (${summary.interiorHits} with a wall between) · ${summary.clearHits} clear`);
+      console.log(`  occluded          ${occluded
+        ? `${occluded.name} hidden, contact t=${occluded.rayTime?.toFixed(3)}, blocker ${occluded.liveBlocker}, dom ${occluded.domHidden ? 'hidden' : 'SHOWN'}/${occluded.domLos ?? 'no marker'}`
+        : 'NONE — the criterion is unproven'}`);
+      console.log(`  visible half      ${summary.visible ? `${summary.visible.name} shown with a clear ray` : 'NONE — the criterion is unproven'}`);
+      console.log(`  ray discipline    ${summary.runtime.sweeps} sweep(s), masks [${summary.runtime.masks.join(', ')}] vs LOS_BLOCKER ${summary.losMask} · profile ${summary.diagnostics.profile} ${summary.diagnostics.testsPerSecond}/s × ${summary.diagnostics.simultaneousLabels}`);
+      console.log(`  label counters    tests ${summary.diagnostics.tests} · hidden ${summary.diagnostics.hidden} · age ${Math.round(summary.diagnostics.updateAgeMilliseconds)}ms`);
+      console.log(`  coordinate HUD    ${summary.runtime.coordinateText}`);
+    }
     if ('stabilitySamples' in summary) {
       console.log(`  stable renders    ${summary.stabilitySamples - summary.orderInstabilitySamples}/${summary.stabilitySamples}`);
       console.log(`  alpha foliage     ${summary.alphaBlendedFoliage.length}`);
@@ -254,6 +273,14 @@ async function main() {
     if (summary.contentFailures?.length) {
       console.error('\n[audit] FAIL: shipped state content does not satisfy the content schema.');
       for (const failure of summary.contentFailures) console.error(`  ${failure}`);
+      process.exitCode = 1;
+    }
+    // Label line of sight is a hard assertion: a name readable through a building,
+    // a ray that consults the wrong proxies, or a budget breach are all defects, not
+    // measurements to interpret.
+    if (summary.labelFailures?.length) {
+      console.error('\n[audit] FAIL: the label line-of-sight contract does not hold.');
+      for (const failure of summary.labelFailures) console.error(`  ${failure}`);
       process.exitCode = 1;
     }
     if (summary.metricValidated === false) {

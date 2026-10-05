@@ -15,7 +15,7 @@ function formatBytes(bytes) {
 
 function formatMilliseconds(value) { return Number.isFinite(value) ? `${value.toFixed(1)} ms` : 'n/a'; }
 
-function snapshotText(snapshot, metrics, report) {
+function snapshotText(snapshot, metrics, report, extras = null) {
   const summary = snapshot.summary;
   const timings = summary.timings ?? {};
   const layers = summary.layers.map(([name, count]) => `${name}:${count}`).join(' · ') || 'none';
@@ -54,6 +54,12 @@ function snapshotText(snapshot, metrics, report) {
     `plant pools ${summary.plantRender?.profile ?? 'none'} owners:${summary.plantRender?.owners ?? 0} records:${metrics.plantRenderEntries} active:${summary.plantRender?.activeDrawPools ?? 0}/${summary.plantRender?.drawPools ?? 0} tiers:${metrics.plantRenderSourceGeometries} GPU:${formatBytes(metrics.plantRenderGpuBytes)} tris:${metrics.plantRenderVisibleTriangles} draw-delta:${metrics.plantRenderAddedDrawCalls} repacks:${summary.plantRender?.repacks ?? 0} matrix-last:${summary.plantRender?.lastMatrixUploads ?? 0}`,
     `plant wind ${summary.plantRender?.wind?.namespace ?? 'none'} strength:${(summary.plantRender?.wind?.strength ?? 0).toFixed(2)} gust:${(summary.plantRender?.wind?.gustiness ?? 0).toFixed(2)} reduced:${summary.plantRender?.reducedMotion ?? false} uniform/frame:${metrics.plantWindUniformWritesPerFrame} CPU-matrices:${metrics.plantWindCpuMatrixUpdatesPerFrame} alloc:${metrics.plantWindSteadyFrameAllocations}`,
     `query collision:${metrics.maxCollisionCandidates} support:${metrics.maxSupportCandidates} dynamic:${metrics.dynamicProxies}${breaches ? ` · FAIL ${breaches}` : ''}`,
+    extras?.labels
+      ? `labels los:${extras.labels.profile} ${extras.labels.testsPerSecond}/s max:${extras.labels.simultaneousLabels} tests:${extras.labels.tests} hidden:${extras.labels.hidden} now:${extras.labels.blockedNow} age:${Math.round(extras.labels.updateAgeMilliseconds)}ms` +
+        (extras.labels.lastBlocker
+          ? ` blocker:${extras.labels.lastBlocker.key}@${extras.labels.lastBlocker.blocker} t=${extras.labels.lastBlocker.time.toFixed(3)} ray(${extras.labels.lastBlocker.ray.from.x.toFixed(1)},${extras.labels.lastBlocker.ray.from.y.toFixed(1)},${extras.labels.lastBlocker.ray.from.z.toFixed(1)})→(${extras.labels.lastBlocker.ray.to.x.toFixed(1)},${extras.labels.lastBlocker.ray.to.y.toFixed(1)},${extras.labels.lastBlocker.ray.to.z.toFixed(1)})`
+          : ' blocker:none')
+      : 'labels los: unavailable',
   ].join('\n');
 }
 
@@ -89,7 +95,16 @@ export class GeoDebugOverlay {
 
   toggle() { return this.setEnabled(!this.enabled); }
 
-  update(world, focus, renderer, now = performance.now(), force = false) {
+  /**
+   * @param {object} [extras] Per-frame diagnostics the overlay does not own —
+   *   currently the label layer's LOS counters, which live beside the DOM labels
+   *   rather than in the world. Passed as a separate object because the fifth
+   *   argument is `force`, and handing an object there would silently rebuild the
+   *   debug geometry every frame.
+   * @param {boolean} [force] Rebuild even inside the refresh interval.
+   */
+  update(world, focus, renderer, now = performance.now(), extras = null, force = false) {
+    if (extras === true || extras === false) { force = extras; extras = null; }
     if (this.disposed || !this.enabled || (!force && now - this.lastUpdate < GEO_DEBUG_LIMITS.refreshMilliseconds)) return this.snapshot;
     this.lastUpdate = now;
     const snapshot = buildGeoDebugSnapshot(world, focus);
@@ -104,7 +119,7 @@ export class GeoDebugOverlay {
     this.metrics = collectGeoRuntimeBudgetMetrics(renderer, world);
     this.report = evaluateLowProfileBudget(this.metrics);
     if (this.panel) {
-      this.panel.textContent = snapshotText(snapshot, this.metrics, this.report);
+      this.panel.textContent = snapshotText(snapshot, this.metrics, this.report, extras);
       this.panel.dataset.budget = this.report.ok ? 'pass' : 'fail';
     }
     return snapshot;
