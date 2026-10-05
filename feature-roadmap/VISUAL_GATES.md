@@ -440,7 +440,7 @@ Both stop distances are the sum of the mode's own numbers, which is the point: c
 
 **Why the registry had to exist.** Both live runtimes had grown their own keymaps, and one of them had no way to play on a phone at all: the curated runtime — the mode the landing page opens — shipped **zero touch controls**, so `GME-03`'s "device-gated complete touch controls" was true of the coordinate explorer only. Implementing this gate found that and fixed it, rather than documenting it: `mountTouchControls` now renders the curated inventory-mode controls from the same declarations the coordinate runtime uses.
 
-**Node tier — `src/engine/ActionRegistry.test.js`, 14 tests, part of `npm run check` (203 tests total).** The registry's invariants are asserted, then the behaviour of the input object, then two checks that no runtime assertion can make:
+**Node tier — `src/engine/ActionRegistry.test.js`, 14 tests, part of `npm run check`.** The registry's invariants are asserted, then the behaviour of the input object, then two checks that no runtime assertion can make:
 
 | Check | Result |
 |---|---|
@@ -485,6 +485,56 @@ Two defects were found by this pass and fixed in the same change: the first CSS-
 **Regression evidence from the same run.** `remount-lifecycle` exit 0 — zero growth, `0` leaks, and the listener counts moved exactly as expected when ownership moved into `ActionInput` (coordinate 49 mounted, curated 189, both exiting to 7 with everything released). `domain-interface`, `curated-camera`, `coordinate-matrix` and `water-order` all exit 0 with this change in place.
 
 **Not asserted, deliberately.** Frame time and input latency are not criteria here. The registry also does not merge the two runtimes' *actions*: coordinate mode has camera and diagnostics and curated mode has an inventory, and the gate asserts the declared per-runtime set rather than a single union — a runtime must expose everything it declares, and must not claim what it lacks.
+
+#### A4f. `CNT-01` — Versioned state-content schema *(content files, both tiers)*
+
+| | |
+|---|---|
+| **Roadmap** | Order 160, P1, **`ADDED` — closed 2026-10-05** (was `QUEUED`), depends on `FND-06`, `FND-08`, `DET-02` |
+
+**★ CLOSED 2026-10-05 — status `ADDED`.** The registered gate reads: *current experimental JSON gains schema, validation and migration.* All three words are load-bearing, and each is asserted separately: **schema** — the format is declared, not described; **validation** — a bad file is rejected with the field named; **migration** — an old file still loads, and un-migrated content does *not*.
+
+**Why this mattered.** The project advertises a low-code contribution path ("author a state or landmark in JSON and the runtime builds it"), and until this change that path had **no contract whatsoever**. `public/content/states/*.json` were two experimental files with no version stamp, no validation and no migration, fetched by a bare `fetch` + `res.json()` and handed straight to the geometry builder. A typo produced a silently half-built vignette; a format change would have made every existing file quietly wrong. This is the item that turns the advertised path into a real one.
+
+**What the schema is.** `src/engine/ContentSchema.js` declares the format as a table — `STATE_CONTENT_FIELDS` carries, for every field, its name, type, whether it is required, and a description written for a contributor — and the validator **walks that table**, so the schema and the checks cannot drift apart and `describeStateContentSchema()` can print the format for a tool (`CNT-03`). Ten field types cover the whole format: `id`, `string`, `color` (six-digit hex only), `vec3`, `positiveNumber`, `integer`, `enum`, plus the three richer shapes (`buff`, `collectible[]`, `voxel[]`) that get their own checks because a scalar handler cannot express them.
+
+**Validation keeps two kinds of finding apart.** *Errors* mean the content cannot be rendered or looked up correctly: a bad buff type, a repeated voxel coordinate, a malformed tuple, a three-digit hex colour, an undeclared field, a duplicate item id, two items at the same spawn point, a spawn outside the declared bounds, a duration or multiplier past its cap, an icon that is not a glyph, a pack over its voxel cap. Every one of them **names its field by path** (`state.collectibles[0] ("banana_chips").buff.type must be one of speed, jump, shield, stamina, focus, got "speeed"`), because a validator that says "invalid" is unusable to an author. *Warnings* are advisory and never block a build: no `bounds`, no `provenance`, a description whose stated numbers no longer match the buff (edit a duration and the pickup text lies silently), two spawns inside the 1.8-unit pickup radius, an authoring origin that is not the origin. Both shipped packs carry warnings today — that is the honest current state, and a gate that failed on them would be reporting a product decision as a defect.
+
+**Migration is a ladder, not a flag.** `MIGRATIONS` maps each version to the next, each step pure and returning its own notes, so the next format change adds one entry instead of rewriting the upgrade path (`NET-01` reuses the shape for save files). The v0 → v1 step repairs what legacy files got wrong rather than only relabelling them: it drops coincident voxels (they z-fight and cost geometry; a same-coordinate different-colour pair is reported, first colour kept) and normalises hex case, which matters because `VoxelBuilder` caches materials by the **exact string**, so `#D4A017` and `#d4a017` would be two materials for one colour. A file stamped from the **future** is refused rather than passed through: validating it against an older schema would reject fields the author legitimately used, and accepting it would let an unknown shape reach the renderer.
+
+**Node tier — `src/engine/ContentSchema.test.js` (13 tests) + `src/engine/StateManager.test.js` (4 tests), part of `npm run check` (220 tests total).** The shipped files are the real fixture: they are read from disk, not mocked, so a schema that the project's own content fails is caught immediately.
+
+| Check | Result |
+|---|---|
+| both shipped packs validate | pass: `kerala` (32 voxels), `maharashtra` (34 voxels), zero errors, two warnings each |
+| the schema is self-describing | pass: every field has a name, type, `required` flag and description; every key the shipped packs use is declared |
+| caps derive from the shared ceiling | pass: `voxelsPerState = floor(180,000 × 0.5 / 12) = 7,500`, asserted as arithmetic, not as a literal |
+| **every error class has a fixture that produces it** | pass: 29 cases, each asserting the **message** (missing/duplicate/malformed fields, bad buff type, zero multiplier, fractional duration, over-cap values, tuple arity, non-integer coordinates, short hex, coincident voxels, conflicting voxels, long icon/description, over-cap counts, same spawn point, non-object root, bad version type) |
+| the valid control | pass: a minimal valid pack validates, so a validator that rejected everything would not pass the table above |
+| all problems reported in one pass | pass: a pack broken four ways reports all four, and does **not** invent a rule for a negative integer duration |
+| advisory warnings fire without blocking | pass: stale `+3x`/`9s` text vs a `2×`/`5000ms` buff, a 1.00-unit spawn cluster, a `(5, 5, 5)` authoring origin; agreeing text stays silent |
+| declared-optional blocks | pass: `bounds` (including spawn-outside-bounds and inverted axes), `provenance` (valid review statuses, arrays, unknown keys rejected), presentation colours |
+| legacy fails strict, passes migrated | pass: exactly **one** precise error for v0, and the migrated object is **deep-equal to the shipped v1 file** — the two producers of v1 content cannot drift |
+| migration repairs, and says so | pass: 2 coincident voxels removed with notes, mixed hex case normalised, repaired file validates |
+| migration is a no-op on current content | pass: same object reference returned, no mutation of the caller's data |
+| the future is refused | pass: `schemaVersion: 2` is not migrated, and does not validate either |
+| the ladder has no gaps | pass: strictly increasing from v0 to the current version |
+| **the loader consumes the schema** | pass: a shipped pack loads through `StateManager.loadState` into a real `THREE.Scene` (2 vignettes = mesh + ring each), a legacy pack migrates en route, a missing pack fails as a 404 load error, and invalid content is **refused without touching the scene** (`children.length === 0`, no partial state) with both problems named |
+| **negative control: the loader bypasses the schema** | all 4 loader tests fail, so the wiring is load-bearing rather than decorative |
+| **negative control: the shipped pack is corrupted** | the gate fails with `buff.type must be one of …` and the unknown-field path, and `ContentSchema.test.js` fails 4 tests |
+
+**Browser tier — `npm run visual:audit -- content-schema`, exit 0 (2026-10-05).** The Node tier validates the files *on disk*; this tier proves the files the game actually receives are the same files. It loads the landing shell (no WebGL game is started — three JSON files do not need a renderer), imports the **real** `ContentSchema.js` over the dev server, fetches both packs, and validates them in-page:
+
+| Check | Kerala | Maharashtra |
+|---|---|---|
+| served | 200, `application/json` | 200, `application/json` |
+| validated in-page | `stateId=kerala`, 2 collectibles, 32 voxels, schema v1 | `stateId=maharashtra`, 2 collectibles, 34 voxels, schema v1 |
+| **SHA-256 of served text vs file on disk** | **identical** | **identical** |
+| warnings | 2 (bounds, provenance) | 2 (bounds, provenance) |
+
+It also exercises the two paths that only exist in the browser: a v0 pack fetched over HTTP migrates to v1 **in-page**, and a corrupted pack is rejected in-page by `StateContentError` naming `buff.type`. The negative control — changing one shipped field to a string — makes the scenario exit **1** with the field named and the hash reported as `DIFFERS`.
+
+**The recorded gap, printed by the gate.** Nothing mounts `StateManager`: no entry point imports it, so the validator is tree-shaken and **ships zero bytes today** (verified by grepping `dist/assets/*.js` for schema-specific strings — the only match is the `contentSchema: 1` entry in the feature-version registry). That is stated in the scenario's own output and in the summary line (`runtime mount: dormant`), and it is the honest boundary of this item: `CNT-01` gives content a contract and proves it against the shipped files; `CNT-02` (recipe compiler) and `CNT-04` (packs) are what put content on a live surface. Claiming a runtime consumer that does not exist would be exactly the kind of status inflation this register exists to prevent.
 
 ---
 
@@ -567,6 +617,7 @@ Dependency-correct order, split by whether a data prerequisite exists.
 ### Phase 1 — no data prerequisite (possible now)
 
 0. ~~**`COL-09`** — capped dynamic spatial hash.~~ **CLOSED 2026-10-05** (see §4 A4c). Not a pixel gate: the caps, the primitive restriction, the reinsert discipline and the merged query contract are asserted, and one live run proves the wiring and that a placed solid changes a sweep that was first shown to be clear. Its five dependents (`DET-07`, `PHY-01`, `PHY-02`, `LIF-02`, `NET-02`) are now dependency-complete. The hash ships empty; none of them has placed a proxy yet.
+0d. ~~**`CNT-01`** — versioned state-content schema.~~ **CLOSED 2026-10-05** (see §4 A4f). Not a pixel gate: the format is declared as a field table the validator walks, every error class is proven by a fixture that must produce it, legacy v0 migrates to a file deep-equal to the shipped v1 pack, and the browser tier proves the bytes served over HTTP are byte-identical (SHA-256) to the bytes validated on disk. Both shipped packs validate in both tiers. Recorded gap: no entry point mounts `StateManager`, so the validator ships zero bytes today — putting these packs on a live surface is `CNT-02`/`CNT-04`.
 0c. ~~**`GME-05`** — shared interaction/action registry.~~ **CLOSED 2026-10-05** (see §4 A4e). Not a pixel gate: the registry's invariants, the input object's behaviour and the generated markup are asserted in Node, one source scan proves no module outside the registry names a gameplay key, and the browser tier drives both shipped runtimes' mounted controls with real pointer and key events on desktop **and** on a 390x844 touch viewport. Implementing it closed two real defects: the curated runtime had no touch controls at all, and touch buttons first rendered 15px tall on a phone. Its three waiting-only-on-it dependents (`DET-10`, `PHY-01`, `PHY-03`) are now dependency-complete.
 0a. ~~**`FND-08`** — curated/coordinate domain interface.~~ **CLOSED 2026-10-05** (see §4 A4d). Not a pixel gate: the interface is asserted on both real runtimes in Node, and one shared probe drives both shipped runtimes in the browser tier. Its two direct dependents (`GME-05`, `CNT-01`) are now dependency-complete, and `GME-05` becomes the largest remaining lever at 14 items in its closure.
 0b. ~~**`FND-07`** — zero-growth remount across all five resource classes.~~ **CLOSED 2026-10-04** (see §4 A4b). Dependency-complete and the largest transitive lever in the matrix: 20 open items depended on it. Its two fixes (named worker handlers removed before `terminate()`; landing input delegated from the persistent host) removed the only real disposal defects the measurement found. The one residual — dev-only React root retention — is registered as §6.F3 with the production measurement that bounds it.

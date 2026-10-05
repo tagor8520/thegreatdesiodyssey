@@ -21,6 +21,7 @@ import * as shimmerLowDpr from './scenarios/shimmer-low-dpr.mjs';
 import * as remountLifecycle from './scenarios/remount-lifecycle.mjs';
 import * as domainInterface from './scenarios/domain-interface.mjs';
 import * as actionSurfaces from './scenarios/action-surfaces.mjs';
+import * as contentSchema from './scenarios/content-schema.mjs';
 
 const SCENARIOS = new Map([
   ['curated-camera', {
@@ -68,6 +69,12 @@ const SCENARIOS = new Map([
     // No `prepares`: the scenario drives both runtimes itself, because the gate is
     // that the same registry serves both.
     summary: 'GME-05 action registry: every declared action reachable on every surface it claims, verified against the mounted DOM in both runtimes with real pointer and key events.',
+  }],
+  ['content-schema', {
+    module: contentSchema,
+    // No `prepares` and no fixture: this gate validates the content *files* over the
+    // dev server, so it needs neither a coordinate fixture nor a mounted runtime.
+    summary: 'CNT-01 content schema: both shipped state packs fetched over the dev server and validated in-page by the real ContentSchema module, byte-identical to the files the Node tier validates, plus the legacy-migration and rejection paths.',
   }],
   ['coordinate-camera', {
     module: coordinateCamera,
@@ -154,6 +161,13 @@ async function main() {
       console.log(`  suppression       ${summary.suppressionRatio === null ? 'n/a' : `${summary.suppressionRatio.toFixed(3)}x`}`);
       console.log(`  hardware sign-off ${summary.hardwareSignOff}`);
     }
+    if ('contentFailures' in summary) {
+      for (const pack of summary.packs) {
+        console.log(`  pack ${pack.name.padEnd(12)} ${pack.ok ? 'ok' : 'FAILED'} · ${pack.collectibles} collectible(s) · ${pack.voxels} voxel(s)` +
+          ` · served-vs-disk ${pack.hashMatch ? 'identical' : 'DIFFERS'} · ${pack.warnings.length} warning(s)`);
+      }
+      console.log(`  schema            v${summary.schemaVersion} (${summary.namespace}) · runtime mount: ${summary.runtimeMounted ? 'yes' : 'dormant'}`);
+    }
     if ('actionFailures' in summary) {
       for (const mode of ['curated', 'coordinates']) {
         const result = summary[mode];
@@ -233,6 +247,13 @@ async function main() {
     if (summary.actionFailures?.length) {
       console.error('\n[audit] FAIL: a registered gameplay action is not reachable on a surface it claims.');
       for (const failure of summary.actionFailures) console.error(`  ${failure}`);
+      process.exitCode = 1;
+    }
+    // Content is validated by the product's own schema module: a pack that fails it
+    // cannot be rendered correctly, so an exit 0 would be a lie.
+    if (summary.contentFailures?.length) {
+      console.error('\n[audit] FAIL: shipped state content does not satisfy the content schema.');
+      for (const failure of summary.contentFailures) console.error(`  ${failure}`);
       process.exitCode = 1;
     }
     if (summary.metricValidated === false) {

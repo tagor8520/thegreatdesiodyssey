@@ -16,7 +16,9 @@ export const GDO_FEATURE_VERSIONS = Object.freeze({
   vegetationWind: 1,
   objectGrammar: 2,
   streetFurniture: 1,
-  contentSchema: 0,
+  // `CNT-01` (2026-10-05): the versioned state-content schema exists, so this is no
+  // longer a researched contract. `saveSchema` stays 0 — that is `NET-01`'s.
+  contentSchema: 1,
   saveSchema: 0,
 });
 

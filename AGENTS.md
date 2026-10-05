@@ -57,7 +57,9 @@ Canonical runtimes are **`src/geo/`** (Coordinate Explorer) and **`src/reference
 
 **Put new work in `src/geo/` or `src/reference/`.** Do not add features to `src/world/`, `src/ui/`, or the legacy `src/engine/` modules — they are reachable only from `/classic.html`, the frozen explorer.
 
-Unreferenced modules worth knowing: `src/engine/StateManager.js` (would read `public/content/states/*.json`, which nothing consumes), `src/engine/Renderer.js`, `src/engine/LerpPlayerController.js`, `src/main.js` (it is not the entry point — `index.html` loads `src/landing.js`, which imports `src/reference/main.jsx` and `src/geo/GeoGame.js` on demand). The advertised low-code JSON content path is **not active**; `CNT-01`–`CNT-04` would build it.
+Unreferenced modules worth knowing: `src/engine/StateManager.js` (it now reads `public/content/states/*.json` **through the `CNT-01` content schema**, but no entry point mounts it, so those packs still do not reach a player), `src/engine/Renderer.js`, `src/engine/LerpPlayerController.js`, `src/main.js` (it is not the entry point — `index.html` loads `src/landing.js`, which imports `src/reference/main.jsx` and `src/geo/GeoGame.js` on demand). The advertised low-code JSON content path now has a **contract** (`CNT-01`: schema, validation, migration — both shipped packs validate in Node and in the browser) but no **live surface**: `CNT-02` (recipe compiler) and `CNT-04` (packs) are what mount content, and `CNT-03` is the authoring/preview tool.
+
+**Content is authored against a versioned schema, not a shape you infer from the files.** `src/engine/ContentSchema.js` is the authority: add a field by declaring it in `STATE_CONTENT_FIELDS` (the validator walks the table, so an undeclared key is an error), keep errors separate from advisory warnings, and add a migration step rather than editing the current one. `validateStateContent` in strict mode refuses un-migrated legacy content on purpose — that is what keeps migration load-bearing. Authoring caps derive from `GDO_LOW_PROFILE_BUDGETS` rather than being invented per feature. Every content change must keep both `src/engine/ContentSchema.test.js` and `src/engine/StateManager.test.js` green, and `npm run visual:audit -- content-schema` proves the served bytes are the validated bytes.
 
 **Tooling lives under `tools/`.** `tools/visual-audit/` is the browser gate harness (`harness.mjs`, `run.mjs`, `lifecycle.mjs`, `scenarios/`, `out/`); `tools/fixture-provider/` is the dev-only offline tile provider and its artefact builder. Both are development infrastructure — neither is imported by a Vite entry point, and the build contains no trace of them.
 
@@ -95,7 +97,7 @@ node tools/visual-audit/diagnose-dynamic-proxies.mjs   # COL-09 live caps/querie
 node tools/visual-audit/diagnose-plant-attributes.mjs  # F1 attribute budget
 ```
 
-`npm run check` is the gate for structural correctness. It must pass before you claim any non-visual work is complete. Current baseline: **203 tests, 124 Vite modules** (re-measured 2026-10-05, `GME-05`).
+`npm run check` is the gate for structural correctness. It must pass before you claim any non-visual work is complete. Current baseline: **220 tests, 124 Vite modules** (re-measured 2026-10-05, `CNT-01`).
 
 The two `diagnose-*.mjs` scripts are asserted diagnostics rather than capture scenarios: they drive the running game, print a live report, and exit non-zero on failure. Use them to prove that a contract the Node tests decide is genuinely wired to the shipped runtime.
 

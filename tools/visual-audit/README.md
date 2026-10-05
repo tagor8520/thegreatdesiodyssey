@@ -36,6 +36,7 @@ npm run visual:audit -- shimmer-low-dpr         # MAT-03 low-pixel-ratio shimmer
 npm run visual:audit -- remount-lifecycle       # FND-07 zero-growth remount
 npm run visual:audit -- domain-interface        # FND-08 curated + coordinate domain interface
 npm run visual:audit -- action-surfaces         # GME-05 every action on every surface it claims, both runtimes
+npm run visual:audit -- content-schema          # CNT-01 the served state packs validate in-page, byte-identical to disk
 ```
 
 Options: `--url <base>` (default `http://localhost:5173/`), `--width`, `--height`,
@@ -94,6 +95,22 @@ touch measurement at **390x844 with touch emulation**, where each runtime must d
 show the controls, and fails any target below the 44px floor or drawn off-screen. A mouse-driven
 browser must end up with `data-mobile="false"`. This is not a pixel gate; the summary carries
 `actionFailures` and `run.mjs` exits 1 if it is non-empty.
+
+### `content-schema` — CNT-01
+
+The only scenario that needs no fixture and no mounted game: it loads the landing shell, imports the
+real `src/engine/ContentSchema.js` over the dev server, fetches `public/content/states/*.json`, and
+validates them **in the page**. The Node tier validates the files on disk; this tier proves the files
+the game actually receives are the same files, by comparing the SHA-256 of the served text against the
+file on disk — a dev-server plugin, a transform or a stale `public/` copy would show up as a mismatch
+rather than passing silently. It also runs the legacy v0 → v1 migration and a rejection case in the
+browser, so a Node-only API that slipped into the schema module fails here rather than in a
+contributor's browser.
+
+The summary carries `contentFailures` and `run.mjs` exits 1 if it is non-empty. It also prints the
+recorded gap: nothing mounts `StateManager` yet, so there is no live surface to drive and the
+validator ships zero bytes — that is `CNT-02`/`CNT-04`'s work, and stating it here is what keeps the
+gate from implying coverage that does not exist.
 
 ### `remount-lifecycle` — FND-07
 

@@ -10,7 +10,7 @@
 >
 > **Partially resolved.** §4's "two competing implementations" is no longer a *live* ambiguity: the canonical runtimes are `src/geo/` (Coordinate Explorer) and `src/reference/` (curated), and `README.md` now documents the lane split, lists the legacy-only modules, and names the three currently unreferenced engine modules. However, `/classic.html` and `src/world/`, `src/ui/`, and the legacy `src/engine/` modules still ship in the build, and the freeze/remove decision below remains unmade.
 >
-> **Still open.** §4's "advertised low-code JSON path is not active" is still true — `StateManager`, `MapGenerator`, and `MultiplayerClient` are imported by no entry point, and `public/content/states/*.json` is not consumed. There is still no lint, typecheck, or CI job. All eight decisions in §12 remain unanswered.
+> **Still open.** §4's "advertised low-code JSON path is not active" remains true of the *runtime* — `StateManager`, `MapGenerator`, and `MultiplayerClient` are imported by no entry point, so the state packs do not reach a player. What changed on 2026-10-05 (`CNT-01`) is that the path now has a contract: the packs carry a schema version, `src/engine/ContentSchema.js` declares the format as a table the validator walks, legacy files migrate, invalid content is rejected by name, and both tiers prove the shipped files conform — including that the bytes served over HTTP are byte-identical to the bytes validated on disk. Mounting them in a live runtime is `CNT-02`/`CNT-04`. There is still no lint, typecheck, or CI job. All eight decisions in §12 remain unanswered.
 >
 > **Still unverified.** §6's structural measurements (425 `InstancedMesh` objects, 9,310 instances, full-scene shadows) describe the pre-profile baseline and have not been re-measured against the current curated runtime. The roadmap's current budget figures cover Coordinate Explorer worker output and the plant/furniture fixtures, not a curated-mode draw submission count.
 
@@ -30,7 +30,7 @@ The current game has a promising small-world renderer: deterministic terrain, ch
 4. **Expensive effects are unconditional.** The current game starts with full-resolution SSAO, a DPR cap of 1.5, a 2048² soft shadow map, PMREM environment lighting, and shadows on every voxel batch. There is no low-power profile or adaptive resolution.
 5. **The game allocates and renders behind the landing page.** WebGL, post-processing, all managers, all 35 pickups, and world streaming begin before the player clicks Start. Exit hides gameplay but does not release or pause the world.
 6. **Map extent, content, and gameplay are hardcoded.** World bounds, biome decisions, landmark positions, water size, player bounds, bridges, signs, and item placement are all tied to the current 256-unit world.
-7. **The advertised low-code JSON path is not active.** The two state JSON files are not consumed by `/` or `/classic.html`; `StateManager`, `MapGenerator`, and `MultiplayerClient` are currently disconnected modules.
+7. **The advertised low-code JSON path is validated but not yet mounted.** The two state JSON files are not consumed by `/` or `/classic.html`; `StateManager`, `MapGenerator`, and `MultiplayerClient` remain disconnected modules. As of 2026-10-05 (`CNT-01`) the files themselves are versioned, schema-validated and migratable, and `StateManager` is the loader that enforces that contract — but nothing mounts it, so the validator ships zero bytes today (see `feature-roadmap/VISUAL_GATES.md` §4 A4f).
 
 The recommended strategy is **not a full engine rewrite** and not an ECS migration. Keep the manager-based design, select one canonical runtime, then introduce lifecycle control, quality profiles, renderer budgets, chunk-addressed content, worker generation, shared palette materials, per-chunk interactables/collision, and a separate low-cost overview map.
 
@@ -124,7 +124,7 @@ public/content/*    Images plus disconnected state JSON
 The README says the architecture is vanilla JavaScript without React, and that new JSON state files are automatically parsed. That is not true for the current `/` application:
 
 - `/` imports React and mounts `src/reference/main.jsx`.
-- Neither current nor classic entry point imports `StateManager`.
+- Neither current nor classic entry point imports `StateManager`. Its `loadState` now migrates and validates through `CNT-01`'s schema, so the loader path is correct the moment something mounts it; the packs themselves validate in both tiers today.
 - The JSON state files are therefore not loaded automatically.
 - The documented JSON example includes concepts such as zone bounds and landmarks that do not match the two existing JSON files.
 - Karnataka has no JSON state file.

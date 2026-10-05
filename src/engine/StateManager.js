@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { buildVoxelMesh } from './VoxelBuilder.js';
+import { loadStateContent, StateContentError } from './ContentSchema.js';
 
 const PICKUP_RADIUS = 1.8;
 
@@ -21,18 +22,36 @@ export class StateManager {
   }
 
   /**
-   * Load a state JSON, spawn collectibles into the scene.
+   * Load a state pack, migrate it to the current schema, validate it, and spawn its
+   * collectibles.
+   *
+   * `CNT-01`: this used to be a bare `fetch` + `res.json()`, which meant a
+   * contributed file reached `buildVoxelMesh` with no contract at all — a typo in a
+   * buff type or a voxel tuple rendered a half-built vignette and said nothing.
+   * Content now arrives through the versioned schema, so a bad file fails here with
+   * the field named and the scene is left untouched rather than half-populated.
+   *
    * @param {string} stateId - e.g. "kerala"
+   * @returns {Promise<{ok: boolean, report?: object, error?: StateContentError}>}
    */
   async loadState(stateId) {
     const url = `/content/states/${stateId}.json`;
-    const res = await fetch(url);
-    if (!res.ok) {
-      console.error(`Failed to load state: ${stateId}`);
-      return;
+    let loaded;
+    try {
+      loaded = await loadStateContent(url, { sourceName: `${stateId}.json` });
+    } catch (error) {
+      // Reported, not swallowed: the caller gets a `false` result it can act on and
+      // the previous state stays fully intact instead of being cleared.
+      console.error(`[Desi Odyssey] State content rejected (${stateId}):`, error instanceof StateContentError ? error.problems.join('; ') : error);
+      return { ok: false, error };
     }
-    const stateData = await res.json();
+    const stateData = loaded.content;
     this.currentState = stateData;
+    this.contentReport = loaded.report;
+    if (loaded.report.migratedFrom !== null) {
+      console.info(`[Desi Odyssey] Migrated ${stateId} from content schema v${loaded.report.migratedFrom} to v${loaded.report.schemaVersion}`, loaded.report.migrationNotes);
+    }
+    for (const warning of loaded.report.warnings) console.warn(`[Desi Odyssey] ${stateId}: ${warning}`);
 
     // Update HUD state label
     if (this.hud.stateLabel) {
@@ -71,6 +90,7 @@ export class StateManager {
     }
 
     this._updateHotbar();
+    return { ok: true, report: loaded.report };
   }
 
   /**
