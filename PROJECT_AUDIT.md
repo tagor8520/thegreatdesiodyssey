@@ -115,7 +115,7 @@ src/reference/*     Current coherent runtime, despite the “reference” name
 src/engine/*        Mostly legacy engine modules
 src/world/*         Mostly legacy world modules
 src/ui/*            Legacy UI and docs UI
-src/geo/*           Coordinate Explorer lane: map-derived world, collision, and the DOM label/HUD overlay
+src/geo/*           Coordinate Explorer lane: map-derived world, collision, the DOM label/HUD overlay, and the budgeted ambient-life scheduler
 src/network/*       Disconnected WebSocket prototype
 public/content/*    Images plus disconnected state JSON
 ```
@@ -204,6 +204,8 @@ A `BiomeManager` generator processes one strip of eight terrain tiles, yields, t
 - shadow casting and receiving enabled.
 
 This is much better than one Three.js `Mesh` per block, but it creates one renderable/material **per color per chunk or asset batch**. It optimizes object count but not enough draw submissions, material count, shadow work, or hidden box faces.
+
+> **Ambient-life scheduler, added 2026-10-06 (`LIF-02`, closing `LIF-01`).** The coordinate runtime's birds and bees used to be animated by a frame loop that walked **every instance of every resident tile**, with no distance test, no screen test and no budget — the defect the biome research lists in its own audit table. `src/geo/GeoAmbientLife.js` replaces it with a pool: agents live in preallocated typed arrays (no per-agent object graph, measured flat in agent count), a **drawn set** of fixed size (30 / 60 / 100 at low / balanced / high) is maintained as a ring, and a separate **per-frame work** budget (24 / 48 / 96 poses) bounds how many poses are recomputed. Distance beyond 72 m, a screen extent under 0.6 px and a caller-driven activity multiplier each cull with their own counter, and an agent leaving the drawn set is collapsed to zero scale rather than left at its last pose. The world claims a slot per placement at mount (the slot index is the instance index, so no lookup table exists), releases them on tile eviction and resets on dispose. `world.setAmbientActivity()` is the hook the weather and time-of-day slices will drive. The gate reads the renderer's own instance buffers rather than the scheduler's counters, because a scheduler reporting a perfect budget while the frame loop walks everything is precisely the failure mode.
 
 > **Coordinate-runtime overlay, added 2026-10-05 (`GME-04`).** Coordinate Explorer draws its map-derived place names and its coordinate readout as **DOM elements over the canvas**, not as in-scene geometry. That is cheap and always legible, but it means those labels take no part in WebGL depth: without an explicit test a place name is readable through the building in front of it — a defect both research documents list. `src/geo/GeoLabelLos.js` now supplies the missing test: one small sphere cast per candidate name from the camera, filtered by the `LOS_BLOCKER` role only, held for a 250 ms update interval and capped at 20 tests/second and 5 simultaneous labels on the low profile. The debug panel reports the profile, the test and hidden counters, the update age and the newest blocker with its contact time.
 

@@ -742,11 +742,21 @@ test('context phase mounts fallback ambience even when map surfaces are empty', 
     assert.ok(tile.decorations.some(mesh => mesh.name === `benches:${tile.key}`));
     const bird = tile.decorations.find(mesh => mesh.name === `birds:${tile.key}`);
     assert.ok(bird && tile.decorations.some(mesh => mesh.name === `bees:${tile.key}`));
+    // `LIF-02`: the frame loop takes the focus and the camera now, because ambience is
+    // scheduled against distance, screen extent and activity rather than walked.
+    const birds = tile.decorations.find(mesh => mesh.name === `birds:${tile.key}`);
     const before = new THREE.Matrix4(), after = new THREE.Matrix4();
-    bird.getMatrixAt(0, before);
-    world._animateAmbientLife(3);
-    bird.getMatrixAt(0, after);
+    birds.getMatrixAt(0, before);
+    world._animateAmbientLife(3, { x: 6, y: 1, z: 6 }, null);
+    birds.getMatrixAt(0, after);
     assert.notDeepEqual(before.elements, after.elements, 'ambient fauna should animate as bounded instances');
+    // The scheduler, not the mesh loop, now owns the budget: the slots were claimed at
+    // mount, the pass admits them near the focus and culls them away from it.
+    assert.equal(world.ambientLife.active, 2, 'both ambience placements hold a slot');
+    assert.ok(world.ambientDiagnostics.visible > 0, 'and both are visible beside the focus');
+    world._animateAmbientLife(3, { x: 5_000, y: 1, z: 5_000 }, null);
+    assert.equal(world.ambientDiagnostics.visible, 0, 'moving the focus away culls every unbudgeted agent');
+    assert.ok(world.ambientDiagnostics.distanceCulls > 0, 'and the cull is counted rather than silent');
     assert.equal(world.stats.biome, 'Indo-Gangetic');
     assert.equal(world.visibleLabels[0].name, 'Baghpat Road');
   } finally {

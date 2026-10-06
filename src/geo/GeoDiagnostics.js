@@ -147,6 +147,11 @@ export function collectGeoRuntimeBudgetMetrics(renderer, world, { view = 'street
     maxCollisionCandidates: world?.queryDiagnostics?.maxCandidates ?? 0,
     maxSupportCandidates: world?.queryDiagnostics?.maxSupportCandidates ?? 0,
     dynamicProxies: world?.dynamicProxyDiagnostics?.active ?? 0,
+    // `LIF-02`: the ambient scheduler reports what the budget surface checks — how
+    // many agents are visible against the profile's ceiling, and how many batched
+    // ambience meshes are drawn.
+    ambientVisible: world?.ambientDiagnostics?.visible ?? 0,
+    ambientAddedDrawCalls: world?.ambientDiagnostics?.visibleMeshes ?? 0,
   });
 }
 
@@ -341,6 +346,7 @@ export function buildGeoDebugSnapshot(world, focus = { x: 0, z: 0 }, {
       plantLodSelector: world?.plantLodSelector?.diagnostics ?? null,
       plantRender: world?.plantRenderPools?.diagnostics ?? null,
       streetFurniture: world?.streetFurniturePools?.diagnostics ?? null,
+      ambience: world?.ambientDiagnostics ?? null,
       environmentProfiles: Object.freeze(environmentProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       morphologyProfiles: Object.freeze(morphologyProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),
       waterDomainProfiles: Object.freeze(waterDomainProfiles.sort((a, b) => a.owner.localeCompare(b.owner))),

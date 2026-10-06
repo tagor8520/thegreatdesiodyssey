@@ -108,6 +108,10 @@ export function mountGeoGame(container, {
     camera,
     viewportHeight: renderer.domElement.height || 720,
     dynamicProxyProfile,
+    // `LIF-02`: the ambient-fauna budget follows the same profile as the dynamic-proxy
+    // cap. It is a separate option so a future quality ladder can scale the two
+    // independently, but it defaults to the same low tier today.
+    ambientProfile: dynamicProxyProfile,
     onStatus: status => {
       if (disposed) return;
       latestStatus = status;

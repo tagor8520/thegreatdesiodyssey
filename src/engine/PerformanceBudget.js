@@ -53,6 +53,12 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   maxCollisionCandidates: 256,
   maxSupportCandidates: 256,
   dynamicProxies: 64,
+  // `LIF-02` / biome research §14: "Small ambient fauna visible | 30 | 60 | 100"
+  // and "Total added steady draw calls in ordinary view | ≤ 8". The low profile
+  // takes the research's low column, and the added draw calls are the two batched
+  // ambience pools (birds, bees) the world already mounts.
+  ambientFaunaVisible: 30,
+  ambientAddedDrawCalls: 2,
 });
 
 const CHECKS = Object.freeze([
@@ -104,6 +110,8 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'maxCollisionCandidates', budget: 'maxCollisionCandidates', label: 'collision candidates' }),
   Object.freeze({ metric: 'maxSupportCandidates', budget: 'maxSupportCandidates', label: 'support candidates' }),
   Object.freeze({ metric: 'dynamicProxies', budget: 'dynamicProxies', label: 'active dynamic proxies' }),
+  Object.freeze({ metric: 'ambientVisible', budget: 'ambientFaunaVisible', label: 'visible ambient fauna' }),
+  Object.freeze({ metric: 'ambientAddedDrawCalls', budget: 'ambientAddedDrawCalls', label: 'ambient draw calls' }),
 ]);
 
 function finiteNonNegative(value) { return Number.isFinite(value) && value >= 0; }

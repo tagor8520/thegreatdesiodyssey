@@ -23,6 +23,7 @@ import * as domainInterface from './scenarios/domain-interface.mjs';
 import * as actionSurfaces from './scenarios/action-surfaces.mjs';
 import * as contentSchema from './scenarios/content-schema.mjs';
 import * as labelLos from './scenarios/label-los.mjs';
+import * as ambientLife from './scenarios/ambient-life.mjs';
 
 const SCENARIOS = new Map([
   ['curated-camera', {
@@ -83,6 +84,13 @@ const SCENARIOS = new Map([
     // No `prepares`: the scenario opens coordinates itself, because it instruments
     // `world.sweepSphere` before any label ray is cast.
     summary: 'GME-04 label LOS: a found occluded place name hides within the update interval while a clear name stays visible, label rays ask for LOS_BLOCKER only, the per-second budget holds, and the coordinate readout names the nearest place.',
+  }],
+  ['ambient-life', {
+    module: ambientLife,
+    fixture: 'dense-urban',
+    // No `prepares`: the scenario opens coordinates itself and installs its probe after
+    // the runtime is mounted, because it reads the renderer's own instance buffers.
+    summary: 'LIF-02 ambient-life budget: the scheduler draws no more agents than the profile ceiling and poses no more per frame than its budget, the renderer\'s own instance buffers confirm only that set moves while culled agents are collapsed, and the activity budget winds ambience down and back up on a live request.',
   }],
   ['coordinate-camera', {
     module: coordinateCamera,
@@ -233,6 +241,12 @@ async function main() {
       console.log(`  label counters    tests ${summary.diagnostics.tests} · hidden ${summary.diagnostics.hidden} · age ${Math.round(summary.diagnostics.updateAgeMilliseconds)}ms`);
       console.log(`  coordinate HUD    ${summary.runtime.coordinateText}`);
     }
+    if ('ambientFailures' in summary && summary.profile) {
+      console.log(`  ambience          profile ${summary.profile} · drawn ${summary.drawn}/${summary.ceiling} · poses/pass ${summary.posesThisPass}/${summary.perFrame} · resident ${summary.resident.instances} on ${summary.resident.tiles} tile(s)`);
+      console.log(`  upload            ${summary.upload.moved} of ${summary.upload.instances} instance(s) moved in ${summary.upload.passesDelta} pass(es), allowance ${summary.upload.allowance}, ${summary.upload.collapsed} collapsed`);
+      console.log(`  culls             distance ${summary.culls.distance} · screen ${summary.culls.screen} · activity ${summary.culls.activity} · activity 0 → drawn ${summary.activity.off.drawn} (${summary.activity.off.collapsed} collapsed), restored → ${summary.activity.on.drawn}`);
+      console.log(`  ambience surface  ${summary.panelLine ?? 'no ambience line'}`);
+    }
     if ('stabilitySamples' in summary) {
       console.log(`  stable renders    ${summary.stabilitySamples - summary.orderInstabilitySamples}/${summary.stabilitySamples}`);
       console.log(`  alpha foliage     ${summary.alphaBlendedFoliage.length}`);
@@ -281,6 +295,14 @@ async function main() {
     if (summary.labelFailures?.length) {
       console.error('\n[audit] FAIL: the label line-of-sight contract does not hold.');
       for (const failure of summary.labelFailures) console.error(`  ${failure}`);
+      process.exitCode = 1;
+    }
+    // The ambient-life budget is a hard assertion: agents drawn past the ceiling, more
+    // per-frame work than the profile allows, or a frame loop that moves instances the
+    // scheduler never admitted are defects, not measurements to interpret.
+    if (summary.ambientFailures?.length) {
+      console.error('\n[audit] FAIL: the ambient-life budget does not hold.');
+      for (const failure of summary.ambientFailures) console.error(`  ${failure}`);
       process.exitCode = 1;
     }
     if (summary.metricValidated === false) {

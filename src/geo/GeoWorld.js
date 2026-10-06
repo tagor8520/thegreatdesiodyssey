@@ -54,8 +54,14 @@ import {
   GEO_DYNAMIC_PROXY_DEFAULT_PROFILE,
   GeoDynamicProxyHash,
 } from './GeoDynamicProxies.js';
+import {
+  GEO_AMBIENT_MAX_DISTANCE, GEO_AMBIENT_TYPES, GeoAmbientScheduler, assertAmbientBudget,
+} from './GeoAmbientLife.js';
 
 export { circleIntersectsFootprint } from './GeoCollision.js';
+
+/** The ambience types that own a mesh, in one place for the frame loop. */
+const AMBIENT_MESH_TYPES = Object.freeze([10, 11]);
 
 export const GEO_STREAMING_LIMITS = Object.freeze({
   prefetchEdgeFraction: 0.2,
@@ -425,6 +431,7 @@ export class GeoWorld {
     reducedMotion = prefersReducedPlantMotion(),
     dynamicProxyProfile = GEO_DYNAMIC_PROXY_DEFAULT_PROFILE,
     dynamicProxyCap,
+    ambientProfile = GEO_DYNAMIC_PROXY_DEFAULT_PROFILE,
   }) {
     this.scene = scene;
     this.materialLibraryHandle = materialLibrary ? null : acquireProceduralMaterialLibrary();
@@ -461,6 +468,23 @@ export class GeoWorld {
     this.pendingPlantOwners = new Map();
     this.plantMountTimer = null;
     this.ambientDummy = new THREE.Object3D();
+    // `LIF-02`: ambience is scheduled rather than walked. The scheduler owns the
+    // slots, the distance/screen/activity budgets and the motion; the world resolves a
+    // slot back to its mesh and uploads the pose. The profile follows the same option
+    // the dynamic-proxy cap uses, and the ceiling is asserted at construction, so a
+    // profile above the shared budget cannot be mounted silently.
+    this.ambientProfile = ambientProfile;
+    assertAmbientBudget(this.ambientProfile);
+    this.ambientLife = new GeoAmbientScheduler({ profile: this.ambientProfile });
+    this.ambientVisibleMeshes = 0;
+    // The activity level the scheduler reads each frame. It lives in a single mutated
+    // object rather than a fresh literal per frame, because a frame that allocates an
+    // options object would falsify this module's own no-allocation contract. The
+    // setter is the hook the weather and time-of-day slices (`ENV-02`/`ENV-04`) will
+    // drive: birds shelter in rain, fireflies appear at dusk.
+    this.ambientActivity = 1;
+    this.ambientSpeciesActivity = null;
+    this.ambientOptions = { activity: 1, speciesActivity: null };
     // Reused by continuous movement queries to avoid allocating one hit record
     // per simulation substep. Query candidate Sets are still bounded by the
     // local collision-grid cells touched by the sweep.
@@ -688,7 +712,11 @@ export class GeoWorld {
       this.decorationGeometries[type], this.decorationMaterial, count,
     ) : null);
     const cursors = counts.map(() => 0);
-    const ambientBases = counts.map((count, type) => type >= 10 && count ? new Float32Array(count * 5) : null);
+    // `LIF-02`: each ambience placement claims a scheduler slot. A placement that
+    // cannot be admitted — the cap is full, or the placement is malformed — is simply
+    // not drawn: the mesh is sized to what was granted (`cursor`), so an unclaimed
+    // instance can never render at an unset matrix. The slot index *is* the instance
+    // index, so the scheduler never needs a per-agent lookup table.
     const plantPlacements = [];
     const dummy = new THREE.Object3D();
     for (let index = 0; index < values.length; index += stride) {
@@ -706,14 +734,39 @@ export class GeoWorld {
       const mesh = meshes[type];
       const cursor = cursors[type]++;
       const height = type === 10 ? 2.25 + values[index + 5] * .34 : type === 11 ? .46 + values[index + 5] * .045 : 0;
+      if (GEO_AMBIENT_TYPES[type]) {
+        // The scheduler owns this placement from here: it decides each frame whether
+        // the agent is close enough, large enough and active enough to be drawn. The
+        // seed pose written now is what the first frame shows if the slot is admitted
+        // before the next scheduler pass.
+        const slot = this.ambientLife.claim({
+          ownerKey: tile.key, type,
+          x: values[index], z: values[index + 1], groundY: groundHeight,
+          phase, scale,
+          // A stable per-agent integer taken from the placement itself, not from the
+          // iteration order: it survives a tile remount with the same geometry, so a
+          // rebuilt tile reproduces the same orbits.
+          stable: Math.abs(Math.round(values[index] * 31 + values[index + 1] * 17 + phase * 1e4)) >>> 0,
+          instanceIndex: cursor,
+        });
+        if (slot < 0) {
+          // Rejected: undo the cursor so this instance is never drawn, and let the
+          // mesh shrink to the granted count below.
+          cursors[type]--;
+          continue;
+        }
+        dummy.position.set(values[index], groundHeight + height, values[index + 1]);
+        dummy.rotation.set(0, phase, 0);
+        dummy.scale.setScalar(scale);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(cursor, dummy.matrix);
+        continue;
+      }
       dummy.position.set(values[index], groundHeight + height, values[index + 1]);
       dummy.rotation.set(0, phase, 0);
       dummy.scale.setScalar(scale);
       dummy.updateMatrix();
       mesh.setMatrixAt(cursor, dummy.matrix);
-      if (ambientBases[type]) ambientBases[type].set(
-        [values[index], values[index + 1], phase, scale, groundHeight], cursor * 5,
-      );
     }
     const names = ['trees', 'palms', 'shrubs', 'street-lamps', 'rocks', 'flowers', 'benches', 'parked-cars', 'herbs', 'tall-grass', 'birds', 'bees', 'bamboo'];
     for (let type = 0; type < meshes.length; type++) {
@@ -723,10 +776,14 @@ export class GeoWorld {
       const geoLayer = type >= 10 ? GEO_LAYER.ambience : GEO_LAYER.decoration;
       mesh.renderOrder = geoLayer.renderBand;
       mesh.userData.geoLayer = geoLayer;
-      if (ambientBases[type]) {
+      if (GEO_AMBIENT_TYPES[type]) {
+        // Only the granted instances exist on the mesh, and the type is recorded so a
+        // slot can be resolved back to this mesh without a per-agent lookup table.
+        mesh.count = cursors[type];
         mesh.userData.ambientType = type;
-        mesh.userData.ambientBases = ambientBases[type];
         mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        tile.ambientMeshes ??= {};
+        tile.ambientMeshes[type] = mesh;
       }
       mesh.instanceMatrix.needsUpdate = true;
       mesh.computeBoundingSphere();
@@ -1091,37 +1148,84 @@ export class GeoWorld {
     return labels.sort((a, b) => b.priority - a.priority).slice(0, 14);
   }
 
-  _animateAmbientLife(time) {
+  /**
+   * `LIF-02`: one budgeted scheduler pass, then upload only the admitted instances.
+   *
+   * The previous implementation walked every ambience instance of every resident tile
+   * on every frame — no distance test, no screen test, no budget. Now the scheduler
+   * decides which slots are close enough, large enough and active enough to be drawn,
+   * and this method only uploads those poses. A slot's mesh is resolved from its owner
+   * key, which is why no per-agent table exists: the tile holds at most one mesh per
+   * ambience type, keyed by that type.
+   */
+  _animateAmbientLife(time, position, camera) {
+    const scheduler = this.ambientLife;
     const dummy = this.ambientDummy;
-    for (const tile of this.tiles.values()) for (const mesh of tile.decorations) {
-      const type = mesh.userData.ambientType;
-      const bases = mesh.userData.ambientBases;
-      if (!bases || (type !== 10 && type !== 11)) continue;
-      for (let index = 0; index < mesh.count; index++) {
-        const base = index * 5;
-        const x = bases[base], z = bases[base + 1], phase = bases[base + 2], scale = bases[base + 3];
-        const groundHeight = bases[base + 4];
-        if (type === 10) {
-          const angle = phase + time * (.30 + (index % 3) * .045);
-          const radius = .72 + (index % 4) * .16;
-          dummy.position.set(x + Math.cos(angle) * radius,
-            groundHeight + 2.55 + (index % 5) * .28 + Math.sin(time * 1.35 + phase) * .18,
-            z + Math.sin(angle) * radius);
-          dummy.rotation.set(0, -angle, Math.sin(time * 3.2 + phase) * .08);
-        } else {
-          const angle = phase + time * (1.45 + (index % 4) * .13);
-          const radius = .13 + (index % 3) * .045;
-          dummy.position.set(x + Math.cos(angle) * radius,
-            groundHeight + .48 + (index % 4) * .055 + Math.sin(time * 4.4 + phase) * .075,
-            z + Math.sin(angle * 1.17) * radius);
-          dummy.rotation.set(0, -angle, Math.sin(time * 8 + phase) * .12);
+    const height = Math.max(1, this.viewportHeight);
+    // Metres per pixel at the focus depth. The budget is a *screen* budget, so it is
+    // evaluated where the player is looking; agents nearer than the focus are
+    // therefore over-estimated and farther ones under-estimated. That direction is
+    // deliberate: it never admits more than the budget allows at the depth that
+    // matters.
+    const fov = (camera?.isCamera ? camera.fov : 60) * Math.PI / 180;
+    const dx = (camera?.position?.x ?? position.x) - position.x;
+    const dy = (camera?.position?.y ?? position.y + 2) - position.y;
+    const dz = (camera?.position?.z ?? position.z) - position.z;
+    const focusDistance = Math.max(1, Math.hypot(dx, dy, dz));
+    const pixelsPerMetre = height / (2 * Math.tan(fov / 2) * focusDistance);
+    // One reused options object: no per-frame literal.
+    const options = this.ambientOptions;
+    options.activity = this.ambientActivity;
+    options.speciesActivity = this.ambientSpeciesActivity;
+    scheduler.update(position, height, time, pixelsPerMetre, options);
+    // Poses are stamped onto the meshes in one pass; the dirty flags are collected
+    // from the tiles rather than from a per-frame Set, so the frame allocates nothing.
+    const meshFor = pose => {
+      const tile = this.tiles.get(pose.ownerKey);
+      const mesh = tile?.ambientMeshes?.[pose.type];
+      if (!mesh || pose.instanceIndex < 0 || pose.instanceIndex >= mesh.count) return null;
+      return mesh;
+    };
+    let visibleMeshes = 0;
+    scheduler.writeMatrices(null, (out, index, pose) => {
+      const mesh = meshFor(pose);
+      if (!mesh) return false;
+      dummy.position.set(pose.x, pose.y, pose.z);
+      dummy.rotation.set(0, pose.yaw, pose.roll);
+      dummy.scale.setScalar(pose.scale);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(pose.instanceIndex, dummy.matrix);
+      mesh.userData.ambientDirty = true;
+      return true;
+    });
+    // A slot that left the drawn set is collapsed rather than left at its last pose:
+    // a zero scale is degenerate geometry, so it costs no visible pixels while keeping
+    // the batch's instance count and upload layout fixed.
+    scheduler.forEachHidden(pose => {
+      const mesh = meshFor(pose);
+      const instanceIndex = pose.instanceIndex;
+      if (!mesh || instanceIndex < 0 || instanceIndex >= mesh.count) return;
+      dummy.position.set(0, 0, 0);
+      dummy.rotation.set(0, 0, 0);
+      dummy.scale.setScalar(0);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(instanceIndex, dummy.matrix);
+      mesh.userData.ambientDirty = true;
+    });
+    for (const tile of this.tiles.values()) {
+      const meshes = tile.ambientMeshes;
+      if (!meshes) continue;
+      for (const type of AMBIENT_MESH_TYPES) {
+        const mesh = meshes[type];
+        if (!mesh) continue;
+        if (mesh.userData.ambientDirty) {
+          mesh.instanceMatrix.needsUpdate = true;
+          mesh.userData.ambientDirty = false;
         }
-        dummy.scale.setScalar(scale);
-        dummy.updateMatrix();
-        mesh.setMatrixAt(index, dummy.matrix);
+        if (mesh.count) visibleMeshes++;
       }
-      mesh.instanceMatrix.needsUpdate = true;
     }
+    this.ambientVisibleMeshes = visibleMeshes;
   }
 
   update(position, camera = this.viewCamera, viewportHeight = this.viewportHeight, nowMilliseconds = performance.now()) {
@@ -1137,7 +1241,7 @@ export class GeoWorld {
     this._blendEnvironmentGround(nowMilliseconds);
     const time = nowMilliseconds * .001;
     this.waterMaterial.uniforms.uTime.value = time;
-    this._animateAmbientLife(time);
+    this._animateAmbientLife(time, position, this.viewCamera);
     const fractionalX = this.reference.originX + position.x / this.reference.tileSize;
     const fractionalY = this.reference.originY + position.z / this.reference.tileSize;
     const x = Math.floor(fractionalX), y = Math.floor(fractionalY);
@@ -1191,6 +1295,10 @@ export class GeoWorld {
     }
     this.queue = this.queue.filter(candidate => candidate !== tile);
     this.pendingPlantOwners.delete(tile.key);
+    // `LIF-02`: the tile's ambience slots go back to the scheduler before the meshes
+    // do, so a rebuilt tile claims fresh slots rather than leaking the old ones.
+    this.ambientLife.releaseOwner(tile.key);
+    tile.ambientMeshes = null;
     this.plantRenderPools.removeOwner(tile.key);
     this.streetFurniturePools.removeOwner(tile.key);
     tile.plantPoolCount = 0;
@@ -1653,6 +1761,27 @@ export class GeoWorld {
 
   removeDynamicProxy(handle) { return this.dynamicProxies.remove(handle); }
 
+  /**
+   * Set how active ambience is, in `0…1`, optionally per family.
+   *
+   * `LIF-02`'s activity budget is the hook the environment slices use: `ENV-04`'s
+   * weather can shelter birds while bees keep working, and a dusk state can raise
+   * fireflies, both without a second animation path.
+   */
+  setAmbientActivity(activity, speciesActivity = null) {
+    this.ambientActivity = Number.isFinite(activity) ? Math.max(0, Math.min(1, activity)) : 1;
+    this.ambientSpeciesActivity = speciesActivity ?? null;
+    return this.ambientActivity;
+  }
+
+  get ambientDiagnostics() {
+    return {
+      ...this.ambientLife.diagnostics(),
+      visibleMeshes: this.ambientVisibleMeshes,
+      maxDistance: GEO_AMBIENT_MAX_DISTANCE,
+    };
+  }
+
   /** Releases every primitive owned by one key — e.g. a vehicle that despawns. */
   removeDynamicProxiesFor(ownerKey) { return this.dynamicProxies.removeOwner(ownerKey); }
 
@@ -1850,6 +1979,11 @@ export class GeoWorld {
     this.plantRenderPools.dispose();
     this.streetFurniturePools.dispose();
     this.dynamicProxies.dispose();
+    // The scheduler's storage is plain typed arrays, so `reset` is the whole of its
+    // disposal: it releases every slot and zeroes the counters, and the arrays are
+    // collected with the world.
+    this.ambientLife.reset();
+    this.ambientVisibleMeshes = 0;
     this.root.removeFromParent(); this.root.clear();
     this.groundMaterial.dispose();
     this.roadMaterial.dispose(); this.landMaterial.dispose(); this.buildingMaterial.dispose();

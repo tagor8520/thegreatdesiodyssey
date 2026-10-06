@@ -602,6 +602,69 @@ It also exercises the two paths that only exist in the browser: a v0 pack fetche
 
 ---
 
+#### A4h. `LIF-02` — Budgeted ambient-life scheduler *(coordinate)*
+*also closes `LIF-01`, which describes the same deliverable in another category*
+
+| | |
+|---|---|
+| **Roadmap** | Order 121, P1, **`ADDED` — closed 2026-10-06** (was `QUEUED`), depends on `COL-09`, `VEG-07`, `QLT-05` (all `ADDED`). Order 120 **`LIF-01`** (existing deterministic birds and bees, deps `VEG-01`, `ADDED`) was `PARTIAL` with the open gate *"Bounded instances exist; CPU transforms remain"* and is closed on the same evidence |
+
+**★ CLOSED 2026-10-06 — status `ADDED`.** The registered gate read: *screen/distance/activity budgets; no per-agent object graphs.* All three budgets are implemented and asserted, and the no-allocation claim is measured rather than asserted. **One implementation closed two rows**: `LIF-01` records that bounded bird/bee instances exist while the CPU transforms remain unbounded, and this slice is what bounds them, so the register records one slice rather than pretending two landed — the same pattern already used for `GME-04`/`LAY-05`.
+
+**Why this mattered.** The frame loop walked **every ambience instance of every resident tile on every frame** — no distance test, no screen test, no budget. Both research documents name it as a defect rather than a design: the audit table's *"Birds and bees update instance matrices on the CPU"* (§4 item 10) and the ceiling table's *"Small ambient fauna visible | 30 | 60 | 100"* with *"Total added steady draw calls in ordinary view | ≤ 8"* (§14), against §6's prescription that *"All fauna use pooled, instanced, highly simplified motion and habitat anchors."*
+
+**What ships — `src/geo/GeoAmbientLife.js`.** `GeoAmbientScheduler` is a pool, not a per-agent object graph:
+
+- **Preallocated typed arrays.** Anchors, phase, scale, species, a stable integer, an instance index, the owner key and a pose row all live in buffers sized to the profile's capacity (`64` / `128` / `256`). Nothing is allocated per agent, and the steady cost was measured flat in agent count: **≈16 bytes per pass at 64 agents, −18 at 8** over 20,000 passes, against a per-agent control costing one object per agent per pass.
+- **Two budgets, kept apart.** The *drawn set* is a fixed-size ring of `visibleCeiling` entries (`30` / `60` / `100` — the research's §14 numbers), and the per-frame *work* is a separate pose budget (`24` / `48` / `96`). This distinction is **the defect this gate found**: the first version bounded only the update rate, which let a resident set larger than the ceiling draw every agent — the updated ones moving and the rest holding a stale pose.
+- **Culls counted by reason.** `distance` beyond `72 m`, `screen` below `0.6 px` (compared in squared space), and `activity` wound down by the caller, each with its own counter and a `lastRejection` naming `over-capacity`, `unknown-type` or `malformed-placement` for refused claims.
+- **The activity budget is the environment hook.** `update(..., { activity, speciesActivity })` and `world.setAmbientActivity(value, speciesActivity)` scale a family deterministically — each agent's stable integer decides whether it is still awake, so there is no per-frame dice — which is what lets `ENV-04`'s weather shelter birds while bees keep working without a second animation path.
+- **A culled agent is collapsed, not frozen.** Leaving the drawn set queues the slot; the world writes a zero-scale matrix, which is degenerate geometry that costs no visible pixels while keeping the batch's instance count and upload layout fixed. A bird frozen mid-air is the defect class being removed.
+- **Determinism survives the pool.** The stable integer is derived from the **placement** (`|round(x*31 + z*17 + phase*1e4)|`), never from iteration order, so a tile that streams out and back reproduces the same orbits.
+- **Lifecycle.** Slots are claimed at mount (`instanceIndex` is the mesh's cursor, so no lookup table exists), `mesh.count` is set to what was granted, `_evictTile` calls `releaseOwner(tile.key)`, and `dispose()` calls `reset()` — which clears the counters, the ring and the activity state together, because clearing one without the others is the same defect class already fixed in `GeoLabelLos.reset()`.
+
+**Node tier — `src/geo/GeoAmbientLife.test.js` (10 tests, part of `npm run check`, now 238 tests / 126 modules).**
+
+| Check | Result |
+|---|---|
+| profiles agree with the research ceilings | pass: each profile against `GEO_AMBIENT_RESEARCH_CEILINGS`, and the shared low budget separately required to *agree* with `30` — the first version compared the balanced profile against the low budget and threw |
+| claims, releases and the capacity cap | pass: a full pool refuses by name (`over-capacity`) instead of evicting, `releaseOwner` returns exactly its own slots, a rebuilt tile reclaims the same number |
+| **distance and screen budgets, from both directions** | pass: a far agent is culled as `distance` while a near one is drawn, and a small-on-screen agent is culled as `screen` at `8000 px/m` while a large one at the same scale is not — asserting only the cull would pass on a scheduler that culls everything |
+| the activity budget winds down and back up | pass: activity `0` draws nothing and counts `activity` culls; restoring it returns the same agents in the same order |
+| **the two budgets are both hard** | pass: `drawnSlots ≤ 30`, `lastPoseUpdates ≤ 24`, evaluations inside twice the budget, and `ring.length === visibleCeiling` structurally |
+| **no per-agent object graph, and no cost that scales with agents** | pass: 8 vs 64 agents measured over 20,000 passes (`−18` and `+16` bytes/pass; the forbidden pattern would add ≈3.8 KB at 64), one reused pose object across every callback, fixed buffer identities, a free list that cannot exceed capacity |
+| motion is the shipped formula | pass: bird `speed .30+step·.045`, radius `.72+.16·step`, height `2.55+.28·step`, bob `.18 @1.35 Hz`, roll `.08 @3.2`; bee `1.45+.13·step`, `.13+.045·step`, `.48+.055·step`, `.072 @4.4`-class bob and roll `.12 @8` |
+| **a whole-unit rebase does not teleport agents** | pass: jump far enough to cull, return, and compare *absolute* poses — the round trip that exposed a stale origin-relative pose once putting an agent 1,414,213 units from its anchor |
+| pose packaging and reset | pass: `writeMatrices` hands out one pose object, `forEachHidden` reuses it too, and `reset()` zeroes counters, ring, payload and activity together |
+
+**Browser tier — `npm run visual:audit -- ambient-life`, exit 0 (2026-10-06).** The central check is deliberately **not** the scheduler's own bookkeeping: the scenario reads the renderer's `InstancedMesh.instanceMatrix` buffers before and after a pass and counts how many instances actually moved. A frame loop that bypassed the budget would satisfy every counter and fail here — which is exactly what the first negative control demonstrates.
+
+| Check | Result |
+|---|---|
+| resident set (non-vacuity precondition) | pass: coordinates open **8% inside a tile corner**, where the prefetch band streams four tiles — **58 agents resident on 4 tiles / 8 meshes**, stable across four consecutive readings, against a 30 ceiling and an allowance of 41 |
+| drawn set and per-frame work | pass: `drawn 17` of 30, `poses/pass 17` of 24, `evaluations/pass 30–33` (twice the pose budget at most) |
+| **upload — the independent measurement** | pass: **`17 of 58` instances moved in one pass**, allowance `41`, `0` orphaned meshes; window delimited by the scheduler's own pass counter (a fixed 120 ms window was measured containing zero frames on this renderer) |
+| distance budget | pass: distance culls counted live (`233–334` across runs) while agents in the streamed tiles stay drawn |
+| screen budget | **not exercised live, and stated as such**: at the coordinate camera's `≈100 px/m` a bee is ≈27 px, so nothing is near the 0.6 px floor; the floor and its counter are proven in the Node tier, and this is a coverage limit rather than a pass |
+| activity budget | pass: `setAmbientActivity(0)` → `drawn 0`, `17` instances **collapsed** to zero scale, `activityCulls` rising; restoring to `1` → `drawn 17` again |
+| review surface | pass: `ambience profile:low active:58/64 visible:17 ceil:30 per-frame:24 culls d:293 s:0 a:101 poses:294 activity:1.00`, read from `#geo-debug-output` after clicking the runtime's own debug toggle |
+
+**Five negative controls, each measured (all exit 1).**
+
+| Break | Observed failure |
+|---|---|
+| the pre-`LIF-02` unbounded walk reinstalled verbatim | `58 of 58` instances moved in one pass → *above the 41 the budgets allow*, while the scheduler's own counters still read `drawn 17` |
+| the activity budget ignored (`const activity = 1`) | `activity 0 → drawn 17` → *the activity budget does not wind ambience down* |
+| the distance budget disabled | `no distance cull was ever counted, so the distance budget is unproven live` |
+| the hide path disabled (`_hide` returns early) | `collapsing 0 instance(s)` → *agents left the drawn set without being hidden* — the stale-pose defect |
+| the review-surface marker renamed (`ambient profile:`) | `no ambience line` → *the review panel has no `ambience` line* |
+
+**A defect in the gate's own tooling, found and fixed.** The runner only turns a scenario's failure list into a non-zero exit for the field names it knows, so this scenario's **first failing run exited 0** — `blockers 2`, printed, and a zero status. `run.mjs` now carries the `ambientFailures` branch (and prints the ambience summary beside it), and the `AGENTS.md` debugging notes record the trap for the next scenario.
+
+**Recorded gaps, stated rather than implied.** (1) The live screen budget is not reachable through the product's own camera ranges, so the 0.6 px floor is proven in Node only. (2) The browser run measures **one** fixture at one coordinate; the rule is fixture-independent, but coverage is one. (3) `GeoWorld` derives pixels-per-metre from the camera-to-focus distance, so a viewport change or a very long camera boom shifts the screen budget — it is a deliberate approximation, documented at the call site, and it never admits more than the budget allows at the focus depth. (4) Ambient fauna are **non-colliding**: this slice placed no proxy into the `COL-09` hash, which still ships empty, and an earlier roadmap paragraph predicting otherwise has been corrected rather than quietly dropped. (5) No frame-time claim: the budgets are structural, and the software renderer here runs at a few frames per second.
+
+---
+
 #### A5. `QLT-06` — TPP/FPP visual audit capture matrix *(the umbrella)*
 
 | | |
@@ -667,7 +730,7 @@ These will need a moving audit when built. Listed so the harness is designed to 
 | `ENV-04` | Weather state machine | Deterministic transitions, low-profile fallback |
 | `ENV-05` | Bounded weather/shore effects | Alpha-test/dither, strict screen/overdraw counts |
 | `ENV-06` | Procedural ambient audio zones | Distance/activity caps (audible, not visual) |
-| `GME-04` | Place labels and coordinate HUD | Projection/overlap; richer map |
+| ~~`GME-04`~~ | ~~Place labels and coordinate HUD~~ | **Delivered 2026-10-05** in its own slice (§4 A4g) — struck from this list on 2026-10-06, when the `LIF-02` pass noticed the row was still describing a closed feature |
 | `PHY-03` | Pose-fall knockdown | Visual/state-machine baseline before rigid bodies |
 
 `ENV-02` through `ENV-05` are the largest coherent block and the biggest visible-quality gap in the project. All are `QUEUED`; none are started. The biome research's acceptance goal — *"a screenshot with UI hidden can distinguish at least six tested environmental combinations by palette and silhouette, not labels alone"* — is the target for that block.
@@ -681,6 +744,7 @@ Dependency-correct order, split by whether a data prerequisite exists.
 ### Phase 1 — no data prerequisite (possible now)
 
 0. ~~**`COL-09`** — capped dynamic spatial hash.~~ **CLOSED 2026-10-05** (see §4 A4c). Not a pixel gate: the caps, the primitive restriction, the reinsert discipline and the merged query contract are asserted, and one live run proves the wiring and that a placed solid changes a sweep that was first shown to be clear. Its five dependents (`DET-07`, `PHY-01`, `PHY-02`, `LIF-02`, `NET-02`) are now dependency-complete. The hash ships empty; none of them has placed a proxy yet.
+0f. ~~**`LIF-02`** — ambient-life scheduler and pools, which also closes **`LIF-01`**.~~ **CLOSED 2026-10-06** (see §4 A4h). Not a pixel gate, and deliberately not a counters gate either: the run reads the **renderer's own instance buffers** and counts how many instances actually moved in one pass, so the pre-`LIF-02` frame loop — reinstalled verbatim as the first negative control — fails at 58 moved against an allowance of 41. The gate found a real defect in the implementation it was written for: the first version bounded the per-frame *update rate* but not the number of agents *drawn*, so a resident set larger than the ceiling still drew every agent. Five negative controls (legacy walk, activity ignored, distance budget disabled, hide path disabled, panel marker renamed) each exit 1. Closing it made `LIF-03` dependency-complete; the `COL-09` hash still ships empty because ambient fauna do not collide.
 0e. ~~**`GME-04`** — place labels and coordinate HUD, which also satisfies **`LAY-05`**.~~ **CLOSED 2026-10-05** (see §4 A4g). A real pixel-adjacent gate this time: the run *finds* a standing position with a wall strictly between the eye and a name, and then requires the layer to hide that label (`dom.hidden` plus `data-los="blocked"`) within the 250 ms update interval while a clear-ray name stays visible. Ray discipline is checked by intercepting the live call — every label sweep must ask for `LOS_BLOCKER` and nothing else — and the research's own budget (`20/s × 5` at the low profile) is measured over a wall-clock window. Four negative controls (occlusion disabled, wrong mask, wrong profile, panel line removed) each exit 1. Closing it made `GME-06`, `GME-07` and `MAT-06` dependency-complete, so the largest remaining lever is now `GME-06` (5 in its closure, 2 direct), with `LIF-02` (4, 4) and `ENV-02` (4, 1) immediately behind it.
 0d. ~~**`CNT-01`** — versioned state-content schema.~~ **CLOSED 2026-10-05** (see §4 A4f). Not a pixel gate: the format is declared as a field table the validator walks, every error class is proven by a fixture that must produce it, legacy v0 migrates to a file deep-equal to the shipped v1 pack, and the browser tier proves the bytes served over HTTP are byte-identical (SHA-256) to the bytes validated on disk. Both shipped packs validate in both tiers. Recorded gap: no entry point mounts `StateManager`, so the validator ships zero bytes today — putting these packs on a live surface is `CNT-02`/`CNT-04`.
 0c. ~~**`GME-05`** — shared interaction/action registry.~~ **CLOSED 2026-10-05** (see §4 A4e). Not a pixel gate: the registry's invariants, the input object's behaviour and the generated markup are asserted in Node, one source scan proves no module outside the registry names a gameplay key, and the browser tier drives both shipped runtimes' mounted controls with real pointer and key events on desktop **and** on a 390x844 touch viewport. Implementing it closed two real defects: the curated runtime had no touch controls at all, and touch buttons first rendered 15px tall on a phone. Its three waiting-only-on-it dependents (`DET-10`, `PHY-01`, `PHY-03`) are now dependency-complete.
@@ -787,6 +851,11 @@ Canonical `.pbf` artefacts are also written to `public/fixture-tiles/` by `npm r
 
 | Date | Check | Result |
 |---|---|---|
+| 2026-10-06 | `LIF-02`/`LIF-01` Node gate | `GeoAmbientLife.test.js` 10 tests pass: profile ceilings agree with the research table, claim/release/cap with named rejections, distance and screen culls asserted from both directions, the activity budget winding a family down and back, both budgets hard, the no-scaling allocation property (8 vs 64 agents over 20,000 passes), the shipped motion formulas, the rebase round trip, and pose reuse/reset. Suite total `238 pass / 0 fail`, 126 modules |
+| 2026-10-06 | `LIF-02` browser gate | `ambient-life` exit 0 with `blockers 0` (three consecutive identical runs): 58 agents resident on 4 tiles against a 30 ceiling, `drawn 17`, `poses/pass 17`, **`17 of 58` instances moved in one pass** (allowance 41, 0 orphaned), distance culls counted, `activity 0 → drawn 0` with 17 collapsed and restored to 17, panel `ambience profile:low active:58/64 visible:17 ceil:30 per-frame:24 culls d:293 s:0 a:101 poses:294 activity:1.00` |
+| 2026-10-06 | `LIF-02` negative controls (5) | Pre-`LIF-02` unbounded walk → exit 1 (*58 of 58 moved, above the 41 allowed*); activity ignored → exit 1 (*activity 0 → drawn 17*); distance budget disabled → exit 1 (*no distance cull was ever counted*); hide path disabled → exit 1 (*collapsing 0 instance(s)*); panel marker renamed → exit 1 (*no `ambience` line*). Each restored and `diff`-verified clean before the commit |
+| 2026-10-06 | Audit-runner defect found by those controls | The scenario's first failing run **exited 0**: `run.mjs` only converts failure lists it knows into a non-zero status. Added the `ambientFailures` branch and recorded the trap in `AGENTS.md` |
+| 2026-10-06 | `LIF-02` regression sweep | `remount-lifecycle` (eviction/dispose changed), `label-los`, `content-schema`, `action-surfaces`, `domain-interface`, `water-order`, `curated-camera`, `coordinate-camera` and `coordinate-matrix` all exit 0 with the scheduler live |
 | 2026-10-05 | `GME-04`/`LAY-05` Node gate | `GeoLabelLos.test.js` 8 tests pass: occlusion hides and a clear ray does not, `LOS_BLOCKER`-only masks, verdicts held for 250 ms, the 20/s and 5-label ceilings under a burst and a 60-second stall, clear/retire/reset behaviour, the world-style return-value contract, config rejection, and the bearing/distance geography. Suite total `228 pass / 0 fail`, 125 modules |
 | 2026-10-05 | `GME-04`/`LAY-05` browser gate | `label-los` exit 0 with `blockers 0`: 11 committed labels, 44 obstructed standing positions (5 with the wall between), `Fixture Nagar` hidden at contact `t=0.375` with a fresh row (`blocked @134–163 ms`) and `data-los="blocked"`, `Grid Avenue 1` visible with a clear ray, 3–4 label sweeps with masks `[16]` only, panel `labels los:low 20/s max:5 …`, HUD `nearest Grid Avenue 1 30 m W` matching an independent recompute from the runtime's own coordinates |
 | 2026-10-05 | `GME-04` negative controls (4) | Occlusion disabled → exit 1 (*no player-reachable label was hidden*); mask changed to `CAMERA_BLOCKER` → exit 1 (*label rays used masks 4*); profile `high` → exit 1 (*80/s × 14, not 20/s × 5*); overlay extras dropped → exit 1 (*panel line does not carry the profile, counters and blocker*). Each restored and re-verified clean before the commit |
