@@ -363,6 +363,10 @@ function createWaterMaterial(library) {
     fog: true,
     uniforms: {
       uTime: { value: 0 },
+      // `ENV-04`: `x` is the weather's ripple, `y` its wetness, both zero at clear so the
+      // pre-weather frame is reproduced exactly. Driven by `WeatherState.applyWeather` — the
+      // runtime never writes them directly, and no geometry is swapped to show rain.
+      uWeather: { value: new THREE.Vector2(0, 0) },
       uSurfaceNoise: { value: library.textures.surfaceNoise },
       uWaterNormal: { value: library.textures.waterNormal },
       uNormalFade: { value: new THREE.Vector2(10, 52) },
@@ -387,6 +391,7 @@ function createWaterMaterial(library) {
     fragmentShader: `
       #include <fog_pars_fragment>
       uniform float uTime;
+      uniform vec2 uWeather;
       uniform sampler2D uSurfaceNoise;
       uniform sampler2D uWaterNormal;
       uniform vec2 uNormalFade;
@@ -396,13 +401,19 @@ function createWaterMaterial(library) {
         vec3 eye = normalize(cameraPosition - vWorldPosition);
         float distanceToEye = distance(cameraPosition, vWorldPosition);
         float normalVisibility = 1.0 - smoothstep(uNormalFade.x, uNormalFade.y, distanceToEye);
-        vec2 normalUv = vWorldPosition.xz * 0.18 + vec2(uTime * 0.004, -uTime * 0.003);
+        // Rippled weather scales the normal up and drifts it faster; wet weather tightens the
+        // fresnel and darkens the body so the surface reads as heavy rather than merely blue.
+        // At uWeather == 0.0 every term below is the value it had before ENV-04.
+        float ripple = clamp(uWeather.x, 0.0, 1.0);
+        float wetness = clamp(uWeather.y, 0.0, 1.0);
+        vec2 normalUv = vWorldPosition.xz * (0.18 + ripple * 0.10) + vec2(uTime * 0.004, -uTime * 0.003) * (1.0 + ripple * 1.60);
         vec3 waterNormal = texture2D(uWaterNormal, normalUv).xyz * 2.0 - 1.0;
-        waterNormal = normalize(vec3(waterNormal.xy * normalVisibility, max(0.2, waterNormal.z)));
+        waterNormal = normalize(vec3(waterNormal.xy * normalVisibility * (1.0 + ripple * 0.55), max(0.2, waterNormal.z)));
         float macro = texture2D(uSurfaceNoise, vWorldPosition.xz * 0.035).r;
-        float fresnel = pow(1.0 - max(dot(eye, waterNormal.xzy), 0.0), 2.0);
-        vec3 color = mix(vColor * mix(0.88, 1.04, macro), vec3(0.42, 0.73, 0.82), fresnel * 0.52);
-        gl_FragColor = vec4(color, 0.90);
+        float fresnel = pow(1.0 - max(dot(eye, waterNormal.xzy), 0.0), 2.0 - wetness * 0.60);
+        vec3 color = mix(vColor * mix(0.88, 1.04, macro), vec3(0.42, 0.73, 0.82), fresnel * (0.52 + wetness * 0.16));
+        color = mix(color, color * vec3(0.84, 0.88, 0.92), wetness * 0.55);
+        gl_FragColor = vec4(color, 0.90 + wetness * 0.06);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
         #include <fog_fragment>

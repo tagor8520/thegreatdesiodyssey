@@ -10,6 +10,9 @@ import { BridgeManager } from './BridgeManager.js';
 import { createCuratedDomain } from './CuratedDomain.js';
 import { mountTouchControls } from '../engine/TouchControls.js';
 import { TimeOfDay } from '../engine/TimeOfDay.js';
+import {
+  WeatherState, climateForLatitude, weatherSeedForCoordinate,
+} from '../engine/WeatherState.js';
 import { DiscoveryJournal } from '../engine/DiscoveryJournal.js';
 import '../engine/touch-controls.css';
 import { HoardingManager } from './HoardingManager.js';
@@ -117,11 +120,25 @@ export function mountReferenceGame(container, {
     dayOfYear: 172,
     timeScale: 0,
   });
+  // `ENV-04`: the curated world's weather. The fixture sits at 20.5°N, so its macro climate is
+  // the monsoon band in summer and the dry band either side of it, and the seed comes from the
+  // coordinate like the coordinate runtime's does — the same state machine, seeded the same
+  // way, so a reviewer sees the same vocabulary of skies in both modes. The curve is `clear`
+  // at this clock, which is the point: the shipped frame is the frame the world had before the
+  // weather existed, and a caller has to move the clock or the climate to see anything else.
+  const weather = new WeatherState({
+    profile: profile.name === 'high' ? 'high' : profile.name === 'balanced' ? 'balanced' : 'low',
+    seed: weatherSeedForCoordinate({ latitude: 20.5, longitude: 78.9, provider: 'curated' }),
+    climate: climateForLatitude(20.5, 172),
+    minutes: timeOfDay.minutes,
+    day: timeOfDay.dayOfYear,
+  });
   let environment = new Environment({
     scene,
     renderer,
     camera,
     timeOfDay,
+    weather,
     environmentScale: 1,
     ambientOcclusion: profile.ambientOcclusion,
     environmentMap: profile.environmentMap,
@@ -257,6 +274,10 @@ export function mountReferenceGame(container, {
     environment.dispose();
     environment = new Environment({
       scene, renderer, camera,
+      // Restoring the context restores the same environment, clocks included — a restored
+      // runtime without its time-of-day or weather state would quietly be a different world.
+      timeOfDay,
+      weather,
       ambientOcclusion: profile.ambientOcclusion,
       environmentMap: profile.environmentMap,
       shadows: profile.shadows,
@@ -264,6 +285,8 @@ export function mountReferenceGame(container, {
       pixelRatio: profile.pixelRatio,
       fogNear: profile.fogNear,
       fogFar: profile.fogFar,
+      materialLibrary: engine.materialLibrary,
+      materialDetail: profile.name ?? 'low',
     });
     resize(); lost = false; resetSampling(); animationFrame = requestAnimationFrame(frame);
   };
@@ -286,10 +309,24 @@ export function mountReferenceGame(container, {
     // built — the bounded-work half of the `ENV-02` claim on this runtime.
     get environment() { return environment; },
     get timeOfDayDiagnostics() { return environment.timeOfDayDiagnostics; },
+    // `ENV-04`: the same weather surface the coordinate runtime exposes, so one scenario can
+    // drive both modes. `weatherState` is a copy; `weather` is the live model, for a gate that
+    // needs to stand the world in a climate instead of waiting for a season to pass.
+    get weather() { return weather; },
+    get weatherState() { return { ...weather.state }; },
+    get weatherDiagnostics() { return environment.weatherDiagnostics; },
+    /** Re-sample and re-apply at the current clock, bypassing the rate ceiling. */
+    refreshWeather() {
+      weather.sample();
+      environment.applyWeather();
+      return { ...weather.state };
+    },
     /** Set the clock in minutes and apply immediately, bypassing the rate ceiling. */
     setClockMinutes(minutes) {
       timeOfDay.setClock(minutes);
       timeOfDay.sample();
+      weather.setClock(minutes, timeOfDay.dayOfYear);
+      weather.sample();
       environment.applyTimeOfDay({ regenerateEnvironment: true });
       return environment.timeOfDayDiagnostics;
     },

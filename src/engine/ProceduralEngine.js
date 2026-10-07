@@ -47,6 +47,12 @@ export function createProceduralSky(scene, {
     uStarVisibility: { value: 0 },
     uMoonVisibility: { value: 0 },
     uCloudCover: { value: clouds ? 0.38 : 0 },
+    // `ENV-04`. Both are the exact identity at zero, so the clear-weather frame is
+    // arithmetically the pre-`ENV-04` frame: `uCloudDarkness` multiplies the cloud colour
+    // (never replaces it, so a night cloud cannot glow) and `uSkyTime` offsets the cloud
+    // cells (an `+ 0.0`), which is how a stronger wind state moves the sky.
+    uCloudDarkness: { value: 0 },
+    uSkyTime: { value: 0 },
   };
   const material = new THREE.ShaderMaterial({
     side: THREE.BackSide,
@@ -72,6 +78,8 @@ export function createProceduralSky(scene, {
       uniform float uStarVisibility;
       uniform float uMoonVisibility;
       uniform float uCloudCover;
+      uniform float uCloudDarkness;
+      uniform float uSkyTime;
       varying vec3 vSkyDirection;
 
       // A cheap direction hash for the star field: no texture, no draw call, and it is
@@ -113,11 +121,16 @@ export function createProceduralSky(scene, {
             smoothstep(0.0, 0.10, direction.y);
         }
 
-        vec2 cloudCell = floor(direction.xz / max(0.16, direction.y + 0.32) * 13.0);
+        vec2 cloudCell = floor(direction.xz / max(0.16, direction.y + 0.32) * 13.0 +
+          uSkyTime * vec2(1.0, 0.6));
         float cloudNoise = fract(sin(dot(cloudCell, vec2(41.7, 289.1))) * 43758.5453);
         float cloudBand = smoothstep(0.08, 0.24, direction.y) * (1.0 - smoothstep(0.62, 0.84, direction.y));
         float blockCloud = step(1.0 - uCloudCover, cloudNoise) * cloudBand * 0.58;
-        sky = mix(sky, mix(vec3(0.82, 0.86, 0.84), uHorizon * 1.35 + 0.06, 0.55), blockCloud);
+        // Weather darkens the cloud tone *relative* to the sky it sits in, so a storm at
+        // night is a dark cloud against a dark sky rather than a grey one against black.
+        vec3 cloudTone = mix(vec3(0.82, 0.86, 0.84), uHorizon * 1.35 + 0.06, 0.55) *
+          mix(1.0, 0.34, uCloudDarkness);
+        sky = mix(sky, cloudTone, blockCloud);
         gl_FragColor = vec4(sky, 1.0);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>

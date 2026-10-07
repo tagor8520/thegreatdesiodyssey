@@ -73,6 +73,14 @@ function snapshotText(snapshot, metrics, report, extras = null) {
     extras?.timeOfDay
       ? `time ${extras.timeOfDay.clock} UTC · phase ${extras.timeOfDay.phase} · sun ${extras.timeOfDay.sunElevation.toFixed(1)}° · light ${extras.timeOfDay.lightIntensity.toFixed(2)} · stars ${extras.timeOfDay.starVisibility.toFixed(2)} · exposure ${extras.timeOfDay.exposure.toFixed(2)} · writes ${extras.timeOfDay.writes} · ceil ${extras.timeOfDay.uniformHz}Hz`
       : 'time unavailable',
+    // `ENV-04`: the weather line. One line, because the state, the blend it is in, the two
+    // response terms that are visible on screen (cloud cover and cloud darkness) and the write
+    // budget are what a reviewer is checking; the panel is still readable at the low profile.
+    // The `|` separator is what `tools/visual-audit/scenarios/weather-state.mjs` reads, so the
+    // scenario and the panel cannot drift apart.
+    extras?.weather
+      ? `weather ${extras.weather.label} | ${extras.weather.climate} | window ${extras.weather.window} | blend ${extras.weather.blend.toFixed(2)} ${extras.weather.from}→${extras.weather.to} | next ${extras.weather.next} | cloud ${extras.weather.cloudCover.toFixed(2)}/${extras.weather.cloudDarkness.toFixed(2)} | wet ${extras.weather.wetness.toFixed(2)} ripple ${extras.weather.ripple.toFixed(2)} | fog ${extras.weather.fogDensity.toFixed(2)} | life ${extras.weather.birdActivity.toFixed(2)}/${extras.weather.beeActivity.toFixed(2)} | writes ${extras.weather.writes} · ceil ${extras.weather.uniformHz}Hz · particles ${extras.weather.particleFamilies}`
+      : 'weather unavailable',
   ].join('\n');
 }
 

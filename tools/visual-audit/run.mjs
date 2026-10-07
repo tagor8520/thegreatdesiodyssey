@@ -27,6 +27,7 @@ import * as ambientLife from './scenarios/ambient-life.mjs';
 import * as timeOfDay from './scenarios/time-of-day.mjs';
 import * as discoveryJournal from './scenarios/discovery-journal.mjs';
 import * as landmarkOpenings from './scenarios/landmark-openings.mjs';
+import * as weatherState from './scenarios/weather-state.mjs';
 
 const SCENARIOS = new Map([
   ['curated-camera', {
@@ -112,6 +113,13 @@ const SCENARIOS = new Map([
     module: landmarkOpenings,
     prepares: 'curated',
     summary: 'DET-09 landmark grammar and openings: both shipped landmarks recompiled in-page and matched instance for instance against the live scene (one instanced draw each, colour cycles included), the curated runtime\'s own clipCamera opened through the Gateway arch and blocked into the pier while the union of the same blockers would block it, no single blocker containing the opening, and the wheel collider containing the drawn rim.',
+  }],
+  ['weather-state', {
+    module: weatherState,
+    fixture: 'dense-urban',
+    // No `prepares`: the scenario drives both runtimes itself, because the gate covers the
+    // weather state machine, its response on the live materials and the curated runtime.
+    summary: 'ENV-04 weather states: the seeded schedule deterministic across sessions and matched against the module\'s own sampler, a frozen clock writing nothing while a moving one stays inside the profile ceiling, each of the eight states driven through the live runtime and read back from the dome, the water, the fog, the sun, the exposure and the pixels (with `clear` bit-identical to the hour), the habitat response riding the species shares rather than a second animation path, and the low-profile fallback proven by a response that is uniform-only.',
   }],
   ['coordinate-camera', {
     module: coordinateCamera,
@@ -299,6 +307,22 @@ async function main() {
       console.log(`  state identity    state ${summary.identity.sameState} · nested ${summary.identity.sameNested} · uniforms bound ${summary.identity.uniformBound}`);
       console.log(`  time-of-day line  ${summary.panelLine ?? 'none'}`);
     }
+    if ('weatherFailures' in summary) {
+      console.log(`  weather seed      ${summary.coordinate.seed} (module ${summary.coordinate.moduleSeed}) · climate ${summary.coordinate.climate} · profile ${summary.coordinate.profile}`);
+      console.log(`  determinism       session 1 ${summary.coordinate.firstSession.state} (window ${summary.coordinate.firstSession.window}) → session 2 ${summary.coordinate.secondSession.state} (window ${summary.coordinate.secondSession.window})`);
+      console.log(`  continuity        worst ${summary.continuity.worst.toFixed(4)} on ${summary.continuity.worstField} at ${summary.continuity.at}m (bound ${summary.continuity.bound.toFixed(4)}), ${summary.continuity.changes} change(s) in a day`);
+      console.log(`  uniform writes    frozen ${summary.writes.frozen.writes} over ${summary.writes.frozen.frames} frames · synthetic ${summary.writes.moving.writes} over 720 frames, busiest second ${summary.writes.moving.busiest} against ${summary.writes.moving.ceiling}/s, ${summary.writes.moving.coalesced} coalesced · jump ${summary.writes.jump.jumpWrites} write(s)`);
+      for (const [id, entry] of Object.entries(summary.responses)) {
+        console.log(`  ${id.padEnd(17)} cloud ${entry.cloudCover.toFixed(2)}/${entry.cloudDarkness.toFixed(2)} · water ${entry.ripple.toFixed(2)}/${entry.wetness.toFixed(2)}` +
+          ` · fog ${entry.fogNear.toFixed(0)}/${entry.fogFar.toFixed(0)} · sun ${entry.sun.toFixed(2)} · exposure ${entry.exposure.toFixed(2)}` +
+          ` · luma ${entry.meanLuma.toFixed(3)} vs clear ${entry.clearMeanLuma.toFixed(3)} · agents ${entry.drawnSlots} vs ${entry.clearDrawnSlots}`);
+      }
+      if (summary.curated?.clear && summary.curated?.storm) {
+        console.log(`  curated clear     water normal ${summary.curated.clear.water.normalScale.toFixed(3)} roughness ${summary.curated.clear.water.roughness.toFixed(3)} · fog ${summary.curated.clear.fog.near.toFixed(0)}/${summary.curated.clear.fog.far.toFixed(0)} · luma ${summary.curated.clear.meanLuma.toFixed(3)}`);
+        console.log(`  curated storm     water normal ${summary.curated.storm.water.normalScale.toFixed(3)} roughness ${summary.curated.storm.water.roughness.toFixed(3)} · fog ${summary.curated.storm.fog.near.toFixed(0)}/${summary.curated.storm.fog.far.toFixed(0)} · luma ${summary.curated.storm.meanLuma.toFixed(3)}`);
+      }
+      console.log(`  weather line      ${summary.panelLine ?? 'none'}`);
+    }
     if ('stabilitySamples' in summary) {
       console.log(`  stable renders    ${summary.stabilitySamples - summary.orderInstabilitySamples}/${summary.stabilitySamples}`);
       console.log(`  alpha foliage     ${summary.alphaBlendedFoliage.length}`);
@@ -374,6 +398,11 @@ async function main() {
     if (summary.timeOfDayFailures?.length) {
       console.error('\n[audit] FAIL: the time-of-day contract does not hold.');
       for (const failure of summary.timeOfDayFailures) console.error(`  ${failure}`);
+      process.exitCode = 1;
+    }
+    if (summary.weatherFailures?.length) {
+      console.error('\n[audit] FAIL: the weather-state contract does not hold.');
+      for (const failure of summary.weatherFailures) console.error(`  ${failure}`);
       process.exitCode = 1;
     }
     if (summary.metricValidated === false) {

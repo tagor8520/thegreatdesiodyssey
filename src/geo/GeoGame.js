@@ -5,6 +5,9 @@ import {
 import {
   TimeOfDay, applyStarUniforms, applyTimeOfDay, bindTimeOfDayUniforms,
 } from '../engine/TimeOfDay.js';
+import {
+  WeatherState, applyWeather, bindWeatherUniforms, climateForLatitude, weatherSeedForCoordinate,
+} from '../engine/WeatherState.js';
 import { GeoWorld } from './GeoWorld.js';
 import { GEO_QUERY_MASK } from './GeoCollision.js';
 import { GeoPlayer } from './GeoPlayer.js';
@@ -99,7 +102,11 @@ export function mountGeoGame(container, {
   // transparent water and comfortably inside the low-profile budget.
   renderer.sortObjects = true;
   scene.background = new THREE.Color(GDO_PALETTE.sky);
-  scene.fog = new THREE.Fog(GDO_PALETTE.fog, 78, 175);
+  // `ENV-04`: the clear-weather fog range. The weather receives it and shortens `near`/`far`
+  // from these values, so a clear frame is bit-for-bit the pre-weather fog and the mutation is
+  // always recomputed from the baseline rather than from the previous frame's result.
+  const GEO_FOG_NEAR = 78, GEO_FOG_FAR = 175;
+  scene.fog = new THREE.Fog(GDO_PALETTE.fog, GEO_FOG_NEAR, GEO_FOG_FAR);
   const lightRig = createProceduralLightRig(scene, {
     shadows: false,
     sunIntensity: 2.25,
@@ -117,6 +124,35 @@ export function mountGeoGame(container, {
     timeScale: 0,
   });
   bindTimeOfDayUniforms(sky, timeOfDay.state);
+  /**
+   * `ENV-04` weather.
+   *
+   * The schedule is a function of the coordinate — the same seed at the same latitude and
+   * longitude, whichever session or device asks — the macro climate the latitude and the
+   * season imply, and the **time-of-day clock**, so the weather and the light can never
+   * disagree about what time it is. `timeScale` is zero in this runtime, which means the
+   * weather is frozen at solar noon unless a caller moves the clock: no transition happens
+   * on a frame the player did not ask for, and the frame cost of the whole feature on a
+   * still clock is one comparison.
+   *
+   * The provider is part of the seed because the terrain is: the same coordinates served by a
+   * different map source are a different world and may reasonably have different weather.
+   */
+  const weather = new WeatherState({
+    profile: 'low',
+    seed: weatherSeedForCoordinate({
+      latitude: coordinate.latitude,
+      longitude: coordinate.longitude,
+      provider: providers?.[0]?.id ?? '',
+    }),
+    climate: climateForLatitude(coordinate.latitude, timeOfDay.dayOfYear),
+    minutes: timeOfDay.minutes,
+    // The calendar belongs to the time-of-day state, so the weather reads the day from the
+    // same place it reads the hour: a schedule that advanced its own day would be a second
+    // clock, and two clocks is how a sun and a sky end up disagreeing.
+    day: timeOfDay.dayOfYear,
+  });
+  bindWeatherUniforms(sky, weather.state);
 
   /**
    * How much of the ambient budget each phase spends.
@@ -131,11 +167,47 @@ export function mountGeoGame(container, {
     night: 0.35, 'blue-hour': 0.6, sunset: 1, 'low-sun': 1, golden: 1, day: 1,
   });
   let ambientActivity = 1;
-  const applyTimeOfDayState = () => {
+  let ambientSpeciesKey = '';
+  // `ENV-04`: whether the world exists yet. The first apply happens before `GeoWorld` is
+  // constructed — it has to, the world builds under the shipped lighting — so the ambient
+  // budget and the water material are only reachable from the second apply onward.
+  let worldReady = false;
+  // The water handle the weather writes its ripple and wetness through. Null until the world
+  // exists, which is why `applyWeather` is called with a possibly-absent handle rather than
+  // the material itself.
+  let weatherWater = null;
+  let lastWeatherMilliseconds = null;
+  const applyTimeOfDayState = now => {
     applyTimeOfDay(timeOfDay.state, { lightRig, scene, renderer, scale: .32 });
     applyStarUniforms(sky, timeOfDay.state);
+    // `ENV-04`: the weather composes **on top of** the time-of-day state and writes absolute
+    // values, so the two can be applied in either order and a repeated apply cannot compound.
+    // `deltaSeconds` is real elapsed time since the previous weather write, clamped: the sky's
+    // cloud drift advances by wall time, not by how often the uniforms happened to be written.
+    const elapsed = lastWeatherMilliseconds === null || !Number.isFinite(now)
+      ? 0 : Math.min(Math.max((now - lastWeatherMilliseconds) / 1000, 0), .5);
+    applyWeather(timeOfDay.state, weather.state, {
+      sky,
+      scene,
+      lightRig,
+      renderer,
+      water: weatherWater,
+      fogNear: GEO_FOG_NEAR,
+      fogFar: GEO_FOG_FAR,
+      deltaSeconds: elapsed,
+    });
+    lastWeatherMilliseconds = Number.isFinite(now) ? now : lastWeatherMilliseconds;
+    weather.markApplied();
     const activity = GEO_AMBIENT_ACTIVITY_BY_PHASE[timeOfDay.state.phase] ?? 1;
-    if (activity !== ambientActivity) ambientActivity = world.setAmbientActivity(activity);
+    // `AGENTS.md` item 6: the habitat response rides the same `setAmbientActivity` channel.
+    // The phase decides the budget and the weather decides how each species spends it, so a
+    // storm at noon has the day's budget at a tenth of the birds — one code path, two inputs.
+    const species = weather.speciesActivity();
+    const speciesKey = `${species.bird}|${species.bee}`;
+    if (worldReady && (activity !== ambientActivity || speciesKey !== ambientSpeciesKey)) {
+      ambientActivity = world.setAmbientActivity(activity, species);
+      ambientSpeciesKey = speciesKey;
+    }
     timeOfDay.markApplied();
   };
   applyTimeOfDayState();
@@ -185,6 +257,10 @@ export function mountGeoGame(container, {
       canvas.tabIndex = 0; canvas.focus({ preventScroll: true });
     },
   });
+  // `ENV-04`: the world exists, so the weather can reach its water and the ambient budget.
+  weatherWater = { material: world.waterMaterial };
+  worldReady = true;
+  applyTimeOfDayState();
   const updateCameraUI = mode => {
     const firstPerson = mode === 'first-person';
     cameraStatusElement.textContent = `${firstPerson ? 'First' : 'Third'}-person camera · V to switch`;
@@ -400,12 +476,18 @@ export function mountGeoGame(container, {
     lastFrame = now;
     // `ENV-02`: at most one uniform write per profile interval, and only when the state
     // actually moved, so a frozen clock writes nothing however fast the frame runs.
-    if (timeOfDay.update(dt, now)) applyTimeOfDayState();
+    const timeChanged = timeOfDay.update(dt, now);
+    // `ENV-04`: the weather reads the same clock. It is a pure function of the clock, so a
+    // still clock is a still sky: the write below is refused before it reaches the GPU.
+    weather.setClock(timeOfDay.minutes, timeOfDay.dayOfYear);
+    const weatherChanged = weather.update(now);
+    if (timeChanged || weatherChanged) applyTimeOfDayState(now);
     player.update(dt);
     world.update(player.position, camera, renderer.domElement.height, now);
     debugOverlay?.update(world, player.position, renderer, now, {
       labels: labelLos.diagnostics(now),
       timeOfDay: timeOfDay.diagnostics(),
+      weather: weather.diagnostics(),
       discoveries: discoveryJournal.diagnostics(),
     });
     renderer.render(scene, camera);
@@ -497,14 +579,36 @@ export function mountGeoGame(container, {
     // it rendered — a gate that only read the model would be checking the model.
     get timeOfDay() { return timeOfDay; },
     get sky() { return sky; },
-    /** Set the clock in UTC minutes and apply immediately, bypassing the rate ceiling. */
+    /**
+     * Set the clock in UTC minutes and apply immediately, bypassing the rate ceiling.
+     *
+     * The weather rides the same clock, so a jump moves both: `ENV-02`'s gate moves the sun to
+     * the night and this one moves the sky to a storm through the same call, and neither can
+     * end up out of step with the other.
+     */
     setClockMinutes(minutes) {
       timeOfDay.setClock(minutes);
       timeOfDay.sample();
-      applyTimeOfDayState();
+      weather.setClock(minutes, timeOfDay.dayOfYear);
+      weather.sample();
+      applyTimeOfDayState(performance.now());
       return timeOfDay.diagnostics();
     },
     get timeOfDayDiagnostics() { return timeOfDay.diagnostics(); },
+    // `ENV-04`: the weather model, its report, and one bypass of the write ceiling for a gate
+    // or a capture. Exposed the same way `ENV-02` exposed the clock: the gate has to be able to
+    // stand in a climate and read what the runtime decided, then compare that against pixels.
+    // `weatherState` is a copy on purpose — a caller can read it without being able to hold a
+    // reference to the live object the apply path writes.
+    get weather() { return weather; },
+    get weatherState() { return { ...weather.state }; },
+    get weatherDiagnostics() { return weather.diagnostics(); },
+    /** Re-seed, re-climate or re-sample at the current clock without waiting for a change. */
+    refreshWeather() {
+      weather.sample();
+      applyTimeOfDayState(performance.now());
+      return { ...weather.state };
+    },
     /** The ambient budget the current phase is spending (`AGENTS.md` item 6). */
     get ambientActivity() { return world.ambientActivity; },
     // `GME-06`: the journal itself and its report. The gate drives it through the runtime's

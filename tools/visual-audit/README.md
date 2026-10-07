@@ -39,6 +39,7 @@ npm run visual:audit -- action-surfaces         # GME-05 every action on every s
 npm run visual:audit -- content-schema          # CNT-01 the served state packs validate in-page, byte-identical to disk
 npm run visual:audit -- label-los               # GME-04/LAY-05 a name behind a wall hides; a clear name stays visible
 npm run visual:audit -- landmark-openings       # DET-09 the two landmarks batched, the arch open and the pier blocked
+npm run visual:audit -- weather-state           # ENV-04 the seeded weather schedule, its response on the live scene, both runtimes
 ```
 
 Options: `--url <base>` (default `http://localhost:5173/`), `--width`, `--height`,
@@ -171,6 +172,51 @@ The scenario for the gate *"repeated modules batched; arches never use one enclo
 - **Two controls run in the same process**, so the two assertions above are falsifiable in the run that reports them: the pre-`DET-09` union box is pushed back into the live blocker list and must close the arch (it does), and the Gateway's blockers are removed and the pier must open (so the pier result is caused by a pier). The blocker list is verified back at 34 afterwards.
 
 `landmarkFailures` is a hard assertion in `run.mjs`. Six negative controls each exit 1 — three in the Node tier (no declared opening → 3 failures; the wheel collider back to 7.3; the free width not ending at the arch head) and three in the browser (stamping disabled → *only 0 of the Gateway's 50 boxes are in the scene*; one enclosing AABB per landmark → *a single live blocker contains the whole opening*; one material family per box → *the Chariot's 108 boxes reach the renderer as 16 draws*). The first of those browser controls found a runner defect: the run printed `[audit] FAIL` and exited 0 because the new failure branch omitted `process.exitCode = 1` — the same class `QLT-06` recorded for `ambient-life`.
+
+### `weather-state` — `ENV-04`
+
+The gate is *"deterministic transitions, environment response, low-profile fallback"*, and the
+three clauses are not equally strong in one tier, so the scenario says which tier decides which.
+It drives **both** runtimes in one session, the way `domain-interface` does.
+
+**Determinism is a two-session claim, so the scenario re-navigates.** It opens the coordinate
+fixture, reads the seed and the climate the runtime chose, re-runs the module's own hash and
+climate rule in the page and requires them to agree, then *loads the page again* at the same
+coordinate and requires the same seed, the same state and the same fifteen response fields at
+the same clock. It then compares the runtime's schedule against `sampleWeatherAt` window by
+window (the runtime takes a time of day inside a day, the module an unwrapped clock, so the
+comparison places the sample in the day the runtime is in), sweeps a whole day in five-minute
+steps to bound continuity by the cross-fade, and probes **midnight** separately — the last
+window of a day must fade into the next day's anchor, which is where a per-day schedule is most
+likely to cut. The budget is measured twice: 60 frames of a frozen clock must write **nothing**,
+and a synthetic 60 fps drive with the clock advancing a world minute per frame must stay inside
+the profile ceiling while still changing state and coalescing writes, with a 400 → 1000 minute
+jump costing exactly one write.
+
+**The response matrix drives the live runtime to all eight states.** The day the seed produces
+is a day, not a menu, so the probe *searches seeds through the runtime's own model* to find a
+window whose state is the one it wants, then applies it through `setClockMinutes` — the clock
+the frame loop actually reads — and measures what the renderer holds: the dome's cloud uniforms,
+the water's weather uniform, the fog range and colour, the sun's intensity, the exposure and the
+rendered pixels. Each state is compared against `clear` **at the same clock and the same sun**,
+so the hour cannot explain a difference, and every state's eight-value response vector must be
+distinct from every other's, which is the claim that the states are visible at all. `clear` is
+additionally required to be the arithmetic **identity**: the hour's own cloud cover, unwet water,
+the shipped fog range, the hour's fog colour to `0.0e+0` and the hour's own sun intensity. Two
+clauses are deliberately one-directional: a storm must be darker than clear, and its fog must
+stay a **tint** of the hour's colour (below the hour × 1.13), so no weather can brighten a night.
+
+**The fallback is structural.** The low profile declares zero particle families, so the response
+must be uniform-only: the scenario requires the profile to say so, requires all 28 pairs to
+differ on the uniform response alone, and requires the scene's child count to be identical
+across every state — a state that added an object or a draw would fail. The habitat response is
+measured where it happens rather than inferred: three scheduler passes are waited for at each
+budget and the drawn agent count is compared, while `world.ambientActivity` must be **1** at both
+ends so the difference can only come from the weather's species shares.
+
+Both negative controls and in-run controls live in the register (`feature-roadmap/VISUAL_GATES.md`
+§4 A4l); the scenario's own probe bugs are recorded there too, because two of them made a *pass*
+look like a failure and one made three states look identical when they were not.
 
 ### `remount-lifecycle` — FND-07
 
