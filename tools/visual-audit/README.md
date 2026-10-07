@@ -140,6 +140,26 @@ Five negative controls were run and each exits 1: the pre-`LIF-02` unbounded wal
 
 Recorded coverage limit: the **screen** budget cannot be exercised live through the product's own camera ranges — at the coordinate camera's ≈100 px/m even a bee spans ≈27 px against a 0.6 px floor — so the floor and its counter are proven in the Node tier (`src/geo/GeoAmbientLife.test.js`), and the browser run exercises distance and activity only.
 
+### `time-of-day` — `ENV-02`
+
+The scenario that turns "readable night" and "bounded uniform updates" into measurements instead of adjectives. Three details matter:
+
+- **The frame is drawn and read in the same task.** The default framebuffer's contents are undefined once the task yields, so reading pixels from the animation loop's last frame returns black — the first run of this scenario reported `mean luma 0.000` for a daylight frame that was plainly rendering. The probe calls the runtime's own `render()` immediately before `gl.readPixels`, which also means the measurement is *about the state that was just applied*.
+- **Readability is relative to the day frame, not an absolute floor.** The first thresholds (`visibleFraction > 0.05`, `maxLuma > 0.15`) passed a night that had lost its moon and most of its ambient term — the third negative control demonstrated exactly that — so the gate now requires the night to keep **≥ 40% of the day's legible coverage** and its own luma floor (0.05). A night that is merely dark fails, and so does a night that is not dark at all.
+- **The ceiling is driven synthetically, and the log says so.** On SwiftShader the renderer runs at ≈3 fps, so the live loop *cannot* reach a 10 Hz ceiling — the frame rate bounds it first. The live half therefore proves the frozen half (a frozen clock writes **zero** uniforms over 60 frames), and a 60 fps drive through the same instance proves the ceiling (30 writes over 3 s against 10/s). The scenario prints the observed frame rate next to the numbers so a reader can see which half did which.
+
+`timeOfDayFailures` is a hard assertion in `run.mjs`. Five negative controls each exit 1: the rate ceiling removed, change detection removed, the night stripped of its moon and ambient term, the uniforms bound by value, and the review-surface marker renamed. The second of those **passed on its first run** — the failure was collected into an array no verdict read — which is why the frozen-clock check is part of the verdict list rather than a diagnostic.
+
+### `discovery-journal` — `GME-06`
+
+The scenario that proves a runtime *feeds* its journal rather than being fed by the probe. It teleports the player onto a real resident label and then only watches, so a runtime that never calls `update()` cannot pass.
+
+- **Determinism is measured across a reload**, not within one page: the id the runtime gives a place in session one must be the id session two gives the same place. That is the only way to tell a function of the place from a function of the session.
+- **The ids are checked against the function itself.** The scenario imports `/src/engine/DiscoveryJournal.js` *inside the page* — the dev server's module graph is keyed by URL, so this is the module the runtime loaded — and recomputes the id of every place the journal holds.
+- **The corpus is the world's own labels**, read from every resident tile rather than from the 14 the label layer displays, so the bound is measured over real map data. It is also small, and the scenario says so: the fixture world exposes 11 named places, so the shipped capacity of 128 is never reached in a browser and the capacity-5 trial over those same 11 real places is what fills to capacity and proves the retained set is the same in either walk order.
+
+`discoveryFailures` is a hard assertion in `run.mjs`. Five negative controls each exit 1: a randomised id, the frame loop no longer feeding the journal, eviction leaking its slot, displacement made unconditional, and the review-surface marker renamed. A sixth control — flipping the id tie-break direction — **passed**, and the record keeps that because it corrected the gate's own explanation of which rule makes the retained set canonical.
+
 ### `remount-lifecycle` — FND-07
 
 The only scenario that measures *lifecycle* instead of pixels. It mounts and exits three times in

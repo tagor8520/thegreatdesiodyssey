@@ -1,5 +1,10 @@
 import * as THREE from 'three';
-import { createProceduralEngine, createProceduralLightRig, GDO_PALETTE } from '../engine/ProceduralEngine.js';
+import {
+  createProceduralEngine, createProceduralLightRig, createProceduralSky, GDO_PALETTE,
+} from '../engine/ProceduralEngine.js';
+import {
+  TimeOfDay, applyStarUniforms, applyTimeOfDay, bindTimeOfDayUniforms,
+} from '../engine/TimeOfDay.js';
 import { GeoWorld } from './GeoWorld.js';
 import { GEO_QUERY_MASK } from './GeoCollision.js';
 import { GeoPlayer } from './GeoPlayer.js';
@@ -8,6 +13,7 @@ import { validateCoordinate } from './GeoMath.js';
 import {
   LabelLosScheduler, compassBearing, formatMetres,
 } from './GeoLabelLos.js';
+import { DiscoveryJournal, GEO_DISCOVERY_MAX_RADIUS } from '../engine/DiscoveryJournal.js';
 import './geo.css';
 
 function formatBytes(bytes) {
@@ -63,6 +69,9 @@ export function mountGeoGame(container, {
     fov: 68,
     near: .02,
     far: 210,
+    // `ENV-02`: the dome is uniform-driven now, so it is built with the shared sky
+    // handle's uniforms and a time-of-day state points at them below.
+    sky: false,
   });
   const { canvas, overlay, renderer, scene, camera } = engine;
   overlay.innerHTML = uiMarkup();
@@ -97,6 +106,39 @@ export function mountGeoGame(container, {
     hemisphereIntensity: 1.0,
     scale: .32,
   });
+  // `ENV-02` time of day. The clock starts at solar noon for this coordinate, so the
+  // default frame is the daylight the fixed sky used to hard-code; a caller can set it.
+  const sky = createProceduralSky(scene);
+  const timeOfDay = new TimeOfDay({
+    profile: 'low',
+    latitude: coordinate.latitude,
+    longitude: coordinate.longitude,
+    dayOfYear: 172,
+    timeScale: 0,
+  });
+  bindTimeOfDayUniforms(sky, timeOfDay.state);
+
+  /**
+   * How much of the ambient budget each phase spends.
+   *
+   * `AGENTS.md` item 6: a dusk or night state winds the ambience down through
+   * `world.setAmbientActivity()` — the hook `LIF-02` built — rather than through a second
+   * animation controller. Birds and insects roost at night instead of being switched off,
+   * so the scheduler still draws a few and the transition is a change of *budget* rather
+   * than of code path. The values are deliberately mild: this is ambience, not a spawn gate.
+   */
+  const GEO_AMBIENT_ACTIVITY_BY_PHASE = Object.freeze({
+    night: 0.35, 'blue-hour': 0.6, sunset: 1, 'low-sun': 1, golden: 1, day: 1,
+  });
+  let ambientActivity = 1;
+  const applyTimeOfDayState = () => {
+    applyTimeOfDay(timeOfDay.state, { lightRig, scene, renderer, scale: .32 });
+    applyStarUniforms(sky, timeOfDay.state);
+    const activity = GEO_AMBIENT_ACTIVITY_BY_PHASE[timeOfDay.state.phase] ?? 1;
+    if (activity !== ambientActivity) ambientActivity = world.setAmbientActivity(activity);
+    timeOfDay.markApplied();
+  };
+  applyTimeOfDayState();
 
   let disposed = false, lost = false, animationFrame = 0, initialReady = false;
   let player;
@@ -222,14 +264,41 @@ export function mountGeoGame(container, {
   // scheduler is budgeted per the layering research (20 tests/second and 5 labels
   // at the low profile) and asks only for `LOS_BLOCKER`, so a pickup or a bird
   // between the eye and a name cannot blank it.
+  // `GME-06`: walking into a named place records it. The journal is fed the labels the
+  // runtime is already showing — `displayedLabels`, refreshed every 250ms, is passed as the
+  // candidate array itself, so the per-frame cost is one squared-distance test per visible
+  // name and no allocation at all. What it holds is bounded by its own capacity, never by
+  // how far the player has walked.
+  const discoveryJournal = new DiscoveryJournal();
+  // `GME-06`: discovery is a **radius test over the resident labels**, not over the names the
+  // HUD chose to draw. The label layer shows at most 14 names by static map priority, so a
+  // journal fed from the displayed set would leave a place undiscoverable whenever fourteen
+  // higher-priority names were on screen — the browser gate caught exactly that as a
+  // second-session flake. The candidate array is reused, so a refresh allocates nothing, and
+  // the per-refresh cost is one distance test per resident label (≤ 18 per tile).
+  const discoveryCandidates = [];
+  const gatherDiscoveryCandidates = position => {
+    discoveryCandidates.length = 0;
+    const limit = GEO_DISCOVERY_MAX_RADIUS * GEO_DISCOVERY_MAX_RADIUS;
+    for (const tile of world.tiles.values()) {
+      for (const label of tile.labels) {
+        const dx = label.x - position.x, dz = label.z - position.z;
+        if (dx * dx + dz * dz > limit) continue;
+        discoveryCandidates.push(label);
+      }
+    }
+    return discoveryCandidates;
+  };
   const labelLos = new LabelLosScheduler({
     profile: 'low',
     sweep: (x, y, z, dx, dy, dz, radius, out, mask) => world.sweepSphere(x, y, z, dx, dy, dz, radius, out, mask),
   });
   const updateMapLabels = now => {
+    let labelsRefreshed = false;
     if (now >= nextLabelRefresh) {
       displayedLabels = world.visibleLabels;
       nextLabelRefresh = now + 250;
+      labelsRefreshed = true;
     }
     const labels = displayedLabels;
     while (labelElements.length < labels.length) {
@@ -241,6 +310,13 @@ export function mountGeoGame(container, {
     const occupied = [];
     const losCandidates = [];
     nearestPlace = null;
+    // The journal reads the same resident labels the layer draws, so a name that is on
+    // screen is a name that can be discovered, and a place the tiles have dropped is only
+    // remembered (the journal's whole point) rather than re-derived from a label that has
+    // streamed away. It runs on the label refresh rather than every frame: the candidate set
+    // only changes four times a second, and a journal that re-offered the same names sixty
+    // times a second would spend the same answer sixty times.
+    if (labelsRefreshed) discoveryJournal.update(player.position, gatherDiscoveryCandidates(player.position), { now });
     const width = Math.max(1, container.clientWidth), height = Math.max(1, container.clientHeight);
     for (let index = 0; index < labelElements.length; index++) {
       const element = labelElements[index], label = labels[index];
@@ -322,9 +398,16 @@ export function mountGeoGame(container, {
     const dt = Math.min(frameGap / 1000, .1);
     const cpuStart = performance.now();
     lastFrame = now;
+    // `ENV-02`: at most one uniform write per profile interval, and only when the state
+    // actually moved, so a frozen clock writes nothing however fast the frame runs.
+    if (timeOfDay.update(dt, now)) applyTimeOfDayState();
     player.update(dt);
     world.update(player.position, camera, renderer.domElement.height, now);
-    debugOverlay?.update(world, player.position, renderer, now, { labels: labelLos.diagnostics(now) });
+    debugOverlay?.update(world, player.position, renderer, now, {
+      labels: labelLos.diagnostics(now),
+      timeOfDay: timeOfDay.diagnostics(),
+      discoveries: discoveryJournal.diagnostics(),
+    });
     renderer.render(scene, camera);
     updateMapLabels(now);
     sampleCpuMilliseconds += performance.now() - cpuStart;
@@ -409,6 +492,29 @@ export function mountGeoGame(container, {
     // because the gate has to compare the DOM's verdict against the scheduler's.
     get labelDiagnostics() { return { ...labelLos.diagnostics(performance.now()), nearest: nearestPlace }; },
     get labelScheduler() { return labelLos; },
+    // `ENV-02`: the runtime's clock and light state. Exposed because the gate has to
+    // move the clock, read what the runtime decided, and compare that against the pixels
+    // it rendered — a gate that only read the model would be checking the model.
+    get timeOfDay() { return timeOfDay; },
+    get sky() { return sky; },
+    /** Set the clock in UTC minutes and apply immediately, bypassing the rate ceiling. */
+    setClockMinutes(minutes) {
+      timeOfDay.setClock(minutes);
+      timeOfDay.sample();
+      applyTimeOfDayState();
+      return timeOfDay.diagnostics();
+    },
+    get timeOfDayDiagnostics() { return timeOfDay.diagnostics(); },
+    /** The ambient budget the current phase is spending (`AGENTS.md` item 6). */
+    get ambientActivity() { return world.ambientActivity; },
+    // `GME-06`: the journal itself and its report. The gate drives it through the runtime's
+    // own object rather than a copy, so what it measures is what the player would carry.
+    get discoveryJournal() { return discoveryJournal; },
+    get discoveries() { return discoveryJournal.diagnostics(); },
+    /** The names the runtime is currently showing, which are the journal's candidates. */
+    get visiblePlaces() { return displayedLabels.map(label => ({ name: label.name, kind: label.kind, x: label.x, z: label.z })); },
+    /** The resident labels inside the discovery radius — what the journal actually reads. */
+    get discoverablePlaces() { return gatherDiscoveryCandidates(player.position).map(label => ({ name: label.name, kind: label.kind, x: label.x, z: label.z })); },
     // The collision vocabulary the label ray is filtered by. An audit that wants to
     // reproduce the label query must ask for the *same* mask rather than hard-coding
     // a bit, so the mask is part of the runtime's public surface.
@@ -424,7 +530,7 @@ export function mountGeoGame(container, {
       exitButton.removeEventListener('click', exit);
       touchControls.dispose();
       longTaskObserver?.disconnect();
-      debugOverlay?.dispose(); player.dispose(); world.dispose(); lightRig.dispose(); engine.dispose();
+      debugOverlay?.dispose(); player.dispose(); world.dispose(); lightRig.dispose(); sky.dispose(); engine.dispose();
     },
   };
 }

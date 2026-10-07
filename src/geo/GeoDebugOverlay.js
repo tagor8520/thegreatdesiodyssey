@@ -55,12 +55,24 @@ function snapshotText(snapshot, metrics, report, extras = null) {
     `plant wind ${summary.plantRender?.wind?.namespace ?? 'none'} strength:${(summary.plantRender?.wind?.strength ?? 0).toFixed(2)} gust:${(summary.plantRender?.wind?.gustiness ?? 0).toFixed(2)} reduced:${summary.plantRender?.reducedMotion ?? false} uniform/frame:${metrics.plantWindUniformWritesPerFrame} CPU-matrices:${metrics.plantWindCpuMatrixUpdatesPerFrame} alloc:${metrics.plantWindSteadyFrameAllocations}`,
     `query collision:${metrics.maxCollisionCandidates} support:${metrics.maxSupportCandidates} dynamic:${metrics.dynamicProxies}${breaches ? ` · FAIL ${breaches}` : ''}`,
     `ambience profile:${summary.ambience?.profile ?? 'none'} active:${summary.ambience?.active ?? 0}/${summary.ambience?.capacity ?? 0} visible:${metrics.ambientVisible} ceil:${summary.ambience?.visibleCeiling ?? 0} per-frame:${summary.ambience?.perFrame ?? 0} culls d:${summary.ambience?.distanceCulls ?? 0} s:${summary.ambience?.screenCulls ?? 0} a:${summary.ambience?.activityCulls ?? 0} poses:${summary.ambience?.poseUpdates ?? 0} activity:${(summary.ambience?.activity ?? 1).toFixed(2)}${summary.ambience?.rejected ? ` · rejected:${summary.ambience.rejected} (${summary.ambience.lastRejection?.reason})` : ''}`,
+    // `GME-06`: the journal's bound is the thing to read off a devtools panel — how many
+    // places are held against the capacity, and the newest one, so a reader can tell a
+    // working journal from one that has stopped being fed.
+    extras?.discoveries
+      ? `places ${extras.discoveries.size}/${extras.discoveries.capacity} · discovered ${extras.discoveries.discoveries} · declined ${extras.discoveries.declined} · evicted ${extras.discoveries.evicted}${extras.discoveries.lastDiscovery ? ` · last ${extras.discoveries.lastDiscovery.name}` : ''}`
+      : null,
     extras?.labels
       ? `labels los:${extras.labels.profile} ${extras.labels.testsPerSecond}/s max:${extras.labels.simultaneousLabels} tests:${extras.labels.tests} hidden:${extras.labels.hidden} now:${extras.labels.blockedNow} age:${Math.round(extras.labels.updateAgeMilliseconds)}ms` +
         (extras.labels.lastBlocker
           ? ` blocker:${extras.labels.lastBlocker.key}@${extras.labels.lastBlocker.blocker} t=${extras.labels.lastBlocker.time.toFixed(3)} ray(${extras.labels.lastBlocker.ray.from.x.toFixed(1)},${extras.labels.lastBlocker.ray.from.y.toFixed(1)},${extras.labels.lastBlocker.ray.from.z.toFixed(1)})→(${extras.labels.lastBlocker.ray.to.x.toFixed(1)},${extras.labels.lastBlocker.ray.to.y.toFixed(1)},${extras.labels.lastBlocker.ray.to.z.toFixed(1)})`
           : ' blocker:none')
       : 'labels los: unavailable',
+    // `ENV-02`: the clock, the phase, the sun, the star term and the uniform-write
+    // counter against its ceiling. The line exists because "bounded updates" and
+    // "readable night" are both claims a reviewer has to be able to check on screen.
+    extras?.timeOfDay
+      ? `time ${extras.timeOfDay.clock} UTC · phase ${extras.timeOfDay.phase} · sun ${extras.timeOfDay.sunElevation.toFixed(1)}° · light ${extras.timeOfDay.lightIntensity.toFixed(2)} · stars ${extras.timeOfDay.starVisibility.toFixed(2)} · exposure ${extras.timeOfDay.exposure.toFixed(2)} · writes ${extras.timeOfDay.writes} · ceil ${extras.timeOfDay.uniformHz}Hz`
+      : 'time unavailable',
   ].join('\n');
 }
 

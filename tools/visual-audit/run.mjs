@@ -24,6 +24,8 @@ import * as actionSurfaces from './scenarios/action-surfaces.mjs';
 import * as contentSchema from './scenarios/content-schema.mjs';
 import * as labelLos from './scenarios/label-los.mjs';
 import * as ambientLife from './scenarios/ambient-life.mjs';
+import * as timeOfDay from './scenarios/time-of-day.mjs';
+import * as discoveryJournal from './scenarios/discovery-journal.mjs';
 
 const SCENARIOS = new Map([
   ['curated-camera', {
@@ -91,6 +93,19 @@ const SCENARIOS = new Map([
     // No `prepares`: the scenario opens coordinates itself and installs its probe after
     // the runtime is mounted, because it reads the renderer's own instance buffers.
     summary: 'LIF-02 ambient-life budget: the scheduler draws no more agents than the profile ceiling and poses no more per frame than its budget, the renderer\'s own instance buffers confirm only that set moves while culled agents are collapsed, and the activity budget winds ambience down and back up on a live request.',
+  }],
+  ['time-of-day', {
+    module: timeOfDay,
+    fixture: 'dense-urban',
+    summary: 'ENV-02 time-of-day: bounded uniform updates (a frozen clock writes nothing, a moving one stays inside the profile ceiling), readable night measured from the rendered frame rather than from the model, the state object graph and uniform bindings unchanged across frames, the light rig read back on the state direction, and the same questions answered by the curated runtime.',
+  }],
+  ['discovery-journal', {
+    module: discoveryJournal,
+    fixture: 'dense-urban',
+    // No `prepares`: the scenario opens coordinates itself at four coordinate origins,
+    // because the corpus it measures the bound over is gathered from the world's own
+    // resident tiles rather than from a single prepared session.
+    summary: 'GME-06 discovery journal: the runtime discovers a real resident place on its own frame loop, the same place yields the same id across a reload, ids recomputed in-page from the runtime\'s own module match the ones held, and the journal\'s state stays bounded (bytes fixed, capacity never exceeded, books balanced) over the real label corpus in both runtimes.',
   }],
   ['coordinate-camera', {
     module: coordinateCamera,
@@ -247,6 +262,19 @@ async function main() {
       console.log(`  culls             distance ${summary.culls.distance} · screen ${summary.culls.screen} · activity ${summary.culls.activity} · activity 0 → drawn ${summary.activity.off.drawn} (${summary.activity.off.collapsed} collapsed), restored → ${summary.activity.on.drawn}`);
       console.log(`  ambience surface  ${summary.panelLine ?? 'no ambience line'}`);
     }
+    if ('discoveryFailures' in summary && summary.summary) {
+      console.log(`  discoverable      ${summary.summary.residentPlaces ?? 0} resident place(s) inside the unlock radius where the player stands`);
+      console.log(`  place ids         ${summary.summary ? `${summary.summary.bounded.ids.length} real place(s), ${new Set(summary.summary.bounded.ids).size} distinct id(s) · first ${summary.summary.firstSession?.id ?? 'none'} · across sessions ${summary.summary.secondSession?.id && summary.summary.secondSession.id === summary.summary.firstSession?.id ? 'matched' : 'NO'}` : 'n/a'}`);
+      console.log(`  journal bound     ${summary.summary ? `${summary.summary.bounded.journey.size}/${summary.summary.bounded.journey.capacity} held after ${summary.summary.bounded.offered} offer(s), bytes ${summary.summary.bounded.bytes[0]} → ${summary.summary.bounded.bytes[summary.summary.bounded.bytes.length - 1]} · capacity-${summary.summary.bounded.capacity} trial filled ${summary.summary.bounded.peak}` : 'n/a'}`);
+      console.log(`  discovery line    ${summary.summary?.panelLine ?? 'none'}`);
+    }
+    if ('timeOfDayFailures' in summary) {
+      console.log(`  clock             noon ${summary.coordinate.noon.clock} ${summary.coordinate.noon.phase} ${summary.coordinate.noon.sun.toFixed(1)}° → night ${summary.coordinate.night.clock} ${summary.coordinate.night.phase} ${summary.coordinate.night.sun.toFixed(1)}° stars ${summary.coordinate.night.stars.toFixed(2)}`);
+      console.log(`  pixels            noon luma ${summary.pixels.noon.meanLuma.toFixed(3)} visible ${(summary.pixels.noon.visibleFraction * 100).toFixed(1)}% · night luma ${summary.pixels.night.meanLuma.toFixed(3)} visible ${(summary.pixels.night.visibleFraction * 100).toFixed(1)}% · curated day→night luma ${summary.pixels.curatedNoon.meanLuma.toFixed(3)}→${summary.pixels.curatedNight.meanLuma.toFixed(3)} visible ${(summary.pixels.curatedNoon.visibleFraction * 100).toFixed(1)}%→${(summary.pixels.curatedNight.visibleFraction * 100).toFixed(1)}%`);
+      console.log(`  uniform writes    frozen ${summary.writes.frozen.writes} over ${summary.writes.frozen.frames} frames · moving ${summary.writes.moving.total} in ${summary.writes.moving.elapsedSeconds.toFixed(1)}s, ceiling ${summary.writes.moving.ceiling}/s, per second [${summary.writes.moving.perSecond.join(', ')}]`);
+      console.log(`  state identity    state ${summary.identity.sameState} · nested ${summary.identity.sameNested} · uniforms bound ${summary.identity.uniformBound}`);
+      console.log(`  time-of-day line  ${summary.panelLine ?? 'none'}`);
+    }
     if ('stabilitySamples' in summary) {
       console.log(`  stable renders    ${summary.stabilitySamples - summary.orderInstabilitySamples}/${summary.stabilitySamples}`);
       console.log(`  alpha foliage     ${summary.alphaBlendedFoliage.length}`);
@@ -303,6 +331,20 @@ async function main() {
     if (summary.ambientFailures?.length) {
       console.error('\n[audit] FAIL: the ambient-life budget does not hold.');
       for (const failure of summary.ambientFailures) console.error(`  ${failure}`);
+      process.exitCode = 1;
+    }
+    // Time of day is a hard assertion: an unbounded uniform write rate, a night that is
+    // not dark, or a night that is unreadable are defects, not measurements to interpret.
+    // The discovery journal's two clauses are hard assertions: an id that changes between
+    // sessions, or state that grows with the journey, are defects rather than measurements.
+    if (summary.discoveryFailures?.length) {
+      console.error('\n[audit] FAIL: the discovery journal contract does not hold.');
+      for (const failure of summary.discoveryFailures) console.error(`  ${failure}`);
+      process.exitCode = 1;
+    }
+    if (summary.timeOfDayFailures?.length) {
+      console.error('\n[audit] FAIL: the time-of-day contract does not hold.');
+      for (const failure of summary.timeOfDayFailures) console.error(`  ${failure}`);
       process.exitCode = 1;
     }
     if (summary.metricValidated === false) {

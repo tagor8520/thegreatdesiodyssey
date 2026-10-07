@@ -19,13 +19,41 @@ export const GDO_PALETTE = Object.freeze({
   terracotta: '#c56545',
 });
 
-export function createProceduralSky(scene) {
-  const geometry = new THREE.SphereGeometry(900, 20, 10);
+/**
+ * The shared sky dome.
+ *
+ * `ENV-02` turned this from a fixed shader into a **uniform-driven** one: every colour,
+ * the sun and moon directions, star visibility and cloud cover are uniforms, and their
+ * defaults reproduce the previous fixed look exactly, so a scene that never touches
+ * them renders the same frame it did before. `bindTimeOfDayUniforms` points them at a
+ * `TimeOfDay` state so a state change is a uniform write rather than a rebuild.
+ *
+ * Stars and the moon are drawn in the same fragment pass — a hashed direction field and
+ * a disc term — so night costs **no extra draw call and no texture**, per §9.1's warning
+ * that a multi-sample atmosphere is not appropriate for the low-end default.
+ */
+export function createProceduralSky(scene, {
+  radius = 900,
+  clouds = true,
+} = {}) {
+  const geometry = new THREE.SphereGeometry(radius, 20, 10);
+  const uniforms = {
+    uHorizon: { value: new THREE.Color(0.22, 0.42, 0.52) },
+    uMiddle: { value: new THREE.Color(0.12, 0.34, 0.58) },
+    uZenith: { value: new THREE.Color(0.03, 0.18, 0.42) },
+    uSunColor: { value: new THREE.Color(1.0, 0.94, 0.83) },
+    uSunDirection: { value: new THREE.Vector3(-0.48, 0.78, 0.30).normalize() },
+    uMoonDirection: { value: new THREE.Vector3(0.48, 0.30, -0.30).normalize() },
+    uStarVisibility: { value: 0 },
+    uMoonVisibility: { value: 0 },
+    uCloudCover: { value: clouds ? 0.38 : 0 },
+  };
   const material = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
     depthTest: false,
     fog: false,
+    uniforms,
     vertexShader: `
       varying vec3 vSkyDirection;
       void main() {
@@ -35,24 +63,61 @@ export function createProceduralSky(scene) {
       }
     `,
     fragmentShader: `
+      uniform vec3 uHorizon;
+      uniform vec3 uMiddle;
+      uniform vec3 uZenith;
+      uniform vec3 uSunColor;
+      uniform vec3 uSunDirection;
+      uniform vec3 uMoonDirection;
+      uniform float uStarVisibility;
+      uniform float uMoonVisibility;
+      uniform float uCloudCover;
       varying vec3 vSkyDirection;
+
+      // A cheap direction hash for the star field: no texture, no draw call, and it is
+      // evaluated only where stars are visible at all.
+      float gdoStarHash(vec3 cell) {
+        vec3 mixed = fract(cell * 0.1031);
+        mixed += dot(mixed, mixed.yzx + 33.33);
+        return fract((mixed.x + mixed.y) * mixed.z);
+      }
+
       void main() {
         vec3 direction = normalize(vSkyDirection);
         float height = clamp(direction.y * 0.72 + 0.30, 0.0, 1.0);
-        vec3 horizon = vec3(0.22, 0.42, 0.52);
-        vec3 middle = vec3(0.12, 0.34, 0.58);
-        vec3 zenith = vec3(0.03, 0.18, 0.42);
-        vec3 sky = mix(horizon, middle, smoothstep(0.0, 0.48, height));
-        sky = mix(sky, zenith, smoothstep(0.48, 1.0, height));
-        vec3 sunDirection = normalize(vec3(-0.48, 0.78, 0.30));
-        float glow = pow(max(dot(direction, sunDirection), 0.0), 24.0);
-        float disc = pow(max(dot(direction, sunDirection), 0.0), 640.0);
-        sky += vec3(1.0, 0.58, 0.24) * glow * 0.22 + vec3(1.0, 0.88, 0.58) * disc * 1.3;
+        vec3 sky = mix(uHorizon, uMiddle, smoothstep(0.0, 0.48, height));
+        sky = mix(sky, uZenith, smoothstep(0.48, 1.0, height));
+        float sunAlign = max(dot(direction, uSunDirection), 0.0);
+        float glow = pow(sunAlign, 24.0);
+        float disc = pow(sunAlign, 640.0);
+        sky += uSunColor * glow * 0.22 + uSunColor * disc * 1.3 * step(0.001, uSunDirection.y);
+
+        // Stars: quantised direction cells with one point each, faded in by the state
+        // and only above the horizon. \`step\` guards keep this free when it is daytime.
+        if (uStarVisibility > 0.001) {
+          vec3 cell = floor(direction * 190.0);
+          float seed = gdoStarHash(cell);
+          vec3 local = fract(direction * 190.0) - 0.5;
+          float point = 1.0 - smoothstep(0.04, 0.30, length(local));
+          float twinkle = 0.65 + 0.35 * gdoStarHash(cell + 7.0);
+          sky += vec3(0.90, 0.93, 1.00) * step(0.9972, seed) * point * twinkle *
+            uStarVisibility * smoothstep(0.02, 0.16, direction.y);
+        }
+
+        // Moon: a disc plus a small halo, at the state's moon direction.
+        if (uMoonVisibility > 0.001) {
+          float moonAlign = max(dot(direction, uMoonDirection), 0.0);
+          float moonDisc = smoothstep(0.99955, 0.99975, moonAlign);
+          float moonHalo = pow(moonAlign, 220.0) * 0.10;
+          sky += vec3(0.86, 0.89, 0.96) * (moonDisc * 0.85 + moonHalo) * uMoonVisibility *
+            smoothstep(0.0, 0.10, direction.y);
+        }
+
         vec2 cloudCell = floor(direction.xz / max(0.16, direction.y + 0.32) * 13.0);
         float cloudNoise = fract(sin(dot(cloudCell, vec2(41.7, 289.1))) * 43758.5453);
         float cloudBand = smoothstep(0.08, 0.24, direction.y) * (1.0 - smoothstep(0.62, 0.84, direction.y));
-        float blockCloud = step(0.62, cloudNoise) * cloudBand * 0.58;
-        sky = mix(sky, vec3(0.82, 0.86, 0.84), blockCloud);
+        float blockCloud = step(1.0 - uCloudCover, cloudNoise) * cloudBand * 0.58;
+        sky = mix(sky, mix(vec3(0.82, 0.86, 0.84), uHorizon * 1.35 + 0.06, 0.55), blockCloud);
         gl_FragColor = vec4(sky, 1.0);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
@@ -66,6 +131,8 @@ export function createProceduralSky(scene) {
   scene.add(mesh);
   return {
     mesh,
+    uniforms,
+    material,
     dispose() {
       mesh.removeFromParent();
       geometry.dispose();

@@ -19,6 +19,13 @@ export const GDO_FEATURE_VERSIONS = Object.freeze({
   // `CNT-01` (2026-10-05): the versioned state-content schema exists, so this is no
   // longer a researched contract. `saveSchema` stays 0 — that is `NET-01`'s.
   contentSchema: 1,
+  // `ENV-02` (2026-10-07): the time-of-day state is a shipped contract — phases, the
+  // elevation-keyed stops, the per-profile uniform-write ceiling and the readable-night
+  // floor — and both runtimes sample it.
+  timeOfDay: 1,
+  // `GME-06` (2026-10-07): the discovery journal's place ids are a shipped contract too.
+  // Persisting them is `NET-01`'s, which is why `saveSchema` below is still 0.
+  discoveryJournal: 1,
   saveSchema: 0,
 });
 

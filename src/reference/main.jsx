@@ -3,12 +3,14 @@ import { createRoot } from 'react-dom/client';
 import * as THREE from 'three';
 import { createProceduralEngine } from '../engine/ProceduralEngine.js';
 import { GameUI, ITEMS, createUIStore } from './GameUI.jsx';
-import { BiomeManager } from './BiomeManager.js';
+import { BiomeManager, LANDMARKS } from './BiomeManager.js';
 import { Environment } from './Environment.js';
 import { Player } from './Player.js';
 import { BridgeManager } from './BridgeManager.js';
 import { createCuratedDomain } from './CuratedDomain.js';
 import { mountTouchControls } from '../engine/TouchControls.js';
+import { TimeOfDay } from '../engine/TimeOfDay.js';
+import { DiscoveryJournal } from '../engine/DiscoveryJournal.js';
 import '../engine/touch-controls.css';
 import { HoardingManager } from './HoardingManager.js';
 import { ItemManager } from './ItemManager.js';
@@ -93,10 +95,34 @@ export function mountReferenceGame(container, {
 
   const hoardings = new HoardingManager(scene, { textureScale: profile.signTextureScale });
   bridges.cameraBlockers.push(...hoardings.cameraBlockers);
+  // `ENV-02`: the curated world is stylised and not coordinate-driven, so it uses a
+  // fixed reference point rather than pretending to a real ephemeris. What the two modes
+  // share is the *state contract* — the same colours, the same phase names, the same
+  // bounded write rule — not the same sky.
+  // `GME-06`: the curated world's named places. Derived from the landmark vocabulary the
+  // scene is built from (`BiomeManager.LANDMARKS`) rather than invented here, so a rename in
+  // the world builder cannot leave the journal naming a place that no longer exists.
+  const discoveryJournal = new DiscoveryJournal();
+  const curatedPlaces = Object.entries(LANDMARKS).map(([name, [x, z]]) => ({
+    name: name.charAt(0).toUpperCase() + name.slice(1),
+    kind: 'landmark',
+    x,
+    z,
+    radius: 12,
+  }));
+  const timeOfDay = new TimeOfDay({
+    profile: profile.name === 'high' ? 'high' : profile.name === 'balanced' ? 'balanced' : 'low',
+    latitude: 20.5,
+    longitude: 78.9,
+    dayOfYear: 172,
+    timeScale: 0,
+  });
   let environment = new Environment({
     scene,
     renderer,
     camera,
+    timeOfDay,
+    environmentScale: 1,
     ambientOcclusion: profile.ambientOcclusion,
     environmentMap: profile.environmentMap,
     shadows: profile.shadows,
@@ -195,7 +221,12 @@ export function mountReferenceGame(container, {
     }
     const overviewFocus = profile.overviewGlobal ? mapFocus : player.position;
     biomes.update(!startedPlaying || player.mapMode ? overviewFocus : player.position, seconds);
-    environment.update(seconds);
+    // `GME-06`: the curated world's named places are the two landmarks the scene is built
+    // around, so the journal here records the same kind of event as the coordinate runtime
+    // records from streamed map labels — the player walked into a named place. The list is
+    // fixed and tiny, so there is nothing to stream and nothing to allocate per frame.
+    discoveryJournal.update(player.position, curatedPlaces, { now });
+    environment.update(seconds, now);
     renderer.info.reset();
     environment.render(delta);
     frames++;
@@ -243,6 +274,25 @@ export function mountReferenceGame(container, {
 
   return {
     scene, camera, biomes, store, player, bridges, items, hoardings, sound, profile, domain, touch,
+    // `GME-06`: the same journal surface the coordinate runtime exposes. The gate drives it
+    // through the runtime's own object rather than a copy of it.
+    get discoveryJournal() { return discoveryJournal; },
+    get discoveries() { return discoveryJournal.diagnostics(); },
+    get visiblePlaces() { return curatedPlaces.map(entry => ({ ...entry })); },
+    // `ENV-02`: the same diagnostics surface the coordinate runtime exposes, so a gate can
+    // ask both runtimes the same question.
+    get timeOfDay() { return timeOfDay; },
+    // The environment is exposed so the audit can see how many environment maps were
+    // built — the bounded-work half of the `ENV-02` claim on this runtime.
+    get environment() { return environment; },
+    get timeOfDayDiagnostics() { return environment.timeOfDayDiagnostics; },
+    /** Set the clock in minutes and apply immediately, bypassing the rate ceiling. */
+    setClockMinutes(minutes) {
+      timeOfDay.setClock(minutes);
+      timeOfDay.sample();
+      environment.applyTimeOfDay({ regenerateEnvironment: true });
+      return environment.timeOfDayDiagnostics;
+    },
     dispose() {
       if (disposed) return; disposed = true;
       cancelAnimationFrame(animationFrame); observer.disconnect(); unsubscribePing?.();

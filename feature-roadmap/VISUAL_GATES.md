@@ -665,6 +665,112 @@ It also exercises the two paths that only exist in the browser: a v0 pack fetche
 
 ---
 
+#### A4i. `ENV-02` — Time-of-day light/sky state *(coordinate, with the curated runtime beside it)*
+
+| | |
+|---|---|
+| **Roadmap** | Order 111, P1, **`ADDED` — closed 2026-10-07** (was `QUEUED`), depends on `MAT-04`, `QLT-05` (both `ADDED`) |
+| **Gate** | Bounded uniform updates, readable night, no per-frame allocation |
+| **Scenario** | `npm run visual:audit -- time-of-day --url http://localhost:5173/` |
+| **Node tier** | `src/engine/TimeOfDay.test.js` (8 tests, part of `npm run check`, now **254 tests**) |
+
+**★ CLOSED 2026-10-07 — status `ADDED`.** Each of the gate's three clauses is a claim that can be false while a screenshot looks fine, so each is measured on its own.
+
+**What ships — `src/engine/TimeOfDay.js`.** One solar model (`declination = 23.44·sin(2π(day−81)/365)`, hour angle from the clock minutes and the longitude) drives the phase, the palette, the light rig, the exposure and the ambient budget. **The phase is a band of solar elevation**, so a phase that contradicts the sun is not a state the system can reach; the Node gate checks every minute of a full day (1440 samples), not four. Elevation stops: `−18 night`, `−8 blue-hour`, `−1.5 sunset`, `1.5 low-sun`, `22 golden`, `42 day`, and the `day` stop reproduces the shipped shader's colours, so the default frame is the frame the project already had. The default *clock* is solar noon at the world's own longitude (06:49 UTC at 77.7°E, 84.5° elevation) rather than a fixed UTC hour, because a runtime that starts at local noon everywhere is the only default that needs no per-coordinate tuning. `sunrise` was renamed **`low-sun`**: the same low elevation happens at dawn and dusk, so a phase name that asserted a time of day would be wrong half the time it was used.
+
+**The budget is a property of the binding, not a policy someone has to keep.** `bindTimeOfDayUniforms()` points the sky's uniforms **at the state's own `THREE.Color`/`Vector3` instances**, so applying a state is `markApplied()` and copies nothing; `update(delta, nowMs)` returns whether a write is *earned* (per-profile ceiling — low `10 Hz`, balanced `15`, high `30` — plus "on change" with an epsilon on the phase, elevation, every colour, the exposure and the star term, plus a stall coalescer). Night costs **no extra draw call and no texture**: stars are a hashed direction field and the moon a disc plus halo in the same fragment pass.
+
+| Node check | Result |
+|---|---|
+| solar geography | pass: the sun is up in local day, down in local night, and the equinoctial noon elevation at the equator is 90° |
+| **the phase cannot contradict the sun, at any minute** | pass: 1440 samples, every phase id consistent with its elevation band |
+| **night stays readable, measured rather than asserted** | pass: `groundLuminance ≥ GDO_NIGHT_LUMINANCE_FLOOR` (0.030) across the whole cycle, with a monotonic dusk fade |
+| **uniform writes are bounded, and a still clock writes nothing** | pass: per-second counts against the profile ceiling, a 60 s stall coalesced, a frozen clock at zero |
+| **a steady applied frame allocates nothing at all** | pass: 2000-frame **structural identity** of the state graph (state plus 12 nested instances) and 5 × 20 000-frame windows against a **retained-state positive control** (control > 20 B/frame required, steady < control/4) |
+| uniform binding is by reference | pass: the uniform's value *is* the state's instance, so applying a state cannot allocate |
+| the shipped daylight look is preserved | pass: the `day` stop's colours equal the shipped shader's |
+| lifecycle reset | pass: counters and state cleared together |
+
+**Browser tier — `npm run visual:audit -- time-of-day`, exit 0 (2026-10-07).** This is the tier that found the fourth defect, and the one that makes "readable night" a *pixel* claim rather than a model claim: the scenario renders and reads the WebGL buffer, so a night that only *says* it is readable fails.
+
+| Check | Result |
+|---|---|
+| bounded writes, live | pass: a frozen clock wrote **0** uniforms over 60 frames; a 600 min/s clock wrote **13** in 5.1 s inside the 10/s ceiling (per second `[2, 3, 3, 4]`); the renderer runs at ≈3 fps on SwiftShader, so the ceiling is *also* driven synthetically through the same instance at 60 fps — **30 writes over 3 s against 10/s**, exactly the ceiling |
+| no per-frame allocation, live | pass: state, 6 nested objects and the uniform binding are the same instances after 100 frames |
+| **readable night, from the pixels** | pass: noon luma `0.657`, visible `100%` → night luma `0.097`, visible `66.3%`, max luma `0.52`, red/blue `0.82`; night must be darker than day, keep ≥ 40% of the day's legible coverage and stay above an absolute floor |
+| the light rig follows the state | pass: the scene's directional light is read back on the state's own direction, alignment `1.0000` |
+| the review surface | pass: `time 18:00 UTC · phase night · sun −36.3° · light 0.30 · stars 1.00 · exposure 1.28 · writes 42 · ceil 10Hz` |
+| the curated runtime | pass: reaches night (sun −44.7°, stars 1.00) and its environment map is rebuilt **0 times** during capture — once per *phase*, not per frame |
+| `AGENTS.md` item 6 | pass: the night state winds the ambient budget down through `world.setAmbientActivity` (1 → 0.35) — a budget change, not a second animation path |
+
+**Five negative controls, each measured (all exit 1).**
+
+| Break | Observed failure |
+|---|---|
+| the uniform rate ceiling removed | `180 writes over 180 frames (60.0/s against 10/s)` |
+| change detection removed | `a frozen clock wrote 11 uniforms over 60 frames; "on change" means zero` — and the first run of this control **passed**, because the failure was collected into an array no verdict read |
+| the night loses its moon and most of its ambient term | `night keeps only 20.5% legible coverage against the day's 100.0%` — the first thresholds passed this, which is why readability is now relative |
+| the uniforms bound by value instead of by reference | `uniforms bound by reference false` |
+| the review-surface marker renamed (`clock …`) | `the review panel has no \`time\` line` |
+
+**Recorded gaps, stated rather than implied.** (1) The synthetic 60 fps drive is what reaches the ceiling: the SwiftShader renderer runs at ≈3 fps, so the live loop is bounded by its frame rate first — the live half therefore proves the *frozen* half (zero writes) and the synthetic half proves the ceiling, and the gate says so in its own log rather than implying the live loop reached 10 Hz. (2) Cloud cover is a uniform but has no visual assertion; the shipped shader's banded coverage is preserved at the `day` stop, and a cloud-coverage gate belongs with `ENV-04`'s weather rather than here.
+
+---
+
+#### A4j. `GME-06` — Discovery journal *(coordinate, with the curated runtime beside it)*
+
+| | |
+|---|---|
+| **Roadmap** | Order 135, P1, **`ADDED` — closed 2026-10-07** (was `QUEUED`), depends on `GME-04`, `GME-05`, `FND-06` (all `ADDED`) |
+| **Gate** | Deterministic place IDs and bounded local state |
+| **Scenario** | `npm run visual:audit -- discovery-journal --url http://localhost:5173/` |
+| **Node tier** | `src/engine/DiscoveryJournal.test.js` (8 tests, part of `npm run check`, now **254 tests**) |
+
+**★ CLOSED 2026-10-07 — status `ADDED`.** The two clauses are properties, and the two tiers are not equally strong on each — the record says which is which rather than implying both are proven everywhere.
+
+**What ships — `src/engine/DiscoveryJournal.js`.** A place's id is a pure function of its **name, kind and a 100-unit cell**, never of insertion order, tile iteration or walk order, so the same street yields the same id in a second session, after a tile rebuild, and in a save file that `NET-01` has not written yet. Names are case- and whitespace-folded because providers disagree about both for the same street. The state is **preallocated**: fixed arrays plus `Map` indices sized to `capacity` (128), so a player who crosses the whole map holds what a player who crosses two tiles holds, and `update()` is bounded by the candidate list the runtime supplies — the labels it is already showing — rather than by the size of the world.
+
+| Node check | Result |
+|---|---|
+| the id is a pure function of the place | pass: stable across calls, folded case/whitespace, kind and cell participate, survives `JSON` round trip, shape `kind:slug:hash8` |
+| **a rebuilt anchor is the same place, recorded once** | pass — this is the defect the first version had: a 0.5-unit quantum changed the id under a 0.2-unit shift (rounding flips at every edge), so a rebuilt tile would have logged a second discovery |
+| two sessions, either walk order, same journal | pass: identical ids, names, kinds and anchors |
+| **capacity is a hard bound and the bytes never grow** | pass: 4000 discoveries into 16 slots, size `≤ capacity` after **every** offer, bytes unmoved, `discovered − evicted === size`, every candidate accounted for exactly once; with equal clocks the **same ids survive either arrival order** |
+| the radius, the kinds and the clock | pass: the boundary is inclusive, per-place radius overrides the kind default, the clock is monotonic, entries carry the reading they were found at |
+| a malformed place is refused without taking the journal down | pass: counted and reported, the pass continues |
+| work is bounded by the candidate list | pass: 5000 candidates land inside capacity with no reallocation, and a second identical pass is **quiet** (nothing rediscovered, nothing announced) |
+| lifecycle | pass: entries, counters and clock clear together, the storage does not move, and the journal still works afterwards |
+
+**Browser tier — `npm run visual:audit -- discovery-journal`, exit 0 (2026-10-07).** The wiring claim is measured first and deliberately **not** simulated: the scenario teleports the player onto a resident label and then only watches, so a runtime that does not feed the journal cannot pass.
+
+| Check | Result |
+|---|---|
+| **the runtime discovers on its own frame loop** | pass: standing on a real label (`Fixture Nagar`) produces a discovery with no probe driving it |
+| **the runtime offers the places the radius reaches** | pass: standing on a shown name, the runtime reports the resident labels inside the unlock radius (`discoverablePlaces`) — the surface the journal reads, which is deliberately **not** the 14 names the HUD chose to draw |
+| **determinism across sessions** | pass: the same place yields `place:fixture-nagar:50c11560` after a full reload |
+| the ids held are the ids the function computes | pass: the gate imports the runtime's own module **in-page** (the dev server's module graph is by URL, so it is the same source) and recomputes every held id; a second offer of the same place adds nothing |
+| bounded state over the real corpus | pass: 11 real places through the runtime's journal — bytes `6656 → 6656`, size `≤ capacity`, books balanced; a capacity-5 journal over the same 11 real places fills to exactly `5`, and two journals fed in opposite orders retain the **same ids** |
+| the review surface | pass: `places 1/128 · discovered 1 · declined 0 · evicted 0 · last Fixture Nagar` |
+| the curated runtime | pass: two named places (`Gateway`, `Chariot`), and walking into the Gateway records it as a landmark with a landmark id |
+
+**Five negative controls, each measured (all exit 1).**
+
+| Break | Observed failure |
+|---|---|
+| the id made a function of `Math.random()` | `the same place produced two ids across sessions` + `the journal holds ids the id function does not compute` |
+| the frame loop stops feeding the journal | `the journal does not hold the place the player walked into` |
+| eviction leaks its slot | `a journal of capacity 5 reached size 8` |
+| displacement made unconditional again | `two journals over the same places in opposite orders retained different ids` |
+| the review-surface marker renamed (`sites …`) | `the review panel has no \`places\` line` |
+
+**A defect the regression sweep found, and what it changed.** The scenario passed on its own twice and then failed inside a full sweep: *a reloaded session did not record the same place*. The cause was not in the journal but in the wiring — the journal was fed the **labels the HUD was displaying**, and the label layer shows at most 14 names chosen by static map priority, so a place could be undiscoverable whenever fourteen higher-priority names were on screen, and *which* fourteen depended on streaming timing. The fix is the one the research actually describes (*"enter a … radius to unlock it"*): the runtime now gathers the **resident** labels inside `GEO_DISCOVERY_MAX_RADIUS` (`world.tiles` → `tile.labels`, a reused array, one distance test per resident label four times a second) and the journal applies its per-kind radius to those. Discovery is a radius test, not a HUD test. This is worth recording as the reason the sweep exists: a gate that passes twice in isolation and fails in the suite was measuring streaming timing rather than the contract. It is also why the run summary now prints the first session's id and `matched`/`NO` for the second rather than reporting success whenever the first half had succeeded.
+
+**A control that passed, and why that is in the record.** The first control written for the order-dependence defect flipped the **id tie-break direction** and the gate still exited 0 — because the direction is not what makes the retained set canonical; the *decline* rule is. The gate's assertion was therefore already sound and the control was wrong, which is worth recording: a control that passes is evidence about the control, and the gate's own claim was re-derived from it rather than trusted.
+
+**Recorded gaps, stated rather than implied.** (0) The controls were run against this gate's final code paths: the capacity, order-dependence and wiring controls were re-run after the resident-radius change, and the randomised-id and panel-marker controls were run against code paths that change did not touch. (1) The capacity half is only partly exercised in the browser: the fixture world exposes 11 named places, so the shipped capacity of 128 is never reached there and the capacity-5 trial over those 11 real places is what the browser proves. Filling 128 slots and the 5000-offer eviction behaviour are the Node tier's. (2) Nothing persists: `saveSchema` stays `0` because writing the journal to storage is `NET-01`, and a second storage format here would be the duplication the roadmap keeps splitting apart. (3) The journal records *places*, not visits — a street walked five times is one discovery — and the record should not be read as a visit log.
+
+---
+
 #### A5. `QLT-06` — TPP/FPP visual audit capture matrix *(the umbrella)*
 
 | | |
@@ -725,7 +831,7 @@ These will need a moving audit when built. Listed so the harness is designed to 
 | `DET-08` | Bridge grammar and compounds | Traversable deck/rails/openings agree with visuals |
 | `DET-09` | Landmark grammar and openings | Repeated modules batched; arches never one enclosing AABB |
 | `DET-10` | Prop/food grammar and triggers | Interaction range separate from solid proxy |
-| `ENV-02` | Time-of-day light/sky state | Bounded uniform updates, readable night, no per-frame allocation |
+| ~~`ENV-02`~~ | ~~Time-of-day light/sky state~~ | **Delivered 2026-10-07** in its own slice (§4 A4i) — struck from this list on 2026-10-07, when the run that closed it noticed the row was still describing an unimplemented feature |
 | `ENV-03` | Water visual classes | Opaque/one-family low path and bounded blended higher path |
 | `ENV-04` | Weather state machine | Deterministic transitions, low-profile fallback |
 | `ENV-05` | Bounded weather/shore effects | Alpha-test/dither, strict screen/overdraw counts |
@@ -733,7 +839,7 @@ These will need a moving audit when built. Listed so the harness is designed to 
 | ~~`GME-04`~~ | ~~Place labels and coordinate HUD~~ | **Delivered 2026-10-05** in its own slice (§4 A4g) — struck from this list on 2026-10-06, when the `LIF-02` pass noticed the row was still describing a closed feature |
 | `PHY-03` | Pose-fall knockdown | Visual/state-machine baseline before rigid bodies |
 
-`ENV-02` through `ENV-05` are the largest coherent block and the biggest visible-quality gap in the project. All are `QUEUED`; none are started. The biome research's acceptance goal — *"a screenshot with UI hidden can distinguish at least six tested environmental combinations by palette and silhouette, not labels alone"* — is the target for that block.
+`ENV-02` through `ENV-05` are the largest coherent block and the biggest visible-quality gap in the project. **`ENV-02` is delivered (2026-10-07) and `ENV-04` is now dependency-complete**; `ENV-03`, `ENV-05` and `ENV-06` are `QUEUED` and not started, and `ENV-05` additionally waits on `ENV-03` and `MAT-03`. The biome research's acceptance goal — *"a screenshot with UI hidden can distinguish at least six tested environmental combinations by palette and silhouette, not labels alone"* — is the target for that block.
 
 ---
 
@@ -744,6 +850,8 @@ Dependency-correct order, split by whether a data prerequisite exists.
 ### Phase 1 — no data prerequisite (possible now)
 
 0. ~~**`COL-09`** — capped dynamic spatial hash.~~ **CLOSED 2026-10-05** (see §4 A4c). Not a pixel gate: the caps, the primitive restriction, the reinsert discipline and the merged query contract are asserted, and one live run proves the wiring and that a placed solid changes a sweep that was first shown to be clear. Its five dependents (`DET-07`, `PHY-01`, `PHY-02`, `LIF-02`, `NET-02`) are now dependency-complete. The hash ships empty; none of them has placed a proxy yet.
+0h. ~~**`GME-06`** — discovery journal, the largest remaining lever when it closed (5 in its closure, 2 direct).~~ **CLOSED 2026-10-07** (see §4 A4j). Not a pixel gate: determinism is measured across a reload and against the id function re-imported in-page, and boundedness is measured as bytes that do not move while the accounting identity holds. Five negative controls each exit 1, and the one control that *passed* is in the record because it corrected the gate's own explanation of why the property holds. The browser tier proves the determinism half end-to-end and the capacity half only as far as the fixture's 11 named places allow. Closing it made `NET-01` dependency-complete, which is the entry point of the gameplay-state chain (`NET-01` → `NET-02` → `NET-03` → `NET-04`).
+0g. ~~**`ENV-02`** — time-of-day light/sky state, the item `LIF-02` was built to feed.~~ **CLOSED 2026-10-07** (see §4 A4i). Three clauses, three measurements: a frozen clock writes nothing while a moving one stays inside the profile ceiling (driven synthetically at 60 fps because the SwiftShader renderer runs at ≈3 fps), night readability is read from the **rendered pixels** rather than from the model, and the state object graph and uniform bindings are the same instances across frames. Four defects came out of the tiers themselves — a shared scratch return, an allocating closure in the per-frame sampler, a `setClock()` that did not re-sample, and a review-panel throw on a diagnostics field that did not exist — which is the case for gates being executed rather than written. Five negative controls each exit 1, and two of them forced real changes to the gate's thresholds. Closing it made `ENV-04` dependency-complete.
 0f. ~~**`LIF-02`** — ambient-life scheduler and pools, which also closes **`LIF-01`**.~~ **CLOSED 2026-10-06** (see §4 A4h). Not a pixel gate, and deliberately not a counters gate either: the run reads the **renderer's own instance buffers** and counts how many instances actually moved in one pass, so the pre-`LIF-02` frame loop — reinstalled verbatim as the first negative control — fails at 58 moved against an allowance of 41. The gate found a real defect in the implementation it was written for: the first version bounded the per-frame *update rate* but not the number of agents *drawn*, so a resident set larger than the ceiling still drew every agent. Five negative controls (legacy walk, activity ignored, distance budget disabled, hide path disabled, panel marker renamed) each exit 1. Closing it made `LIF-03` dependency-complete; the `COL-09` hash still ships empty because ambient fauna do not collide.
 0e. ~~**`GME-04`** — place labels and coordinate HUD, which also satisfies **`LAY-05`**.~~ **CLOSED 2026-10-05** (see §4 A4g). A real pixel-adjacent gate this time: the run *finds* a standing position with a wall strictly between the eye and a name, and then requires the layer to hide that label (`dom.hidden` plus `data-los="blocked"`) within the 250 ms update interval while a clear-ray name stays visible. Ray discipline is checked by intercepting the live call — every label sweep must ask for `LOS_BLOCKER` and nothing else — and the research's own budget (`20/s × 5` at the low profile) is measured over a wall-clock window. Four negative controls (occlusion disabled, wrong mask, wrong profile, panel line removed) each exit 1. Closing it made `GME-06`, `GME-07` and `MAT-06` dependency-complete, so the largest remaining lever is now `GME-06` (5 in its closure, 2 direct), with `LIF-02` (4, 4) and `ENV-02` (4, 1) immediately behind it.
 0d. ~~**`CNT-01`** — versioned state-content schema.~~ **CLOSED 2026-10-05** (see §4 A4f). Not a pixel gate: the format is declared as a field table the validator walks, every error class is proven by a fixture that must produce it, legacy v0 migrates to a file deep-equal to the shipped v1 pack, and the browser tier proves the bytes served over HTTP are byte-identical (SHA-256) to the bytes validated on disk. Both shipped packs validate in both tiers. Recorded gap: no entry point mounts `StateManager`, so the validator ships zero bytes today — putting these packs on a live surface is `CNT-02`/`CNT-04`.
