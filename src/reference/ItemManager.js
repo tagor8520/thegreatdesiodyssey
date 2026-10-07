@@ -49,6 +49,11 @@ export class ItemManager {
     if (!(activeRadius > 0)) throw new RangeError('activeRadius must be positive');
     this.scene = scene; this.onCollect = onCollect; this.activeRadius = activeRadius;
     this.items = new Map(); this.score = 0; this.collected = 0; this.disposed = false;
+    // `NET-01`: the instance ids this session has picked up, in collection order. The id is
+    // already stable across sessions (`${definition.id}:${i}` over a seeded layout), so this
+    // list *is* the progress a save file stores, and restoring it removes exactly the items
+    // the player already took rather than respawning them.
+    this.collectedIds = [];
     const random = randomFor(91, 17, seed), positions = [];
     for (const definition of FOOD_ITEMS) for (let i = 0; i < perType; i++) {
       let position = null;
@@ -93,9 +98,53 @@ export class ItemManager {
       if (item.bounds.intersectsBox(playerBounds)) {
         this.items.delete(id); disposeGroup(item.mesh);
         this.score += item.definition.points; this.collected++;
+        if (!this.collectedIds.includes(id)) this.collectedIds.push(id);
         this.onCollect({ ...item.definition, instanceId: id, score: this.score, collected: this.collected, total: this.total });
       }
     }
   }
+  /**
+   * Remove items a previous session had already collected (`NET-01`).
+   *
+   * The layout is seeded, so instance `vada-pav:3` is the same vada pav in the same place in
+   * every session — restoring progress means removing exactly those instances and adding back
+   * the points they were worth, which is why the id, not the position, is what a save stores.
+   * An id the layout does not hold is reported rather than ignored: it means the save names
+   * something this build cannot place, and the caller has to decide what to say about it.
+   */
+  restore(instanceIds) {
+    const report = { restored: 0, missing: [] };
+    for (const id of Array.isArray(instanceIds) ? instanceIds : []) {
+      const item = this.items.get(id);
+      if (!item) { report.missing.push(id); continue; }
+      this.items.delete(id);
+      disposeGroup(item.mesh);
+      this.score += item.definition.points;
+      this.collected++;
+      this.collectedIds.push(id);
+      report.restored++;
+    }
+    return report;
+  }
+
+  /**
+   * The progress section's per-state records, keyed by the item's own biome.
+   *
+   * The biome is the content-pack vocabulary (`vada-pav` is a `maharashtra` item), so the key
+   * a save uses is the key the content pipeline already uses, rather than a second naming
+   * scheme invented by the save file.
+   */
+  progressByState(out = {}) {
+    for (const id of this.collectedIds) {
+      const definition = FOOD_ITEMS.find(item => id.startsWith(`${item.id}:`));
+      if (!definition) continue;
+      const record = out[definition.biome] ?? { collected: [], score: 0 };
+      record.collected.push(id);
+      record.score += definition.points;
+      out[definition.biome] = record;
+    }
+    return out;
+  }
+
   dispose() { if (this.disposed) return; this.disposed = true; this.items.forEach(item => disposeGroup(item.mesh)); this.items.clear(); }
 }

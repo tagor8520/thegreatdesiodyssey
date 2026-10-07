@@ -1,4 +1,8 @@
 import './reference/landing.css';
+// `NET-01`: the landing shell reads the same document the runtimes write. It is the one place a
+// player sees a save *before* any 3D code loads — the coordinate they last generated and the mode
+// they last played — which is why the read is synchronous and why the storage adapter has to be.
+import { SaveStore } from './engine/SaveState.js';
 
 const container = document.getElementById('reference-game');
 let game = null;
@@ -93,14 +97,53 @@ function wireLanding() {
   });
 }
 
+/**
+ * What the last session left behind, as plain values.
+ *
+ * Read once per landing render rather than held: the landing shell is re-rendered on every exit
+ * from the game, and a cached copy would describe the session *before* the one that just ended.
+ */
+function lastSession() {
+  try {
+    const store = new SaveStore();
+    if (!store.available) return null;
+    const report = store.read();
+    if (!report.loaded) return null;
+    const { lastMode, lastCoordinate } = store.save.progress;
+    if (!lastCoordinate) return { mode: lastMode, coordinate: null };
+    return { mode: lastMode, coordinate: lastCoordinate };
+  } catch {
+    // A landing page that cannot read a save is still a landing page: the resume line is a
+    // convenience, not a requirement for the shell to render.
+    return null;
+  }
+}
+
 function renderLanding(message = '') {
   if (!container) return;
   container.innerHTML = landingMarkup();
-  if (message) {
-    const note = container.querySelector('.odyssey-start-note');
-    if (note) note.textContent = message;
-  }
+  const note = container.querySelector('.odyssey-start-note');
+  if (message && note) note.textContent = message;
   wireLanding();
+
+  // `NET-01`: resume. The coordinate fields are filled from the save, and the note says which
+  // session this was — so a player who generated a place yesterday generates it again with one
+  // click, and a reviewer can see that the document reached the shell that has no 3D in it.
+  const previous = lastSession();
+  if (!previous) return;
+  if (previous.coordinate) {
+    const form = container.querySelector('.odyssey-coordinate-form');
+    if (form?.elements) {
+      form.elements.latitude.value = String(previous.coordinate.latitude);
+      form.elements.longitude.value = String(previous.coordinate.longitude);
+    }
+  }
+  if (note) {
+    const where = previous.coordinate
+      ? `${previous.coordinate.latitude}, ${previous.coordinate.longitude}`
+      : 'the curated adventure';
+    note.textContent = `Resume: last session at ${where}${previous.mode ? ` (${previous.mode})` : ''}.`;
+  }
 }
 
 async function loadMapProviders() {

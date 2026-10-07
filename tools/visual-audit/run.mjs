@@ -28,6 +28,7 @@ import * as timeOfDay from './scenarios/time-of-day.mjs';
 import * as discoveryJournal from './scenarios/discovery-journal.mjs';
 import * as landmarkOpenings from './scenarios/landmark-openings.mjs';
 import * as weatherState from './scenarios/weather-state.mjs';
+import * as localSave from './scenarios/local-save.mjs';
 
 const SCENARIOS = new Map([
   ['curated-camera', {
@@ -120,6 +121,13 @@ const SCENARIOS = new Map([
     // No `prepares`: the scenario drives both runtimes itself, because the gate covers the
     // weather state machine, its response on the live materials and the curated runtime.
     summary: 'ENV-04 weather states: the seeded schedule deterministic across sessions and matched against the module\'s own sampler, a frozen clock writing nothing while a moving one stays inside the profile ceiling, each of the eight states driven through the live runtime and read back from the dome, the water, the fog, the sun, the exposure and the pixels (with `clear` bit-identical to the hour), the habitat response riding the species shares rather than a second animation path, and the low-profile fallback proven by a response that is uniform-only.',
+  }],
+  ['local-save', {
+    module: localSave,
+    fixture: 'dense-urban',
+    // No `prepares`: the scenario drives both runtimes itself, across several page loads,
+    // because the gate is about what survives a *reload* rather than what one session does.
+    summary: 'NET-01 versioned local save: the runtime writes a document that is the bytes its own module encodes, a reload restores the journalled places and drives the muted/review-panel settings, a collected instance comes back as progress rather than respawning, the seed keeps the instance identity, a v0 document is migrated and written back while a future or corrupt one is refused with its bytes kept, and the write count tracks changes rather than frames.',
   }],
   ['coordinate-camera', {
     module: coordinateCamera,
@@ -323,6 +331,20 @@ async function main() {
       }
       console.log(`  weather line      ${summary.panelLine ?? 'none'}`);
     }
+    if ('saveFailures' in summary) {
+      const state = summary.summary ?? {};
+      console.log(`  document          ${state.wrote ? `${state.wrote.bytes} bytes, ${state.wrote.discoveries} place(s), ${state.wrote.writes} write(s) in the first session` : 'no first session'}`);
+      if (state.reloaded) console.log(`  reload            restored ${state.reloaded.restored} place(s) · ${state.reloaded.rediscovered ?? 0} rediscovered`);
+      if (state.curated) console.log(`  progress          ${state.curated.instance} +${state.curated.points} · restored ${state.curated.restored} · still placed ${state.curated.layout.includes(state.curated.instance)}`);
+      if (state.landing) console.log(`  landing resume    ${state.landing.note ?? 'none'}`);
+      if (state.live) console.log(`  live frame loop   ${state.live.windows} frames: ${state.live.cleanFrames} clean / ${state.live.dirtyFrames} dirty · ${state.live.cleanWrites} write(s) and ${state.live.cleanSkips} skip(s) on a clean frame · ${state.live.writes} write(s) for ${state.live.entries} new place(s)`);
+      if (state.budget) console.log(`  write budget      idle ${state.budget.idle.writes} write(s)/60 frames (${state.budget.idle.skips} skip(s)) · inside the interval ${state.budget.inside.coalesced - state.budget.floor.coalesced}/10 coalesced with ${state.budget.inside.writes - state.budget.floor.writes} write(s) · past it ${state.budget.after.writes} total, dirty ${state.budget.after.dirty}`);
+      if (state.ceiling) console.log(`  byte ceiling      ${state.ceiling.full} → ${state.ceiling.trimmed} bytes under a ${state.ceiling.ceiling} ceiling, ${state.ceiling.kept} entries kept, ${state.ceiling.notes.length} drop note(s)`);
+      if (state.migration) console.log(`  migration         v${state.migration.from} → v${state.migration.to} · ${state.migration.ids.length} place(s) · ${state.migration.notes.length} note(s) · settings ${JSON.stringify(state.migration.settings)}`);
+      if (state.refused) console.log(`  refused future    ${state.refused.problems?.join('; ') ?? 'none'} · primary key kept ${state.refused.kept} · backup ${state.refused.backup}`);
+      if (state.corrupt) console.log(`  refused corrupt   ${state.corrupt.problems?.join('; ') ?? 'none'} · backup ${state.corrupt.backup}`);
+      console.log(`  save line         ${state.panelLine ?? 'none'}`);
+    }
     if ('stabilitySamples' in summary) {
       console.log(`  stable renders    ${summary.stabilitySamples - summary.orderInstabilitySamples}/${summary.stabilitySamples}`);
       console.log(`  alpha foliage     ${summary.alphaBlendedFoliage.length}`);
@@ -403,6 +425,14 @@ async function main() {
     if (summary.weatherFailures?.length) {
       console.error('\n[audit] FAIL: the weather-state contract does not hold.');
       for (const failure of summary.weatherFailures) console.error(`  ${failure}`);
+      process.exitCode = 1;
+    }
+    // The save contract is a hard assertion: a document that does not come back, a setting
+    // that does not survive a reload, a ladder that never writes back, or a write per frame
+    // are defects, not measurements to interpret.
+    if (summary.saveFailures?.length) {
+      console.error('\n[audit] FAIL: the local-save contract does not hold.');
+      for (const failure of summary.saveFailures) console.error(`  ${failure}`);
       process.exitCode = 1;
     }
     if (summary.metricValidated === false) {

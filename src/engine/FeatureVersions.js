@@ -24,9 +24,11 @@ export const GDO_FEATURE_VERSIONS = Object.freeze({
   // floor — and both runtimes sample it.
   timeOfDay: 1,
   // `GME-06` (2026-10-07): the discovery journal's place ids are a shipped contract too.
-  // Persisting them is `NET-01`'s, which is why `saveSchema` below is still 0.
   discoveryJournal: 1,
-  saveSchema: 0,
+  // `NET-01` (2026-10-07): the local save document is a shipped contract — three sections
+  // (settings/discovery/progress), the declared settings table, the v0 pre-schema shape the
+  // ladder repairs, and the byte ceiling. `GDO_SAVE_VERSION` mirrors this number.
+  saveSchema: 1,
 });
 
 export const GDO_GENERATOR_VERSION = Object.entries(GDO_FEATURE_VERSIONS)

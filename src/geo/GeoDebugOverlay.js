@@ -81,6 +81,14 @@ function snapshotText(snapshot, metrics, report, extras = null) {
     extras?.weather
       ? `weather ${extras.weather.label} | ${extras.weather.climate} | window ${extras.weather.window} | blend ${extras.weather.blend.toFixed(2)} ${extras.weather.from}→${extras.weather.to} | next ${extras.weather.next} | cloud ${extras.weather.cloudCover.toFixed(2)}/${extras.weather.cloudDarkness.toFixed(2)} | wet ${extras.weather.wetness.toFixed(2)} ripple ${extras.weather.ripple.toFixed(2)} | fog ${extras.weather.fogDensity.toFixed(2)} | life ${extras.weather.birdActivity.toFixed(2)}/${extras.weather.beeActivity.toFixed(2)} | writes ${extras.weather.writes} · ceil ${extras.weather.uniformHz}Hz · particles ${extras.weather.particleFamilies}`
       : 'weather unavailable',
+    // `NET-01`: the save line. It carries the version, whether this browser let us store
+    // anything, what is in the document, and the two numbers that make "a write is a change,
+    // not a frame" checkable from the outside — the write count and the byte size.
+    // `tools/visual-audit/scenarios/local-save.mjs` reads this line, so the panel and the gate
+    // cannot drift apart.
+    extras?.save
+      ? `save v${extras.save.version} · ${extras.save.storage} · places ${extras.save.discoveries}/${extras.save.capacity} · items ${extras.save.collected} · writes ${extras.save.writes} · ${extras.save.bytes} B`
+      : 'save unavailable',
   ].join('\n');
 }
 

@@ -161,7 +161,7 @@ export class DiscoveryJournal {
     for (let slot = capacity - 1; slot >= 0; slot--) this.free.push(slot);
     this.clock = clock;
     this.entry = createDiscoveryEntry();
-    this.counters = { considered: 0, discovered: 0, rediscovered: 0, evicted: 0, declined: 0, rejected: 0, updates: 0 };
+    this.counters = { considered: 0, discovered: 0, restored: 0, rediscovered: 0, evicted: 0, declined: 0, rejected: 0, updates: 0 };
     this.lastDiscovery = null;
     this.lastRejection = null;
   }
@@ -250,6 +250,66 @@ export class DiscoveryJournal {
     return true;
   }
 
+  /**
+   * Put an entry back, from a save file (`NET-01`).
+   *
+   * Not `consider()`: a restored entry was discovered in an *earlier session*, so it arrives
+   * with its reading already taken and without a radius test — the player is not standing
+   * there any more. The id is checked against the place it names, because this is the one path
+   * by which an entry can enter the journal without the runtime having derived it, and a
+   * journal that holds a place the world could not produce is worse than one that holds
+   * nothing. Returns whether the entry was restored.
+   */
+  restore(entry) {
+    let id;
+    try {
+      id = discoveryPlaceId(entry?.name, entry?.kind, entry?.x, entry?.z);
+    } catch (error) {
+      this.counters.rejected++;
+      this.lastRejection = { reason: error.message, name: entry?.name ?? null, kind: entry?.kind ?? null };
+      return false;
+    }
+    if (entry?.id !== undefined && entry.id !== null && entry.id !== id) {
+      this.counters.rejected++;
+      this.lastRejection = { reason: `${JSON.stringify(entry.id)} is not the id of its own place`, name: entry.name, kind: entry.kind };
+      return false;
+    }
+    if (this.index.has(id)) {
+      // Already held: a save that names a place twice, or a restore that runs twice, is one
+      // entry. Counted as a rediscovery so the caller can see it happened.
+      this.counters.rediscovered++;
+      return false;
+    }
+    let slot;
+    if (this.free.length) slot = this.free.pop();
+    else {
+      // The journal is full. A restore does not displace: the retained set is chosen by the
+      // clock (the worst entry is the earliest discovery), and a restored entry may carry an
+      // *older* reading than everything held, so displacing on restore could evict a place the
+      // player found this session in favour of one they found last week.
+      this.counters.declined++;
+      return false;
+    }
+    const kind = discoveryKind(entry.kind);
+    this.ids[slot] = id;
+    this.names[slot] = String(entry.name).trim().replace(/\s+/g, ' ');
+    this.kinds[slot] = String(entry.kind).toLocaleLowerCase();
+    this.positions[slot * 2] = entry.x;
+    this.positions[slot * 2 + 1] = entry.z;
+    this.radii[slot] = Number.isFinite(entry.radius) ? entry.radius : kind.radius;
+    this.discovered[slot] = Number.isFinite(entry.discoveredAt) ? entry.discoveredAt : this.clock;
+    this.index.set(id, slot);
+    this.counters.restored++;
+    // The journal's own clock is **not** moved by a restore. It is the live session's reading and
+    // `update()` compares against it, so a stored reading from an earlier page load (which
+    // restarted its own clock at zero) must not push it forward — that would make the next frame
+    // look like a backwards clock, which `update()` refuses by design. A caller restoring stored
+    // readings is responsible for placing them in the live clock's frame; `NET-01`'s
+    // `restoreDiscovery` rebases the whole section just above `this.clock`, preserving the order
+    // the save recorded.
+    return true;
+  }
+
   _release(slot) {
     const id = this.ids[slot];
     if (id !== null) this.index.delete(id);
@@ -268,7 +328,11 @@ export class DiscoveryJournal {
    * pass, which is what a HUD should announce; a candidate the full journal declines is not
    * a discovery and is not returned, so an unreachable place cannot be announced twice.
    *
-   * Invariant, checked by the Node gate: `discovered - evicted === size`.
+   * Invariant, checked by the Node gate: `discovered + restored - evicted === size`. The
+   * `restored` term arrived with `NET-01`: before a save file existed, every entry in a
+   * journal had been discovered by this session, and now some of them were read back from
+   * storage. The gate's own run has no save to read, so its form of the identity is unchanged;
+   * this comment states the general one so the next reader is not surprised by it.
    */
   update(position, candidates, { now = null } = {}) {
     if (!position || !Number.isFinite(position.x) || !Number.isFinite(position.z)) {
@@ -358,6 +422,7 @@ export class DiscoveryJournal {
       size: this.size,
       clock: this.clock,
       discoveries: this.counters.discovered,
+      restored: this.counters.restored,
       rediscovered: this.counters.rediscovered,
       evicted: this.counters.evicted,
       declined: this.counters.declined,
@@ -378,7 +443,7 @@ export class DiscoveryJournal {
     this.free.length = 0;
     for (let slot = this.capacity - 1; slot >= 0; slot--) this.free.push(slot);
     this.clock = 0;
-    this.counters = { considered: 0, discovered: 0, rediscovered: 0, evicted: 0, declined: 0, rejected: 0, updates: 0 };
+    this.counters = { considered: 0, discovered: 0, restored: 0, rediscovered: 0, evicted: 0, declined: 0, rejected: 0, updates: 0 };
     this.lastDiscovery = null;
     this.lastRejection = null;
     return this.diagnostics();

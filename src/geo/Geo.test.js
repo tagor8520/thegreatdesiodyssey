@@ -117,7 +117,12 @@ test('feature versions provide stable namespaces and explicit unavailable schema
   assert.equal(featureAvailable('qualityFixture'), true);
   assert.equal(featureAvailable('diagnostics'), true);
   assert.equal(featureAvailable('objectGrammar'), true);
-  assert.equal(featureAvailable('saveSchema'), false);
+  // `NET-01` closed the last zero: the save document is a shipped contract now, so the
+  // "unavailable" branch is asserted against a name outside the registry rather than against a
+  // real feature that happens to still be a promise.
+  assert.equal(featureAvailable('saveSchema'), true);
+  assert.equal(GDO_FEATURE_VERSIONS.saveSchema, 1);
+  assert.equal(featureAvailable('noSuchFeature'), false);
   assert.equal(featureAvailable('vegetationGrammar'), true);
   assert.equal(featureAvailable('vegetationGeometry'), true);
   assert.equal(featureAvailable('vegetationLod'), true);

@@ -14,6 +14,12 @@ import {
   WeatherState, climateForLatitude, weatherSeedForCoordinate,
 } from '../engine/WeatherState.js';
 import { DiscoveryJournal } from '../engine/DiscoveryJournal.js';
+// `NET-01`: the curated session survives a reload too — the audio preference, the collectibles
+// already picked up and the landmarks already visited. One store per mount, read once at the
+// top so a restored preference is applied to the runtime rather than reported after it.
+import {
+  SaveStore, captureDiscovery, collectedInstances, restoreDiscovery,
+} from '../engine/SaveState.js';
 import '../engine/touch-controls.css';
 import { HoardingManager } from './HoardingManager.js';
 import { ItemManager } from './ItemManager.js';
@@ -35,6 +41,8 @@ export function mountReferenceGame(container, {
   initialStarted = false,
 } = {}) {
   const profile = resolveQuality(quality);
+  const saveStore = new SaveStore();
+  const saveReport = saveStore.read();
   configureVoxelRendering({
     castShadow: profile.voxelShadows,
     receiveShadow: profile.shadows,
@@ -106,6 +114,9 @@ export function mountReferenceGame(container, {
   // scene is built from (`BiomeManager.LANDMARKS`) rather than invented here, so a rename in
   // the world builder cannot leave the journal naming a place that no longer exists.
   const discoveryJournal = new DiscoveryJournal();
+  // `NET-01`: the landmarks walked into last session are already journalled. `restoreDiscovery`
+  // re-derives each id from its own anchor and refuses anything that does not match.
+  const saveRestore = restoreDiscovery(discoveryJournal, saveStore.save.discovery);
   const curatedPlaces = Object.entries(LANDMARKS).map(([name, [x, z]]) => ({
     name: name.charAt(0).toUpperCase() + name.slice(1),
     kind: 'landmark',
@@ -158,9 +169,30 @@ export function mountReferenceGame(container, {
     onCollect: item => {
       store.set({ score: item.score, collected: item.collected, lastPickup: `${item.name} +${item.points}` });
       sound.pickup(item.points);
+      // `NET-01`: a pickup is progress, so it is written through the same dirty-tracked store as
+      // everything else — the frame loop's tick decides when the document actually hits storage.
+      saveStore.update(save => { save.progress.states = items.progressByState(); });
     },
   });
   store.set({ total: items.total, quality: profile.label, renderScale: renderer.getPixelRatio() });
+  // `NET-01`: the collectibles a previous session took are removed from the layout rather than
+  // spawned again, because the seeded layout puts the same instance id in the same place every
+  // session — which is the whole reason the save stores an id and not a position. An id this
+  // build cannot place is reported through `saveRestore` rather than silently ignored.
+  const progressRestore = items.restore(collectedInstances(saveStore.save.progress));
+  store.set({ score: items.score, collected: items.collected, total: items.total });
+  if (progressRestore.restored) {
+    console.info(`[Desi Odyssey] Restored ${progressRestore.restored} collected item(s) from the local save`);
+  }
+  // The audio preference is a setting, so it is applied before the first interaction rather
+  // than after one: a player who muted the game does not hear the first pickup of the reload.
+  sound.setMuted(saveStore.save.settings.soundEnabled === false);
+  store.set({ soundEnabled: saveStore.save.settings.soundEnabled !== false });
+  saveStore.update(save => {
+    save.progress.lastMode = 'curated';
+    const records = items.progressByState();
+    save.progress.states = Object.keys(records).length ? records : save.progress.states;
+  });
 
   const onStart = () => {
     if (store.getSnapshot().started) return;
@@ -173,6 +205,8 @@ export function mountReferenceGame(container, {
   const onToggleSound = () => {
     const enabled = !store.getSnapshot().soundEnabled;
     sound.setMuted(!enabled); store.set({ soundEnabled: enabled });
+    // `NET-01`: the declared setting is written where it changes, so a reload starts muted.
+    saveStore.update(save => { save.settings.soundEnabled = enabled; });
     if (enabled) void sound.unlock().then(ok => { if (!sound.disposed && !ok) store.set({ soundEnabled: false }); });
   };
   const onExit = () => {
@@ -242,7 +276,11 @@ export function mountReferenceGame(container, {
     // around, so the journal here records the same kind of event as the coordinate runtime
     // records from streamed map labels — the player walked into a named place. The list is
     // fixed and tiny, so there is nothing to stream and nothing to allocate per frame.
-    discoveryJournal.update(player.position, curatedPlaces, { now });
+    const discovered = discoveryJournal.update(player.position, curatedPlaces, { now });
+    // `NET-01`: the curated world has two landmarks, so this is a rare write rather than a
+    // per-frame one; the dirty flag and the interval still decide when it reaches storage.
+    if (discovered > 0) saveStore.update(save => { save.discovery = captureDiscovery(discoveryJournal); });
+    saveStore.tick();
     environment.update(seconds, now);
     renderer.info.reset();
     environment.render(delta);
@@ -315,6 +353,16 @@ export function mountReferenceGame(container, {
     get weather() { return weather; },
     get weatherState() { return { ...weather.state }; },
     get weatherDiagnostics() { return environment.weatherDiagnostics; },
+    // `NET-01`: the same save surface the coordinate runtime exposes, so one scenario can ask
+    // both runtimes the same question.
+    get saveStore() { return saveStore; },
+    get save() { return saveStore.save; },
+    get saveDiagnostics() { return saveStore.diagnostics(); },
+    get saveReport() { return saveReport; },
+    get saveRestore() { return { ...saveRestore, items: progressRestore }; },
+    /** Write the document now, bypassing the interval — a capture or a scenario's checkpoint. */
+    saveNow() { return saveStore.write({ force: true }); },
+    clearSave() { return saveStore.clear(); },
     /** Re-sample and re-apply at the current clock, bypassing the rate ceiling. */
     refreshWeather() {
       weather.sample();
@@ -336,6 +384,9 @@ export function mountReferenceGame(container, {
       document.removeEventListener('visibilitychange', resetSampling);
       canvas.removeEventListener('webglcontextlost', contextLost);
       canvas.removeEventListener('webglcontextrestored', contextRestored);
+      // The last change is written on the way out rather than left for the next tick: an exit is
+      // exactly the moment the session's progress has just changed and the loop is about to stop.
+      saveStore.flush();
       ui.unmount(); touch.dispose(); sound.dispose(); player.dispose(); items.dispose(); hoardings.dispose();
       bridges.dispose(); biomes.dispose(); environment.dispose(); engine.dispose();
     },

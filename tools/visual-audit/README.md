@@ -40,6 +40,7 @@ npm run visual:audit -- content-schema          # CNT-01 the served state packs 
 npm run visual:audit -- label-los               # GME-04/LAY-05 a name behind a wall hides; a clear name stays visible
 npm run visual:audit -- landmark-openings       # DET-09 the two landmarks batched, the arch open and the pier blocked
 npm run visual:audit -- weather-state           # ENV-04 the seeded weather schedule, its response on the live scene, both runtimes
+npm run visual:audit -- local-save              # NET-01 the versioned save survives a reload in both runtimes
 ```
 
 Options: `--url <base>` (default `http://localhost:5173/`), `--width`, `--height`,
@@ -171,7 +172,41 @@ The scenario for the gate *"repeated modules batched; arches never use one enclo
 - **The collider contains the drawing**: the wheel rim's reach is measured from the *drawn* instances as the radial support of the rotated stones (3.7 m — the 45° stones put a corner 0.7 m out from radius 3.0), and the live collider must contain it. That check caught the port's own 7.3 m declaration, which was 5 cm short.
 - **Two controls run in the same process**, so the two assertions above are falsifiable in the run that reports them: the pre-`DET-09` union box is pushed back into the live blocker list and must close the arch (it does), and the Gateway's blockers are removed and the pier must open (so the pier result is caused by a pier). The blocker list is verified back at 34 afterwards.
 
-`landmarkFailures` is a hard assertion in `run.mjs`. Six negative controls each exit 1 — three in the Node tier (no declared opening → 3 failures; the wheel collider back to 7.3; the free width not ending at the arch head) and three in the browser (stamping disabled → *only 0 of the Gateway's 50 boxes are in the scene*; one enclosing AABB per landmark → *a single live blocker contains the whole opening*; one material family per box → *the Chariot's 108 boxes reach the renderer as 16 draws*). The first of those browser controls found a runner defect: the run printed `[audit] FAIL` and exited 0 because the new failure branch omitted `process.exitCode = 1` — the same class `QLT-06` recorded for `ambient-life`.
+`landmarkFailures` is a hard assertion in `run.mjs`. Six negative controls each exit 1 — three in the Node tier (no declared opening → 3 failures; the wheel collider back to 7.3; the free width not ending at the arch head) and three in the browser (stamping disabled → *only 0 of the Gateway's 50 boxes are in the scene*; one enclosing AABB per landmark → *a single live blocker contains the whole opening*; one material family per box → *the Chariot's 108 boxes reach the renderer as 16 draws*). The first of those browser controls found a runner defect: the run printed `[audit] FAIL` and exited 0 because the new failure branch omitted `process.exitCode = 1` — the same class `QLT-06` recorded for `ambient-life`. the wheel collider back to 7.3; the free width not ending at the arch head) and three in the browser (stamping disabled → *only 0 of the Gateway's 50 boxes are in the scene*; one enclosing AABB per landmark → *a single live blocker contains the whole opening*; one material family per box → *the Chariot's 108 boxes reach the renderer as 16 draws*). The first of those browser controls found a runner defect: the run printed `[audit] FAIL` and exited 0 because the new failure branch omitted `process.exitCode = 1` — the same class `QLT-06` recorded for `ambient-life`.
+
+### `local-save` — `NET-01`
+
+The gate is *"migration-safe settings/discovery/progress"*, and the scenario is the only one that **reads its subject out
+of `localStorage` rather than off the live model**. That distinction is the gate: the store is change-tracked and
+interval-coalesced, so the live document holds a change for up to a second before the bytes land, and a reload is the
+only thing the feature is actually about.
+
+- **Every clause is read from storage.** `waitForStored(page, expression)` polls until the *stored* document satisfies the
+  expression with the store quiet, and the same helper drives the two settings (`save.settings.showDebug`,
+  `save.settings.soundEnabled`), the journal section, the curated progress section and the migrated file. A live model
+  that has the change but has not written it does not pass — which is exactly the state a naive gate would report as green.
+- **The writer is the module the runtime loaded.** The scenario imports `/src/engine/SaveState.js` in-page and requires
+  `encodeSave(game.save)` to equal the bytes in storage, so the file cannot drift from the model. It also prints the
+  ladder's steps and the declared settings table from that same module rather than from the test file.
+- **The panel line must agree field for field.** The review panel's `save v1 · local · places N/128 · items M · writes W ·
+  B B` line is parsed and compared with `saveDiagnostics()` at the instant it is read, so the panel cannot show a stale or
+  invented document. The overlay renders every line once with no extras when it is switched on (which says
+  `save unavailable`), and a hidden panel keeps its last text — the scenario polls only while the panel is on show.
+- **The setting clauses are order-independent.** The runtime's own state is read first (`debugOverlay.enabled`), and the
+  button is required to move the panel *and* the document to the opposite value; then a **new session** must open the
+  panel from the saved value; then `F3` must move both, in both directions, with the registry's `actionsFired` counter as
+  the evidence that the press actually reached the runtime (a press vetoed by `GeoPlayer.enabled` is silent otherwise —
+  the scenario waits for readiness rather than assuming it).
+- **The refusal clauses come last, because they poison storage.** A future and a corrupt document are each planted, the
+  run asserts the runtime still mounts, holds nothing from them, and leaves the bytes under `gdo:save:unreadable`; the
+  scenario notes whether the primary key was replaced by the runtime's own document and requires that replacement to validate.
+
+`saveFailures` is a hard assertion in `run.mjs`. Seven negative controls each exit 1, each restored byte-identically:
+the review toggle stops writing; the frame loop never captures the journal; `ItemManager.restore` removes nothing; the
+ladder keeps a stale id; the ladder stops coercing `0`/`1`; a future document is merged instead of refused; the store
+ignores the write interval. **A control that passed is in the record too**: removing the ladder's `dirty = true` after a
+migration does not fail the gate, because both runtimes write the document on mount anyway and the upgraded file lands on
+the next tick. The control was rewritten to break the *repair* instead, which is the part that is only the ladder's.
 
 ### `weather-state` — `ENV-04`
 

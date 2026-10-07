@@ -17,6 +17,13 @@ import {
   LabelLosScheduler, compassBearing, formatMetres,
 } from './GeoLabelLos.js';
 import { DiscoveryJournal, GEO_DISCOVERY_MAX_RADIUS } from '../engine/DiscoveryJournal.js';
+// `NET-01`: the session survives a reload. The store is created before the world so a restored
+// setting (`showDebug`) can decide what the mount does, and the journal is restored into as soon
+// as it exists — the dependencies were designed for this (`GME-06`'s ids are stable across
+// sessions precisely so a save can name a place rather than a moment).
+import {
+  SaveStore, captureDiscovery, restoreDiscovery,
+} from '../engine/SaveState.js';
 import './geo.css';
 
 function formatBytes(bytes) {
@@ -64,6 +71,11 @@ export function mountGeoGame(container, {
   dynamicProxyProfile = 'low',
 } = {}) {
   const coordinate = validateCoordinate(latitude, longitude);
+  // `NET-01`: one store per mounted runtime. `read()` runs before anything is constructed because
+  // a restored setting has to be able to change the mount itself, and a document this build
+  // cannot read is reported rather than acted on.
+  const saveStore = new SaveStore();
+  const saveReport = saveStore.read();
   const engine = createProceduralEngine(container, {
     ariaLabel: `Procedural OpenStreetMap world at ${coordinate.latitude}, ${coordinate.longitude}`,
     canvasClass: 'geo-game-canvas',
@@ -321,7 +333,12 @@ export function mountGeoGame(container, {
   const toggleDebug = event => {
     event?.preventDefault();
     event?.stopPropagation();
-    setDebugEnabled(!(debugRequested && (debugOverlay?.enabled ?? true)));
+    const enabled = !(debugRequested && (debugOverlay?.enabled ?? true));
+    setDebugEnabled(enabled);
+    // `NET-01`: the panel state is one of the two shipped settings, and this is the only place
+    // it changes — the button and F3 both arrive here (`GME-05`'s registry routes the key), so
+    // the save cannot be written from one surface and not the other.
+    saveStore.update(save => { save.settings.showDebug = enabled; });
   };
   // The `F3` binding lives in the action registry, not here: `ActionInput` resolves
   // the code and calls `onDebugToggle`, which is the same `toggleDebug` the button
@@ -329,7 +346,9 @@ export function mountGeoGame(container, {
   debugButton.addEventListener('click', toggleDebug);
   let initialDebug = false;
   try { initialDebug = new URLSearchParams(window.location.search).get('debug') === '1'; } catch { /* optional */ }
-  setDebugEnabled(initialDebug);
+  // `?debug=1` still wins for a capture, but a saved preference opens the panel too: this is the
+  // one place a `NET-01` setting is visible in the frame rather than only in diagnostics.
+  setDebugEnabled(initialDebug || saveStore.save.settings.showDebug === true);
 
   const projectedLabel = new THREE.Vector3();
   const labelElements = [];
@@ -346,12 +365,22 @@ export function mountGeoGame(container, {
   // name and no allocation at all. What it holds is bounded by its own capacity, never by
   // how far the player has walked.
   const discoveryJournal = new DiscoveryJournal();
+  // `NET-01`: the place the player walked into last session is already journalled. `restoreDiscovery`
+  // re-derives every id from its own anchor and refuses an entry that does not match, so this is
+  // the only path by which an entry can enter the journal without the runtime having derived it.
+  const saveRestore = restoreDiscovery(discoveryJournal, saveStore.save.discovery);
   // `GME-06`: discovery is a **radius test over the resident labels**, not over the names the
   // HUD chose to draw. The label layer shows at most 14 names by static map priority, so a
   // journal fed from the displayed set would leave a place undiscoverable whenever fourteen
   // higher-priority names were on screen — the browser gate caught exactly that as a
   // second-session flake. The candidate array is reused, so a refresh allocates nothing, and
   // the per-refresh cost is one distance test per resident label (≤ 18 per tile).
+  // `NET-01`: the mount itself is progress — the landing shell resumes from these two fields,
+  // and they are written once per mount rather than per frame.
+  saveStore.update(save => {
+    save.progress.lastMode = 'coordinate';
+    save.progress.lastCoordinate = { latitude: coordinate.latitude, longitude: coordinate.longitude };
+  });
   const discoveryCandidates = [];
   const gatherDiscoveryCandidates = position => {
     discoveryCandidates.length = 0;
@@ -392,7 +421,13 @@ export function mountGeoGame(container, {
     // streamed away. It runs on the label refresh rather than every frame: the candidate set
     // only changes four times a second, and a journal that re-offered the same names sixty
     // times a second would spend the same answer sixty times.
-    if (labelsRefreshed) discoveryJournal.update(player.position, gatherDiscoveryCandidates(player.position), { now });
+    if (labelsRefreshed) {
+      const found = discoveryJournal.update(player.position, gatherDiscoveryCandidates(player.position), { now });
+      // A journal that changed is a save that changed: the section is rebuilt from the live
+      // journal on the same 250 ms refresh the discovery itself runs on, so the document cannot
+      // drift from what the player has actually been shown.
+      if (found > 0) saveStore.update(save => { save.discovery = captureDiscovery(discoveryJournal); });
+    }
     const width = Math.max(1, container.clientWidth), height = Math.max(1, container.clientHeight);
     for (let index = 0; index < labelElements.length; index++) {
       const element = labelElements[index], label = labels[index];
@@ -484,11 +519,16 @@ export function mountGeoGame(container, {
     if (timeChanged || weatherChanged) applyTimeOfDayState(now);
     player.update(dt);
     world.update(player.position, camera, renderer.domElement.height, now);
+    // `NET-01`: a tick, not a write. The store is dirty-tracked and interval-coalesced, so
+    // however many frames run, the document is written at most once a second and only when
+    // something in it moved.
+    saveStore.tick();
     debugOverlay?.update(world, player.position, renderer, now, {
       labels: labelLos.diagnostics(now),
       timeOfDay: timeOfDay.diagnostics(),
       weather: weather.diagnostics(),
       discoveries: discoveryJournal.diagnostics(),
+      save: saveStore.diagnostics(),
     });
     renderer.render(scene, camera);
     updateMapLabels(now);
@@ -624,6 +664,17 @@ export function mountGeoGame(container, {
     // a bit, so the mask is part of the runtime's public surface.
     get queryMasks() { return GEO_QUERY_MASK; },
     get debugOverlay() { return debugOverlay; },
+    // `NET-01`: the store, its report, one forced write and one destructive action. The gate
+    // drives all four rather than reading a copy: what it measures has to be what the player
+    // would carry to the next session.
+    get saveStore() { return saveStore; },
+    get save() { return saveStore.save; },
+    get saveDiagnostics() { return saveStore.diagnostics(); },
+    get saveReport() { return saveReport; },
+    get saveRestore() { return saveRestore; },
+    /** Write the document now, bypassing the interval — a capture or a scenario's checkpoint. */
+    saveNow() { return saveStore.write({ force: true }); },
+    clearSave() { return saveStore.clear(); },
     dispose() {
       if (disposed) return; disposed = true;
       cancelAnimationFrame(animationFrame); observer.disconnect();
@@ -634,6 +685,10 @@ export function mountGeoGame(container, {
       exitButton.removeEventListener('click', exit);
       touchControls.dispose();
       longTaskObserver?.disconnect();
+      // On the way out, the last change is written rather than left for the next tick: an exit
+      // is exactly the moment a session's progress has just changed and the frame loop is about
+      // to stop. `flush` ignores the interval and is still a no-op when nothing is dirty.
+      saveStore.flush();
       debugOverlay?.dispose(); player.dispose(); world.dispose(); lightRig.dispose(); sky.dispose(); engine.dispose();
     },
   };
