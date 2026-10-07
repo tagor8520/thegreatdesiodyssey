@@ -26,6 +26,7 @@ import * as labelLos from './scenarios/label-los.mjs';
 import * as ambientLife from './scenarios/ambient-life.mjs';
 import * as timeOfDay from './scenarios/time-of-day.mjs';
 import * as discoveryJournal from './scenarios/discovery-journal.mjs';
+import * as landmarkOpenings from './scenarios/landmark-openings.mjs';
 
 const SCENARIOS = new Map([
   ['curated-camera', {
@@ -106,6 +107,11 @@ const SCENARIOS = new Map([
     // because the corpus it measures the bound over is gathered from the world's own
     // resident tiles rather than from a single prepared session.
     summary: 'GME-06 discovery journal: the runtime discovers a real resident place on its own frame loop, the same place yields the same id across a reload, ids recomputed in-page from the runtime\'s own module match the ones held, and the journal\'s state stays bounded (bytes fixed, capacity never exceeded, books balanced) over the real label corpus in both runtimes.',
+  }],
+  ['landmark-openings', {
+    module: landmarkOpenings,
+    prepares: 'curated',
+    summary: 'DET-09 landmark grammar and openings: both shipped landmarks recompiled in-page and matched instance for instance against the live scene (one instanced draw each, colour cycles included), the curated runtime\'s own clipCamera opened through the Gateway arch and blocked into the pier while the union of the same blockers would block it, no single blocker containing the opening, and the wheel collider containing the drawn rim.',
   }],
   ['coordinate-camera', {
     module: coordinateCamera,
@@ -262,6 +268,24 @@ async function main() {
       console.log(`  culls             distance ${summary.culls.distance} · screen ${summary.culls.screen} · activity ${summary.culls.activity} · activity 0 → drawn ${summary.activity.off.drawn} (${summary.activity.off.collapsed} collapsed), restored → ${summary.activity.on.drawn}`);
       console.log(`  ambience surface  ${summary.panelLine ?? 'no ambience line'}`);
     }
+    if ('landmarkFailures' in summary) {
+      const drawn = summary.summary;
+      const described = name => {
+        const landmark = drawn[name];
+        return landmark
+          ? `${landmark.matched}/${landmark.expected} box(es) in ${landmark.draws} draw(s)`
+          : 'no data';
+      };
+      console.log(`  batched boxes     gateway ${described('gatewayDrawn')} · chariot ${described('chariotDrawn')} · wheel rim reaches ${drawn.chariotDrawn?.wheelReach ?? '?'} m`);
+      if (drawn.arch) {
+        console.log(`  arch              through ${drawn.arch.throughArch.blocked ? 'BLOCKED' : 'open'} · into pier ${drawn.arch.intoPier.blocked ? 'blocked' : 'OPEN'} · union would block ${drawn.arch.unionWouldBlock} · enclosing ${drawn.arch.enclosing ?? 'none'}`);
+        console.log(`  blockers          ${drawn.arch.gatewayBlockers} gateway + ${drawn.arch.chariotBlockers} chariot = ${drawn.arch.total}, ${drawn.arch.unique} distinct id(s)`);
+        console.log(`  wheel             collider ${JSON.stringify(drawn.arch.wheelBlocker?.size ?? null)} · 3.6 m probe ${drawn.arch.wheelNear.blocked ? 'blocked' : 'OPEN'} · 4.5 m probe ${drawn.arch.wheelClear.blocked ? 'blocked' : 'open'}`);
+      }
+      if (drawn.controls) {
+        console.log(`  controls          union box closes the arch ${drawn.controls.archClosedWithUnion} · pier without its blocker ${drawn.controls.pierOpenWithoutPier ? 'blocked' : 'open'} · restored ${drawn.controls.restored}`);
+      }
+    }
     if ('discoveryFailures' in summary && summary.summary) {
       console.log(`  discoverable      ${summary.summary.residentPlaces ?? 0} resident place(s) inside the unlock radius where the player stands`);
       console.log(`  place ids         ${summary.summary ? `${summary.summary.bounded.ids.length} real place(s), ${new Set(summary.summary.bounded.ids).size} distinct id(s) · first ${summary.summary.firstSession?.id ?? 'none'} · across sessions ${summary.summary.secondSession?.id && summary.summary.secondSession.id === summary.summary.firstSession?.id ? 'matched' : 'NO'}` : 'n/a'}`);
@@ -340,6 +364,11 @@ async function main() {
     if (summary.discoveryFailures?.length) {
       console.error('\n[audit] FAIL: the discovery journal contract does not hold.');
       for (const failure of summary.discoveryFailures) console.error(`  ${failure}`);
+      process.exitCode = 1;
+    }
+    if (summary.landmarkFailures?.length) {
+      console.error('\n[audit] FAIL: the landmark grammar gate does not hold.');
+      for (const failure of summary.landmarkFailures) console.error(`  ${failure}`);
       process.exitCode = 1;
     }
     if (summary.timeOfDayFailures?.length) {

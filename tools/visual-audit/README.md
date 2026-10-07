@@ -38,6 +38,7 @@ npm run visual:audit -- domain-interface        # FND-08 curated + coordinate do
 npm run visual:audit -- action-surfaces         # GME-05 every action on every surface it claims, both runtimes
 npm run visual:audit -- content-schema          # CNT-01 the served state packs validate in-page, byte-identical to disk
 npm run visual:audit -- label-los               # GME-04/LAY-05 a name behind a wall hides; a clear name stays visible
+npm run visual:audit -- landmark-openings       # DET-09 the two landmarks batched, the arch open and the pier blocked
 ```
 
 Options: `--url <base>` (default `http://localhost:5173/`), `--width`, `--height`,
@@ -159,6 +160,17 @@ The scenario that proves a runtime *feeds* its journal rather than being fed by 
 - **The corpus is the world's own labels**, read from every resident tile rather than from the 14 the label layer displays, so the bound is measured over real map data. It is also small, and the scenario says so: the fixture world exposes 11 named places, so the shipped capacity of 128 is never reached in a browser and the capacity-5 trial over those same 11 real places is what fills to capacity and proves the retained set is the same in either walk order.
 
 `discoveryFailures` is a hard assertion in `run.mjs`. Five negative controls each exit 1: a randomised id, the frame loop no longer feeding the journal, eviction leaking its slot, displacement made unconditional, and the review-surface marker renamed. A sixth control — flipping the id tie-break direction — **passed**, and the record keeps that because it corrected the gate's own explanation of which rule makes the retained set canonical.
+
+### `landmark-openings` — `DET-09`
+
+The scenario for the gate *"repeated modules batched; arches never use one enclosing AABB"*. Both clauses are about what the **renderer and the collider were handed**, not about a displayed value, so both are measured against the live artifacts.
+
+- **Batched** is measured against the live scene, not the source. The scenario recompiles both landmarks *inside the page* from the modules the runtime loaded (the dev server's module graph is keyed by URL — the technique `discovery-journal` uses) and then requires every compiled box to be found as an instance of **one** `InstancedMesh`: 50 Gateway boxes and 108 Chariot boxes, each in a single draw, with translation, scale **and** per-instance colour checked. The palette is read as raw triples and compared through the renderer's own colour class, because `THREE.Color` has stored *linear* values since r152 and a hex-string comparison would compare two encodings. The chunk's own boxes live in the same mesh, which is the claim: a landmark is more instances of a draw the chunk was already making, not an extra draw.
+- **The arch** is asked of the runtime rather than re-implemented: `bridges.clipCamera` — the call `Gameplay.test.js` makes — must be open along the centre line through the Gateway arch at the live sweep radius and blocked into the pier, while the union of the same 18 blockers must cross that segment (`unionWouldBlock`). The clause is additionally stated as a property of the live blocker list: **no single blocker may contain the opening's whole free volume**. Ids are checked because other gates address them (`gateway:pier:-1`, `gateway:tower:-11:-4`) and because they must be unique.
+- **The collider contains the drawing**: the wheel rim's reach is measured from the *drawn* instances as the radial support of the rotated stones (3.7 m — the 45° stones put a corner 0.7 m out from radius 3.0), and the live collider must contain it. That check caught the port's own 7.3 m declaration, which was 5 cm short.
+- **Two controls run in the same process**, so the two assertions above are falsifiable in the run that reports them: the pre-`DET-09` union box is pushed back into the live blocker list and must close the arch (it does), and the Gateway's blockers are removed and the pier must open (so the pier result is caused by a pier). The blocker list is verified back at 34 afterwards.
+
+`landmarkFailures` is a hard assertion in `run.mjs`. Six negative controls each exit 1 — three in the Node tier (no declared opening → 3 failures; the wheel collider back to 7.3; the free width not ending at the arch head) and three in the browser (stamping disabled → *only 0 of the Gateway's 50 boxes are in the scene*; one enclosing AABB per landmark → *a single live blocker contains the whole opening*; one material family per box → *the Chariot's 108 boxes reach the renderer as 16 draws*). The first of those browser controls found a runner defect: the run printed `[audit] FAIL` and exited 0 because the new failure branch omitted `process.exitCode = 1` — the same class `QLT-06` recorded for `ambient-life`.
 
 ### `remount-lifecycle` — FND-07
 
