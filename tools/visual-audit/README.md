@@ -41,6 +41,7 @@ npm run visual:audit -- label-los               # GME-04/LAY-05 a name behind a 
 npm run visual:audit -- landmark-openings       # DET-09 the two landmarks batched, the arch open and the pier blocked
 npm run visual:audit -- weather-state           # ENV-04 the seeded weather schedule, its response on the live scene, both runtimes
 npm run visual:audit -- local-save              # NET-01 the versioned save survives a reload in both runtimes
+npm run visual:audit -- tile-cache              # MAP-09 a reload costs zero provider requests; the budget, the format and the source all hold
 ```
 
 Options: `--url <base>` (default `http://localhost:5173/`), `--width`, `--height`,
@@ -252,6 +253,56 @@ ends so the difference can only come from the weather's species shares.
 Both negative controls and in-run controls live in the register (`feature-roadmap/VISUAL_GATES.md`
 §4 A4l); the scenario's own probe bugs are recorded there too, because two of them made a *pass*
 look like a failure and one made three states look identical when they were not.
+
+### `tile-cache` — `MAP-09`
+
+The gate is *"size/version/LRU policy and attribution-safe storage"*, and the scenario's first
+decision is what to believe. **The report is not the evidence**: the run reads the fixture
+provider's own monotonic `served` counter as **deltas** around each mount, the cache's report, the
+review panel's line, and **IndexedDB itself** (through a read that checks `indexedDB.databases()`
+first, because `open(name)` *creates* an absent database and an empty one is exactly the shape
+that used to make the cache unavailable — every request is raced against a deadline so a blocked
+database reports rather than hangs).
+
+**Why the fixture makes this provable.** Its tiles are served `cache-control: no-store`, so the
+browser's own HTTP cache cannot be the reason a revisit is free. "Zero provider requests, a hit,
+and the key really in IndexedDB" is therefore three independent pieces of evidence for one claim.
+
+**The sequence.** `?tileCache=off` first — the run's own control (**1** request, no database
+created) — then a first pass that must miss and store, then a reload that must cost **zero**
+requests with a hit and **1/1** resident tile served from storage. Attribution is driven by
+switching the **served fixture** (`/__fixture-tiles/select`): the request must happen, the hits
+must be **0**, the retired source must be **swept**, no key of the old source may remain, and the
+fingerprint the runtime names must change; switching back must refetch and the session after that
+must be free again. Size is measured against a **measured** record cost — the accounted bytes
+divided by the entries, so a change to the record format cannot leave the budgets meaning
+yesterday's arithmetic — and a budget is given that holds two records: the eviction must happen,
+the accounting must end inside it, and the entries that go must be the older ones. A budget
+**below one record** must come back inside the budget *at open* and then refuse the store
+(`skipped`, **0** errors) while the world still renders the tile. Version is driven by planting a
+**foreign manifest** from the landing shell, where nothing holds the database open: the next mount
+must mount, forget it quietly (`resets 1`, `errors 0`), repair the manifest to `gdo:tilecache:v1`
+and refetch. The panel line is compared against the report the gate just read, and the player's
+own `clearTileCache()` must empty the report, IndexedDB **and** the manifest.
+
+**What the scenario does *not* re-test.** Key derivation, per-source hit/miss, LRU order, expiry,
+the sweep, the escalation ladder on a byte-capped disk, the forensic manifests and the
+hostile-adapter path are asserted in `src/geo/GeoTileCache.test.js` (17 tests). This scenario is
+about the **wiring**: that the worker consults storage before the network, that the world, the HUD
+and the panel carry the report, that the budget travels from the runtime to the worker, and that
+the whole thing is attribution-safe across a source switch.
+
+**It restarts the browser, on purpose.** Six or seven mounts of the world in one process take the
+target down mid-`evaluate` (a `TargetCloseError` surfacing inside whatever call was in flight), so
+the scenario calls `relaunch(browser, logs, { userDataDir })` between the heavier legs: a **new
+browser on the same profile directory**. IndexedDB, local storage and the HTTP cache are the same
+bytes on disk while the process, the GPU state and every WebGL context are new — which makes "a
+later session finds the tile" mean *a tile written by a process that no longer exists*. A
+scenario that does this returns the page and browser it ended on (`{ ...summary, page, browser }`)
+and `run.mjs` adopts them for the console-error classification and for the close.
+
+Both negative controls and the recorded run live in the register
+(`feature-roadmap/VISUAL_GATES.md` §4 A4n); four controls break one clause each and all four exit 1.
 
 ### `remount-lifecycle` — FND-07
 

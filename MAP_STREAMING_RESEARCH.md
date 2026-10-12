@@ -177,7 +177,7 @@ Procedural generation happens on the user's local machine. The server delivers o
 1. Measure real tile byte/feature distributions across dense India, rural India, coast, and mountains.
 2. Add a project-controlled, versioned provider configuration and health switch.
 3. If usage grows, generate a custom PMTiles/MVT planet or India extract with exactly the required layers and z15 chunks.
-4. Add Cache Storage/IndexedDB LRU with an explicit byte quota and provider cache semantics.
+4. ~~Add Cache Storage/IndexedDB LRU with an explicit byte quota and provider cache semantics.~~ **DELIVERED 2026-10-12 as `MAP-09`** (`src/geo/GeoTileCache.js`, gate `npm run visual:audit -- tile-cache`): **IndexedDB** rather than Cache Storage — the cache accounts for bytes against an explicit budget (the mounted profile's 4/8/16 MiB or the runtime's own, 512 entries, 1 MiB per record, 30 days) and hands back decodable payloads, neither of which Cache Storage offers — with LRU eviction by last use and **provider cache semantics** honoured literally: `cache: false` or a zero lifetime means no key is derived and no lookup is attempted, while a declared lifetime becomes the record's own expiry. What is stored is the provider's **response bytes**, and the key carries the source's identity (id + URL template + declared label, hashed) so a hit can never serve one source's geography under another's name and retired sources are swept rather than left to spend quota.
 5. Add terrain elevation only through a free/public DEM source whose redistribution and request policy are suitable.
 6. Extend the existing map-context phase with provider-compatible landmark categories and selectively richer furniture.
 7. Split visual and collision LODs; use exact polygons only near the player.

@@ -29,6 +29,7 @@ import * as discoveryJournal from './scenarios/discovery-journal.mjs';
 import * as landmarkOpenings from './scenarios/landmark-openings.mjs';
 import * as weatherState from './scenarios/weather-state.mjs';
 import * as localSave from './scenarios/local-save.mjs';
+import * as tileCache from './scenarios/tile-cache.mjs';
 
 const SCENARIOS = new Map([
   ['curated-camera', {
@@ -129,6 +130,13 @@ const SCENARIOS = new Map([
     // because the gate is about what survives a *reload* rather than what one session does.
     summary: 'NET-01 versioned local save: the runtime writes a document that is the bytes its own module encodes, a reload restores the journalled places and drives the muted/review-panel settings, a collected instance comes back as progress rather than respawning, the seed keeps the instance identity, a v0 document is migrated and written back while a future or corrupt one is refused with its bytes kept, and the write count tracks changes rather than frames.',
   }],
+  ['tile-cache', {
+    module: tileCache,
+    fixture: 'dense-urban',
+    // No `prepares`: the scenario drives the runtime across several mounts and one fixture
+    // switch, because the gate is about what a *later* session finds in storage.
+    summary: 'MAP-09 bounded persistent tile cache: an off switch that spends a request where the cache spends none, a reload that costs zero provider requests with the tiles really in IndexedDB, a fixture switch that misses and sweeps the retired source instead of serving one source\'s geography under another\'s name, a byte budget that evicts, a foreign manifest format that is forgotten rather than read, and the panel line the gate reads.',
+  }],
   ['coordinate-camera', {
     module: coordinateCamera,
     prepares: 'coordinates',
@@ -163,10 +171,13 @@ async function main() {
   const entry = SCENARIOS.get(options.scenario);
   if (!entry) throw new Error(`Unknown scenario: ${options.scenario}`);
 
-  const { browser, page, logs } = await launch({
+  // `page` is reassigned: a scenario that resets the renderer hands back the page it moved to.
+  const session = await launch({
     width: options.width, height: options.height,
     deviceScaleFactor: entry.deviceScaleFactor ?? 1,
   });
+  let { browser, logs } = session;
+  let page = session.page;
   try {
     // Scenario setup imports lazily so `--list` stays dependency-free.
     if (entry.prepares === 'curated') {
@@ -181,10 +192,16 @@ async function main() {
       await openCoordinates(page, options.url);
     }
     const summary = await entry.module.run({
-      page, baseUrl: options.url, log: console.log,
+      page, browser, logs, baseUrl: options.url, log: console.log,
       fixture: options.fixture ?? entry.fixture ?? 'dense-urban',
       variant: options.variant ?? entry.variant ?? 'openmaptiles',
     });
+    // A scenario may hand back a page it started mid-run (a fresh renderer); later legs and
+    // the failure classification must follow it rather than the page the run started with.
+    // A scenario may restart the browser mid-run (a fresh process on the same profile); the
+    // classification and every later close have to follow the browser it ended with.
+    if (typeof summary?.page?.close === 'function') page = summary.page;
+    if (typeof summary?.browser?.close === 'function') browser = summary.browser;
     const { relevant, known } = classifyConsoleErrors(logs);
     summary.consoleErrors = relevant;
     summary.knownConsoleDefects = known;
@@ -331,6 +348,21 @@ async function main() {
       }
       console.log(`  weather line      ${summary.panelLine ?? 'none'}`);
     }
+    if ('tileCacheFailures' in summary) {
+      const state = summary.summary ?? {};
+      const count = value => (typeof value === 'number' ? value : '—');
+      if (state.off) console.log(`  cache off         ${state.off.requests} request(s), database ${state.off.idb}, enabled ${state.off.enabled}`);
+      if (state.first) console.log(`  first pass        ${state.first.requests} request(s) · miss ${state.first.misses} store ${state.first.stores} · ${state.first.entries} entr(ies) ${state.first.cachedBytes} B of ${state.first.limitBytes} B · ~${state.first.costPerEntry} B/entry · ${state.first.keys} key(s) in IndexedDB`);
+      if (state.reload) console.log(`  reload            ${state.reload.requests} provider request(s) · hit ${state.reload.hits} miss ${state.reload.misses} · ${state.reload.residentFromCache}/${state.reload.tiles} resident tile(s) served from storage · ${state.reload.keys} key(s) in IndexedDB`);
+      if (state.switch) console.log(`  fixture switch    ${state.switch.fixture} · ${state.switch.requests} request(s), hit ${state.switch.hits} miss ${state.switch.misses} · swept ${state.switch.swept} · ${state.switch.staleKeys} stale key(s) · ${state.switch.from} → ${state.switch.to}`);
+      if (state.back) console.log(`  fixture back      ${state.back.requests} request(s), hit ${state.back.hits} store ${state.back.stores} · ${state.back.entries} entr(ies)`);
+      if (state.backAgain) console.log(`  reload again      ${state.backAgain.requests} request(s), hit ${state.backAgain.hits} · ${state.backAgain.entries} entr(ies)`);
+      if (state.budget) console.log(`  byte budget       ${state.budget.budget} B against a ${state.budget.recordCost} B record: ${state.budget.evictions} eviction(s) of ${state.budget.evictedBytes} B · ${state.budget.entries} entr(ies) accounted ${state.budget.bytes} B ≤ ${state.budget.limitBytes} B · ${state.budget.keys} key(s) · ${state.budget.goneFromA} older key(s) evicted, victim ${state.budget.victim}`);
+      if (state.refusal) console.log(`  tiny budget       ${state.refusal.budget} B against a ${state.refusal.recordCost} B record: ${state.refusal.evictions} eviction(s) at open, ${state.refusal.entries} entr(ies), ${state.refusal.keys} key(s), skipped ${state.refusal.skipped}, ${state.refusal.errors} error(s) · runtime still rendered ${state.refusal.resident} tile(s)`);
+      if (state.version) console.log(`  foreign format    ${state.version.namespace}: ${state.version.resets} reset(s), ${state.version.errors} error(s) · ${state.version.requests} request(s) · ${state.version.entries} entr(ies) · manifest now ${state.version.manifest}`);
+      if (state.panel) console.log(`  panel line        ${state.panel}`);
+      if (state.clear) console.log(`  clear             ${count(state.clear.entries)} entr(ies), ${count(state.clear.keys)} key(s) in IndexedDB, ${count(state.clear.cachedBytes)} B`);
+    }
     if ('saveFailures' in summary) {
       const state = summary.summary ?? {};
       console.log(`  document          ${state.wrote ? `${state.wrote.bytes} bytes, ${state.wrote.discoveries} place(s), ${state.wrote.writes} write(s) in the first session` : 'no first session'}`);
@@ -430,6 +462,14 @@ async function main() {
     // The save contract is a hard assertion: a document that does not come back, a setting
     // that does not survive a reload, a ladder that never writes back, or a write per frame
     // are defects, not measurements to interpret.
+    // The tile cache's gate is a hard assertion too: a budget that is not enforced, a key that
+    // does not name its source, a retired source left to spend quota, or a fetch that happens
+    // with the bytes already in storage are defects, not measurements to interpret.
+    if (summary.tileCacheFailures?.length) {
+      console.error('\n[audit] FAIL: the tile-cache gate does not hold.');
+      for (const failure of summary.tileCacheFailures) console.error(`  ${failure}`);
+      process.exitCode = 1;
+    }
     if (summary.saveFailures?.length) {
       console.error('\n[audit] FAIL: the local-save contract does not hold.');
       for (const failure of summary.saveFailures) console.error(`  ${failure}`);
@@ -448,7 +488,12 @@ async function main() {
       process.exitCode = 1;
     }
   } finally {
-    await browser.close();
+    // A scenario may have restarted the browser, so this can be an already-closed one whose
+    // protocol connection is gone: closing it again must not hang the audit forever.
+    await Promise.race([
+      browser.close().catch(() => {}),
+      new Promise(resolve => setTimeout(resolve, 15_000)),
+    ]);
   }
 }
 

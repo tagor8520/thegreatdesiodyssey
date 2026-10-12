@@ -57,6 +57,7 @@ import {
 import {
   GEO_AMBIENT_MAX_DISTANCE, GEO_AMBIENT_TYPES, GeoAmbientScheduler, assertAmbientBudget,
 } from './GeoAmbientLife.js';
+import { tileCacheBytesForProfile } from './GeoTileCache.js';
 
 export { circleIntersectsFootprint } from './GeoCollision.js';
 
@@ -443,6 +444,13 @@ export class GeoWorld {
     dynamicProxyProfile = GEO_DYNAMIC_PROXY_DEFAULT_PROFILE,
     dynamicProxyCap,
     ambientProfile = GEO_DYNAMIC_PROXY_DEFAULT_PROFILE,
+    // `MAP-09`: the persistent tile cache's byte budget, and whether it is on at
+    // all. Both have defaults a runtime can ignore: the budget follows the profile
+    // and the cache is on. `tileCacheBytes: 0` / `tileCacheEnabled: false` is the
+    // pre-`MAP-09` behaviour (every tile fetched), kept as one switch rather than
+    // as a branch through the tile pipeline.
+    tileCacheBytes = null,
+    tileCacheEnabled = true,
   }) {
     this.scene = scene;
     this.materialLibraryHandle = materialLibrary ? null : acquireProceduralMaterialLibrary();
@@ -466,6 +474,27 @@ export class GeoWorld {
     this.totalBytes = 0;
     this.provider = 'Connecting…';
     this.timings = null;
+    // `MAP-09`: what the worker reports about the persistent cache. The world owns
+    // the configuration (it knows the profile) and the worker owns the storage, so
+    // this is the copy the overlay, the HUD and the audit handle read.
+    this.tileCacheEnabled = tileCacheEnabled !== false && tileCacheBytes !== 0;
+    this.tileCacheBytes = Number.isFinite(tileCacheBytes) && tileCacheBytes > 0
+      ? tileCacheBytes
+      : tileCacheBytesForProfile(dynamicProxyProfile);
+    this.tileCacheDiagnostics = {
+      schema: null, adapter: 'unknown', available: null, opened: false,
+      entries: 0, cachedBytes: 0, bytes: 0, limitBytes: this.tileCacheBytes, limitEntries: null,
+      hits: 0, misses: 0, stores: 0, evictions: 0, expiries: 0, swept: 0, skipped: 0, rejected: 0, errors: 0,
+      reset: false, lastError: null, enabled: this.tileCacheEnabled,
+    };
+    this.tileCacheSwept = 0;
+    // A tile's own cache answer arrives with the last phase that touches it, so scenes
+    // (and gates) can wait for the storage consult to land rather than guessing a frame.
+    this.tileCacheRevisions = 0;
+    // Every `{type:'tile-cache'}` report the worker sends — a sweep, an answer to a stats
+    // request, a clear — bumps this. A caller that asks for a report and waits for this
+    // number to move has a deterministic handshake instead of a frame guess.
+    this.tileCacheReports = 0;
     this.mountDiagnostics = { lastMilliseconds: 0, maximumMilliseconds: 0, phases: Object.create(null) };
     this.viewCamera = camera;
     this.viewportHeight = Math.max(1, Number(viewportHeight) || 720);
@@ -690,6 +719,9 @@ export class GeoWorld {
           terrainSeed: this.terrainSeed,
           providers: this.providers,
           featureVersions: GDO_FEATURE_VERSIONS,
+          // `MAP-09`: the worker owns the cache; the world tells it the budget,
+          // because the budget follows the profile this runtime was mounted with.
+          tileCache: { enabled: this.tileCacheEnabled, bytes: this.tileCacheBytes },
         },
       });
     }
@@ -866,6 +898,15 @@ export class GeoWorld {
 
   _handleWorkerMessage(message) {
     if (this.disposed) return;
+    // `MAP-09`: cache reports are not per-tile — a sweep or a clear arrives with no
+    // tile of its own — so they are handled before the tile lookup.
+    if (message.type === 'tile-cache') {
+      this.tileCacheReports++;
+      if (message.cache) this.tileCacheDiagnostics = { ...message.cache, enabled: this.tileCacheEnabled };
+    this.tileCacheRevisions++;
+      if (Number.isFinite(message.swept)) this.tileCacheSwept += message.swept;
+      return;
+    }
     const tile = this.tiles.get(message.key);
     if (!tile || tile.requestId !== message.requestId) return;
 
@@ -884,6 +925,12 @@ export class GeoWorld {
     this.provider = message.provider || this.provider;
     this.timings = message.timings ?? this.timings;
     tile.timings = message.timings ?? tile.timings;
+    // `MAP-09`: which tiles came out of storage is a property of the tile, because
+    // "the second visit made no request" is only meaningful with the per-tile answer.
+    if (typeof message.cached === 'boolean') tile.cached = message.cached;
+    if (Number.isFinite(message.cacheAgeSeconds)) tile.cacheAgeSeconds = message.cacheAgeSeconds;
+    if (message.cache) this.tileCacheDiagnostics = { ...message.cache, enabled: this.tileCacheEnabled };
+    this.tileCacheRevisions++;
     if (!tile.bytes) {
       tile.bytes = message.bytes || 0;
       this.totalBytes += tile.bytes;
@@ -1051,14 +1098,37 @@ export class GeoWorld {
     this.onStatus({ ...stats, error, message: errorMessage });
   }
 
+  _emitStatus(errorMessage = '', error = false) {
+    const stats = this.stats;
+    this.onStatus({ ...stats, error, message: errorMessage });
+  }
+
+  /** `MAP-09`: the cache's current report, as the worker last sent it. */
+  get tileCache() { return this.tileCacheDiagnostics; }
+
+  /** `MAP-09`: ask the worker to report the cache now, or to empty it. */
+  requestTileCacheStats() {
+    if (this.disposed || !this.worker) return false;
+    this.worker.postMessage({ type: 'stats', request: { tileCache: { enabled: this.tileCacheEnabled, bytes: this.tileCacheBytes } } });
+    return true;
+  }
+
+  clearTileCache() {
+    if (this.disposed || !this.worker) return false;
+    this.worker.postMessage({ type: 'clear', request: { tileCache: { enabled: this.tileCacheEnabled, bytes: this.tileCacheBytes } } });
+    return true;
+  }
+
   get stats() {
     let roads = 0, buildings = 0, land = 0, water = 0, decorations = 0, streetFurniture = 0, labels = 0;
+    let cachedTiles = 0;
     let plantClearanceRejected = 0, plantClearanceAdapted = 0, plantObstacleSamples = 0, waterDomainSegments = 0;
     let morphologySamples = 0, morphologyPlants = 0, waterDomainBytes = 0;
     let buildingDetailBuildings = 0, buildingDetailBoxes = 0, buildingDetailTriangles = 0, buildingDetailBytes = 0;
     const waterClassCounts = { unknown: 0, stream: 0, canal: 0, river: 0, lake: 0, ocean: 0 };
     let supportSlots = 0, occupiedSupportSlots = 0, ready = 0, truncated = false;
     for (const tile of this.tiles.values()) {
+      if (tile.cached) cachedTiles++;
       roads += tile.roadFeatures;
       buildings += tile.buildingFeatures;
       land += tile.landFeatures;
@@ -1134,6 +1204,10 @@ export class GeoWorld {
       buildingDetailBytes,
       mountMilliseconds: this.mountDiagnostics.lastMilliseconds,
       maximumMountMilliseconds: this.mountDiagnostics.maximumMilliseconds,
+      // `MAP-09`: the HUD is where the storage policy becomes visible to a player —
+      // how much of the budget the world they are standing in has spent, and how
+      // many of the resident tiles came out of storage rather than off the network.
+      tileCache: { ...this.tileCacheDiagnostics, residentFromCache: cachedTiles, resident: this.tiles.size, revisions: this.tileCacheRevisions },
       truncated,
       initialReady: this.initialReady,
     });

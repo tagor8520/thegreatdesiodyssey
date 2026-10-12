@@ -84,10 +84,10 @@ The clearest current positioning is:
 | Procedural media | GLSL, generated voxel transforms, Canvas2D sign textures, generated water normal map |
 | Audio | Web Audio API synthesized pickup chimes |
 | Physics | Custom analytical terrain and AABB movement/collision; no physics library |
-| Tests | Node's built-in test runner; eight tests in `src/reference` |
+| Tests | Node's built-in test runner; **303 tests** across `src/engine`, `src/reference`, `src/geo` and `tools/fixture-provider`, plus the browser tier (`tools/visual-audit`, twelve scenarios) |
 | Deployment | Static files; suitable for CDN/Netlify/Vercel/static hosting |
 | Backend | None in this repository |
-| Persistence | None |
+| Persistence | Two bounded, versioned stores: the local save (`NET-01`, `src/engine/SaveState.js` — one `localStorage` document under `gdo:save`, 64 KiB and three count ceilings, a declared settings table and a `0 → 1` migration ladder, trimmed oldest-first rather than refused, and a file this build cannot read is never adopted or overwritten in place) and the tile cache (`MAP-09`, `src/geo/GeoTileCache.js` — IndexedDB under `gdo-tile-cache`, a byte budget per profile, 512 entries, 1 MiB per record and 30 days, LRU eviction, keys that name the format and the source, and a format this build did not write is forgotten rather than misread) |
 | Networking | Unused WebSocket client prototype; no server |
 | Content pipeline | Mostly JavaScript-authored geometry; two unused JSON state files |
 | 3D assets | No GLTF/OBJ gameplay models; geometry is generated at runtime |

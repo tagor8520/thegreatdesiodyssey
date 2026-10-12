@@ -227,6 +227,21 @@ export function mountGeoGame(container, {
   let disposed = false, lost = false, animationFrame = 0, initialReady = false;
   let player;
   let latestStatus = null;
+  // `MAP-09`: the two tile-cache options are reachable from the URL, like `debug` is.
+  // A storage budget cannot be resized by reshuffling the player's profile, so without a
+  // knob the gate could never force the eviction path through the real runtime and the
+  // browser half of this feature would stay unproven. `?tileCache=off` is exactly the
+  // pre-`MAP-09` behaviour, which is what makes "the cache is what prevented that
+  // request" a measurable claim rather than an assumption.
+  const initialTileCache = { enabled: true, bytes: null };
+  try {
+    const tileCache = new URLSearchParams(window.location.search).get('tileCache');
+    if (tileCache === 'off') initialTileCache.enabled = false;
+    else if (tileCache) {
+      const bytes = Number(tileCache);
+      if (Number.isFinite(bytes) && bytes > 0) initialTileCache.bytes = Math.floor(bytes);
+    }
+  } catch { /* optional */ }
   const world = new GeoWorld(scene, {
     ...coordinate,
     providers,
@@ -238,13 +253,24 @@ export function mountGeoGame(container, {
     // cap. It is a separate option so a future quality ladder can scale the two
     // independently, but it defaults to the same low tier today.
     ambientProfile: dynamicProxyProfile,
+    // `MAP-09`: the persistent tile cache's budget and its on/off switch, from the URL
+    // or from the profile default.
+    tileCacheBytes: initialTileCache.bytes,
+    tileCacheEnabled: initialTileCache.enabled,
     onStatus: status => {
       if (disposed) return;
       latestStatus = status;
       const tileTiming = status.timings?.totalMilliseconds
         ? ` · last tile ${Math.round(status.timings.totalMilliseconds)}ms (${Math.round(status.timings.buildingsMilliseconds)}ms buildings)`
         : '';
-      sourceElement.textContent = `${status.provider} · ${status.biome} · ${status.resident} resident chunk${status.resident === 1 ? '' : 's'} · ${formatBytes(status.bytes)} downloaded${tileTiming}`;
+      // `MAP-09`: the storage policy is visible where the download total already is —
+      // what the cache holds against its budget, and how many resident tiles came out
+      // of it rather than off the network.
+      const cache = status.tileCache;
+      const cacheNote = cache && cache.enabled === true
+        ? ` · cache ${formatBytes(cache.cachedBytes ?? 0)}/${formatBytes(cache.limitBytes ?? 0)} (${cache.entries ?? 0} tile${cache.entries === 1 ? '' : 's'}${cache.residentFromCache ? `, ${cache.residentFromCache} resident served locally` : ''})`
+        : cache && cache.enabled === false ? ' · cache off' : '';
+      sourceElement.textContent = `${status.provider} · ${status.biome} · ${status.resident} resident chunk${status.resident === 1 ? '' : 's'} · ${formatBytes(status.bytes)} downloaded${tileTiming}${cacheNote}`;
       if (status.error && !status.initialReady) {
         loadingElement.hidden = false;
         loadingTitle.textContent = 'Map data could not be loaded';
@@ -381,6 +407,11 @@ export function mountGeoGame(container, {
     save.progress.lastMode = 'coordinate';
     save.progress.lastCoordinate = { latitude: coordinate.latitude, longitude: coordinate.longitude };
   });
+  // `MAP-09`: the persistent tile cache is configured from the mounted profile, and the
+  // world has already computed the budget it will send to the worker. Asking for the
+  // first report here means the panel and the gate see a cache state rather than the
+  // placeholder the world was constructed with.
+  world.requestTileCacheStats();
   const discoveryCandidates = [];
   const gatherDiscoveryCandidates = position => {
     discoveryCandidates.length = 0;
@@ -529,6 +560,8 @@ export function mountGeoGame(container, {
       weather: weather.diagnostics(),
       discoveries: discoveryJournal.diagnostics(),
       save: saveStore.diagnostics(),
+      tileCache: world.tileCache,
+      downloads: { bytes: world.totalBytes, resident: world.stats.resident, tiles: world.tiles.size },
     });
     renderer.render(scene, camera);
     updateMapLabels(now);
@@ -667,6 +700,18 @@ export function mountGeoGame(container, {
     // `NET-01`: the store, its report, one forced write and one destructive action. The gate
     // drives all four rather than reading a copy: what it measures has to be what the player
     // would carry to the next session.
+    // `MAP-09`: the cache's report, and the two operations a reviewer needs — ask the
+    // worker to report now (the panel refreshes on its own interval, which is too slow
+    // for a gate) and empty it, so a scenario can prove the cache filled rather than
+    // finding whatever a previous run left behind.
+    get tileCache() { return world.tileCache; },
+    get tileCacheReports() { return world.tileCacheReports; },
+    get tileCacheConfig() { return { enabled: world.tileCacheEnabled, bytes: world.tileCacheBytes }; },
+    // `revisions` counts the phase reports that carried a cache answer, so it is the
+    // honest readiness signal for anything waiting on the storage consult to land.
+    get downloads() { return { bytes: world.totalBytes, resident: world.stats.resident, tiles: world.tiles.size, revisions: world.tileCacheRevisions, residentFromCache: world.stats.tileCache.residentFromCache }; },
+    refreshTileCache() { return world.requestTileCacheStats(); },
+    clearTileCache() { return world.clearTileCache(); },
     get saveStore() { return saveStore; },
     get save() { return saveStore.save; },
     get saveDiagnostics() { return saveStore.diagnostics(); },

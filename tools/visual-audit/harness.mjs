@@ -93,7 +93,7 @@ export const LAUNCH_ARGS = Object.freeze([
   '--mute-audio',
 ]);
 
-export async function launch({ width = 1280, height = 720, deviceScaleFactor = 1 } = {}) {
+export async function launch({ width = 1280, height = 720, deviceScaleFactor = 1, userDataDir = null } = {}) {
   const { executablePath, env } = await prepareChromium();
   const puppeteer = (await import('puppeteer-core')).default;
   const browser = await puppeteer.launch({
@@ -101,6 +101,11 @@ export async function launch({ width = 1280, height = 720, deviceScaleFactor = 1
     headless: true,
     args: [...LAUNCH_ARGS, `--window-size=${width},${height}`],
     env,
+    // A profile directory is how a scenario models *the same player* opening the same site
+    // again: everything the origin keeps — IndexedDB, local storage, the HTTP cache — lives
+    // here, so a relaunch on this directory is a browser restart rather than an amnesiac
+    // visit. Without it puppeteer makes a fresh temporary profile per launch.
+    ...(userDataDir ? { userDataDir } : {}),
     // Scenarios that read pixels do long synchronous runs inside one
     // `page.evaluate`, and SwiftShader can be slow when a capture deliberately
     // removes the anti-alias policy. The default 180s protocol timeout aborts
@@ -118,6 +123,41 @@ export async function launch({ width = 1280, height = 720, deviceScaleFactor = 1
   });
   page.on('pageerror', error => logs.push({ level: 'pageerror', text: String(error).slice(0, 400) }));
   return { browser, page, logs };
+}
+
+/**
+ * Start a whole new browser on the same profile directory, and carry the collectors over.
+ *
+ * A scenario that mounts the world many times exhausts the browser: the seventh WebGL world
+ * in one process was observed to take the target down mid-`evaluate`, which surfaces as a
+ * `TargetCloseError` inside whatever call happened to be in flight. Closing the *page* is
+ * not enough — the renderer that died is the browser's, not the tab's — so this closes the
+ * browser and launches a new one.
+ *
+ * The subject of such a scenario is what survives between sessions, so the new browser is
+ * pointed at the same `userDataDir`: IndexedDB, local storage and the HTTP cache are the
+ * same bytes on disk, while the process, the GPU state and every WebGL context are new.
+ * That makes the evidence *stronger* than a reload in one process — the tile found in
+ * storage on the other side was written by a process that no longer exists.
+ *
+ * The collectors are re-attached to the new page so errors in later legs still reach
+ * `classifyConsoleErrors`, and a renderer crash is recorded as one: a page that dies is a
+ * failure of the runtime, not a gap in the log.
+ */
+export async function relaunch(browser, logs, { userDataDir, width = 1280, height = 720, deviceScaleFactor = 1 } = {}) {
+  await browser.close().catch(() => {});
+  const session = await launch({ width, height, deviceScaleFactor, userDataDir });
+  // The fresh page's collectors are re-pointed at the caller's array, which is the one
+  // `run.mjs` classifies: a console error in a later leg has to fail the run like any other.
+  session.page.removeAllListeners('console');
+  session.page.removeAllListeners('pageerror');
+  session.page.on('console', message => {
+    if (message.type() === 'error') logs.push({ level: 'error', text: message.text().slice(0, 400) });
+  });
+  session.page.on('pageerror', error => logs.push({ level: 'pageerror', text: String(error).slice(0, 400) }));
+  session.page.on('error', error => logs.push({ level: 'pageerror', text: `the renderer crashed: ${String(error).slice(0, 300)}` }));
+  session.logs = logs;
+  return session;
 }
 
 /** Resolve after the browser has painted `count` frames. */

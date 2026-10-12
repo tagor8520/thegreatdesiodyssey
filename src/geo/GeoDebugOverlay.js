@@ -89,6 +89,14 @@ function snapshotText(snapshot, metrics, report, extras = null) {
     extras?.save
       ? `save v${extras.save.version} · ${extras.save.storage} · places ${extras.save.discoveries}/${extras.save.capacity} · items ${extras.save.collected} · writes ${extras.save.writes} · ${extras.save.bytes} B`
       : 'save unavailable',
+    // `MAP-09`: the persistent tile cache. The gate reads this line, so the panel and
+    // the gate cannot drift apart. It carries the storage the entries actually live in,
+    // what they cost against the budget, and the two numbers that make "served from
+    // storage rather than off the network" checkable — hits against stores — beside the
+    // download total the world has already paid.
+    extras?.tileCache && extras?.downloads
+      ? `tiles ${extras.tileCache.enabled === false ? 'off' : `v${extras.tileCache.schema} · ${extras.tileCache.adapter} · ${extras.tileCache.available === false ? 'unavailable' : extras.tileCache.opened ? 'open' : 'closed'} · entries ${extras.tileCache.entries}/${extras.tileCache.limitEntries ?? '—'} · ${extras.tileCache.cachedBytes} B cached of ${extras.tileCache.limitBytes} B · hits ${extras.tileCache.hits} · stores ${extras.tileCache.stores} · evictions ${extras.tileCache.evictions} · expiries ${extras.tileCache.expiries} · swept ${extras.tileCache.swept} · errors ${extras.tileCache.errors}`} · downloads ${extras.downloads.bytes} B · ${extras.downloads.resident}/${extras.downloads.tiles} resident`
+      : 'tiles unavailable',
   ].join('\n');
 }
 
