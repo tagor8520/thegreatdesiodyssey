@@ -30,6 +30,7 @@ import * as landmarkOpenings from './scenarios/landmark-openings.mjs';
 import * as weatherState from './scenarios/weather-state.mjs';
 import * as localSave from './scenarios/local-save.mjs';
 import * as tileCache from './scenarios/tile-cache.mjs';
+import * as contentRecipe from './scenarios/content-recipe.mjs';
 
 const SCENARIOS = new Map([
   ['curated-camera', {
@@ -136,6 +137,13 @@ const SCENARIOS = new Map([
     // No `prepares`: the scenario drives the runtime across several mounts and one fixture
     // switch, because the gate is about what a *later* session finds in storage.
     summary: 'MAP-09 bounded persistent tile cache: an off switch that spends a request where the cache spends none, a reload that costs zero provider requests with the tiles really in IndexedDB, a fixture switch that misses and sweeps the retired source instead of serving one source\'s geography under another\'s name, a byte budget that evicts, a foreign manifest format that is forgotten rather than read, and the panel line the gate reads.',
+  }],
+  ['content-recipe', {
+    module: contentRecipe,
+    fixture: 'dense-urban',
+    // No `prepares`: the scenario mounts the curated runtime itself, because the gate covers the
+    // props that runtime spawns rather than a prepared coordinate session.
+    summary: 'CNT-02 content recipes: the served compiler compiles all seven shipped props in the browser, twice, to the digests the Node tier froze; the 35 props the curated runtime spawns are those recipes instance for instance (matrix, colour and pose); and a reload respawns them with identical digests and identical matrices.',
   }],
   ['coordinate-camera', {
     module: coordinateCamera,
@@ -348,6 +356,15 @@ async function main() {
       }
       console.log(`  weather line      ${summary.panelLine ?? 'none'}`);
     }
+    if ('recipeFailures' in summary) {
+      const state = summary.summary ?? {};
+      if (state.recorded) {
+        console.log(`  recipes           ${state.recorded} declared at seed ${state.seed}, language v${state.version} · ${state.spawned} prop(s) spawned${state.reloaded === null ? '' : `, ${state.reloaded} after the reload`}`);
+        for (const entry of state.recompiled ?? []) {
+          console.log(`  ${entry.id.padEnd(17)} ${String(entry.boxes).padStart(2)} box(es) · ${entry.steps} step(s) · digest ${entry.digest} · [${entry.modules.join('+')}]`);
+        }
+      }
+    }
     if ('tileCacheFailures' in summary) {
       const state = summary.summary ?? {};
       const count = value => (typeof value === 'number' ? value : '—');
@@ -465,6 +482,14 @@ async function main() {
     // The tile cache's gate is a hard assertion too: a budget that is not enforced, a key that
     // does not name its source, a retired source left to spend quota, or a fetch that happens
     // with the bytes already in storage are defects, not measurements to interpret.
+    // The recipe gate is a hard assertion: content that compiles to a different digest than the
+    // recorded one, a prop whose scene geometry is not its recipe, or a reload that draws
+    // something else are defects, not measurements to interpret.
+    if (summary.recipeFailures?.length) {
+      console.error('\n[audit] FAIL: the content-recipe gate does not hold.');
+      for (const failure of summary.recipeFailures) console.error(`  ${failure}`);
+      process.exitCode = 1;
+    }
     if (summary.tileCacheFailures?.length) {
       console.error('\n[audit] FAIL: the tile-cache gate does not hold.');
       for (const failure of summary.tileCacheFailures) console.error(`  ${failure}`);

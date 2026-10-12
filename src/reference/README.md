@@ -25,7 +25,8 @@ This implementation recreates that composition with procedural voxel geometry. I
 | `Player.js` | Procedural adventurer, keyboard input, substepped movement/gravity, terrain and bridge collision, river respawn, animated limbs, and LERP follow/overview camera. |
 | `BridgeManager.js` | Three arched voxel bridges with terrain-matched endpoints, deck/rail/pier camera compounds, player collision queries, and shared curated structural blockers from biome/sign managers. |
 | `HoardingManager.js` | The three requested welcome signs, using generated 1024px CanvasTextures with independently readable front/back faces. |
-| `ItemManager.js` | Seven food definitions, deterministic regional placement, bob/rotation animation, one-shot AABB pickups, score events, and disposal. |
+| `ItemManager.js` | Seven food definitions, deterministic regional placement, bob/rotation animation, one-shot AABB pickups, score events, and disposal. Since `CNT-02` the models are **compiled from recipes** rather than hand-built: `createFoodModel(id)` calls `compileFoodRecipe(id)` and stamps the compiled boxes into a `VoxelBatch`, and the spawned group carries `userData.recipe` (`id`, `digest`, `boxes`, `bounds`) so a gate can read which recipe drew it. |
+| `FoodRecipes.js` | The seven shipped props as `CNT-02` recipes (`FOOD_RECIPES`) plus the seed they compile with, and `DIWALI_LAMP_RECIPE` — a worked example using the vocabulary the shipped items do not (`ring`, `scatter`, `translate`, `rotateY`). Edit a recipe here to change a prop; never add a branch to `createFoodModel`. |
 | `main.jsx` | `mountReferenceGame(container, {getWorldTime, subscribePing, onSelect})` returns scene, camera, gameplay managers, store, and an idempotent `dispose()`. A single requestAnimationFrame loop updates gameplay and rendering. |
 
 ## Streaming

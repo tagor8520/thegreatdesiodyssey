@@ -3,6 +3,24 @@ import { biomeAt, LANDMARKS } from './BiomeManager.js';
 import { tileHeight } from './Player.js';
 import { VoxelBatch, randomFor, disposeGroup } from './VoxelBatch.js';
 import { isGameplayClearance } from './GameplayLayout.js';
+import { compileContentRecipe } from '../engine/ContentRecipe.js';
+import { FOOD_RECIPES, FOOD_RECIPE_SEED } from './FoodRecipes.js';
+
+// `CNT-02`: the recipes are the authoring surface, and these two helpers are what a tool or a
+// gate uses to see what the runtime will draw without building a scene — the same compile the
+// renderer runs, exposed so the two cannot drift.
+
+/** The declared recipes, by id. */
+export { FOOD_RECIPES } from './FoodRecipes.js';
+
+/** Compile one declared item. Throws with the declared ids when asked for something unknown. */
+export function compileFoodRecipe(id) {
+  const recipe = FOOD_RECIPES[id];
+  if (!recipe) {
+    throw new RangeError(`Unknown food: ${JSON.stringify(id)} (declared: ${Object.keys(FOOD_RECIPES).join(', ')})`);
+  }
+  return compileContentRecipe(recipe, { seed: FOOD_RECIPE_SEED });
+}
 
 export const FOOD_ITEMS = Object.freeze([
   { id: 'vada-pav', name: 'Vada Pav', biome: 'maharashtra', points: 10 },
@@ -14,33 +32,23 @@ export const FOOD_ITEMS = Object.freeze([
   { id: 'kerala-porotta', name: 'Kerala Porotta', biome: 'kerala', points: 30 },
 ]);
 
+/**
+ * `CNT-02`: build one item by **compiling its recipe** and stamping the boxes through
+ * `VoxelBatch`. The batch is a sink here, not an authoring surface: no geometry decision is
+ * made in this file, and a contributor adding an item adds a recipe entry rather than a branch.
+ */
 export function createFoodModel(id) {
-  const b = new VoxelBatch();
-  if (id === 'vada-pav') {
-    b.box(0, .1, 0, 1.8, .35, 1.5, '#e4b86c'); b.box(0, .36, 0, 1.9, .12, 1.6, '#4d9132');
-    b.box(0, .65, 0, 1.5, .5, 1.3, '#c48620'); b.box(0, 1, 0, 1.9, .35, 1.5, '#e6a14a'); b.box(0, 1.25, 0, 1.5, .2, 1.2, '#efb663');
-  } else if (id === 'filter-coffee' || id === 'cutting-chai') {
-    const coffee = id === 'filter-coffee';
-    b.box(0, 0, 0, coffee ? 2 : 1.2, .12, coffee ? 2 : 1.2, '#bdcbd0');
-    b.box(0, .6, 0, 1.1, 1.1, 1.1, coffee ? '#aabcc5' : '#779c9d');
-    b.box(0, 1.18, 0, 1.05, .12, 1.05, coffee ? '#d5ab70' : '#a66c37');
-    b.box(-.3, .6, .56, .15, .85, .05, '#f1eee0');
-  } else if (id === 'mysore-pak') {
-    b.box(0, 0, 0, 2.2, .1, 1.8, '#e2ddd1');
-    for (const x of [-.55,.55]) b.box(x, .45, 0, .95, .8, 1.4, '#dbac35');
-    for (let i = 0; i < 5; i++) b.box(-.85 + i * .4, .87, .15, .15, .07, .18, '#b27b25');
-  } else if (id === 'banana-chips') {
-    b.box(0, 0, 0, 2.4, .12, 1.8, '#40852e');
-    for (let i = 0; i < 7; i++) { const x = (i % 3 - 1) * .6, z = (Math.floor(i / 3) - 1) * .5; b.box(x, .2 + i % 2 * .13, z, .65, .16, .55, '#f0c335', [0, i, 0]); }
-  } else if (id === 'podi-dosa') {
-    b.box(0, 0, 0, 2.6, .1, 1.8, '#498a30');
-    for (let i = -2; i <= 2; i++) b.box(0, .25 + (2 - Math.abs(i)) * .17, i * .22, 2.3, .25, .28, i % 2 ? '#c88a38' : '#e4b663');
-    b.box(1, .17, .65, .45, .2, .45, '#bf4f27');
-  } else if (id === 'kerala-porotta') {
-    b.box(0, 0, 0, 2.2, .1, 2, '#497c37');
-    for (let i = 0; i < 5; i++) b.box(0, .18 + i * .15, 0, 1.7 - i % 2 * .2, .13, 1.6 - i % 2 * .2, i % 2 ? '#d2ab73' : '#f4deb0', [0, i * .25, 0]);
-  } else throw new Error(`Unknown food: ${id}`);
-  return b.build();
+  const compiled = compileFoodRecipe(id);
+  const batch = new VoxelBatch();
+  for (const box of compiled.boxes) {
+    // The order is `VoxelBatch.box`'s own: centre, size, colour, rotation, metalness.
+    batch.box(box.x, box.y, box.z, box.sizeX, box.sizeY, box.sizeZ, box.color, [box.rx, box.ry, box.rz], box.metalness);
+  }
+  const group = batch.build();
+  // What was drawn, recorded on the thing that was drawn: a gate reading the live scene can see
+  // which recipe produced this mesh and what it compiled to, without a second source of truth.
+  group.userData.recipe = { id, digest: compiled.digest, boxes: compiled.boxCount, bounds: compiled.bounds };
+  return group;
 }
 
 export class ItemManager {
