@@ -62,6 +62,11 @@ function validPackedPolygon(polygonIndex, vertices, ringOffsets, polygonOffsets)
   );
 }
 
+/** Does this broad-phase index own an exact packed footprint at all? */
+export function packedPolygonExists(polygonIndex, vertices, ringOffsets, polygonOffsets) {
+  return validPackedPolygon(polygonIndex, vertices, ringOffsets, polygonOffsets);
+}
+
 function pointInPackedFootprint(x, z, polygonIndex, vertices, ringOffsets, polygonOffsets) {
   const firstRing = polygonOffsets[polygonIndex], lastRing = polygonOffsets[polygonIndex + 1];
   if (!pointInPackedRing(x, z, vertices, ringOffsets[firstRing], ringOffsets[firstRing + 1])) return false;

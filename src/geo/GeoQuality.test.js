@@ -398,7 +398,10 @@ test('DET-09 hero landmarks swap their mapped shell for tight compounds and keep
     assert.equal(tile.collisionMasks[0], 0, 'the mapped shell collider is disabled in place');
     const compoundColliders = [...tile.collisionMasks]
       .filter(mask => (mask & GEO_QUERY_MASK.SOLID_PLAYER) !== 0).length;
-    assert.equal(compoundColliders, hero.structuralCompounds);
+    // `DET-06`/`DET-07` merge declared rock/vehicle/prop boxes into the same
+    // stream after the building records; the hero's own contribution is what
+    // must equal its structural compounds.
+    assert.equal(compoundColliders - (tile.extraSolidBoxes ?? 0), hero.structuralCompounds);
     assert.ok(hero.boxes - hero.structuralCompounds > hero.structuralCompounds,
       'most hero boxes are ornament and never earn collision');
     const extent = item => Math.hypot(item[3] - item[0], item[4] - item[1], item[5] - item[2]);

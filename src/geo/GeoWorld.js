@@ -5,6 +5,8 @@ import { PlantRenderPools } from '../engine/PlantRenderPools.js';
 import { StreetFurniturePools } from './GeoStreetFurniturePools.js';
 import { BridgePools } from './GeoBridgePools.js';
 import { LandmarkPools } from './GeoLandmarkPools.js';
+import { RockPools } from './GeoRockPools.js';
+import { VehiclePools } from './GeoVehiclePools.js';
 import { GEO_TILE_CACHE_LIMITS } from './GeoTileCache.js';
 import { LifecycleLedger } from '../engine/LifecycleContract.js';
 import { defineWorldDomain } from '../engine/DomainInterface.js';
@@ -115,6 +117,7 @@ import {
   circleAabbPenetration,
   circleFootprintPenetration,
   circleIntersectsFootprint,
+  packedPolygonExists,
   sweepCircleAgainstFootprint,
   sweepPointAgainstAabb,
 } from './GeoCollision.js';
@@ -222,6 +225,49 @@ function createBufferGeometry(data) {
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
   return geometry;
+}
+
+/**
+ * `DET-06`/`DET-07`: authored solid proxies arrive as tight yaw-aligned boxes
+ * (centre, half extents, yaw, vertical span). The player broad phase indexes
+ * AABBs, so each OBB contributes exactly its own conservative footprint box —
+ * one box per declared proxy, never a visual-derived shape. Props keep their
+ * authored 4-float AABBs and span the full query height.
+ */
+export function solidBoxesFromStreams({ propSolids = null, rockProxies = null, vehicleProxies = null } = {}) {
+  const colliders = [], spans = [], masks = [];
+  const FULL_MIN = -1e30, FULL_MAX = 1e30;
+  const push = (minX, minZ, maxX, maxZ, bottom, top) => {
+    if (![minX, minZ, maxX, maxZ, bottom, top].every(Number.isFinite) || maxX < minX || maxZ < minZ) return;
+    colliders.push(minX, minZ, maxX, maxZ);
+    spans.push(bottom, top);
+    // No `LOS_BLOCKER`: ground clutter is solid and camera-blocking but never
+    // hides a mapped place label — label occlusion stays a mapped-structure rule.
+    masks.push(GEO_QUERY_MASK.SOLID_PLAYER | GEO_QUERY_MASK.CAMERA_BLOCKER |
+      GEO_QUERY_MASK.PLACEMENT);
+  };
+  if (propSolids) {
+    for (let index = 0; index + 3 < propSolids.length; index += 4) {
+      push(propSolids[index], propSolids[index + 1], propSolids[index + 2], propSolids[index + 3], FULL_MIN, FULL_MAX);
+    }
+  }
+  for (const proxies of [rockProxies, vehicleProxies]) {
+    if (!proxies) continue;
+    for (let index = 0; index + 6 < proxies.length; index += 7) {
+      const x = proxies[index], z = proxies[index + 1];
+      const halfWidth = proxies[index + 2], halfDepth = proxies[index + 3];
+      const yaw = proxies[index + 4], bottom = proxies[index + 5], top = proxies[index + 6];
+      const cosine = Math.abs(Math.cos(yaw)), sine = Math.abs(Math.sin(yaw));
+      const halfX = halfWidth * cosine + halfDepth * sine;
+      const halfZ = halfWidth * sine + halfDepth * cosine;
+      push(x - halfX, z - halfZ, x + halfX, z + halfZ, bottom, top);
+    }
+  }
+  return {
+    colliders: new Float32Array(colliders),
+    spans: new Float32Array(spans),
+    masks: new Uint16Array(masks),
+  };
 }
 
 export function buildCollisionGrid(colliders) {
@@ -743,6 +789,20 @@ export class GeoWorld {
       renderOrder: GEO_LAYER.building.renderBand + 2,
       ledger: this.lifecycle,
     });
+    // `DET-06`: hero-plus-satellite rock clusters from the shared morphology.
+    this.rockPools = new RockPools(this.root, {
+      material: this.decorationMaterial,
+      terrainSeed: this.terrainSeed,
+      renderOrder: GEO_LAYER.decoration.renderBand,
+      ledger: this.lifecycle,
+    });
+    // `DET-07`: parked vehicles whose collision is the one declared body proxy.
+    this.vehiclePools = new VehiclePools(this.root, {
+      material: this.decorationMaterial,
+      terrainSeed: this.terrainSeed,
+      renderOrder: GEO_LAYER.decoration.renderBand,
+      ledger: this.lifecycle,
+    });
     // VEG-09 already owns reduced motion for plants; ambient life reads the
     // same flag so one preference change covers every animated family.
     // `LAY-06`: the camera-fade policy owns the one screen-door discard rule,
@@ -908,6 +968,8 @@ export class GeoWorld {
       colliders: null, collisionGrid: null,
       // `DET-10`: prop records, triggers, authored solids, and their diagnostics.
       props: null, propTriggers: null, propSolids: null, propStride: 6, propDiagnostics: null,
+      rockCount: 0, rockProxies: null, rockMeta: null,
+      vehicleCount: 0, vehicleProxies: null, vehicleMeta: null,
       collisionVertices: null, collisionRingOffsets: null, collisionPolygonOffsets: null,
       collisionSpans: null, collisionMasks: null,
       supportSlots: null, supportSlotStates: null, supportSlotStride: 0,
@@ -1212,10 +1274,14 @@ export class GeoWorld {
       this.streetFurniturePools.removeOwner(tile.key);
       this.bridgePools.removeOwner(tile.key);
       this.landmarkPools.removeOwner(tile.key);
+      this.rockPools.removeOwner(tile.key);
+      this.vehiclePools.removeOwner(tile.key);
       this.ambientLifePools.removeOwner(tile.key);
       tile.land = null; tile.water = null; tile.decorations.length = 0;
       // `DET-10`: a released tile keeps no prop records, triggers, or solids.
       tile.props = null; tile.propTriggers = null; tile.propSolids = null; tile.propDiagnostics = null;
+      tile.rockCount = 0; tile.rockProxies = null; tile.rockMeta = null;
+      tile.vehicleCount = 0; tile.vehicleProxies = null; tile.vehicleMeta = null;
       if (tile.collisionHasPropSolids) tile.collisionHasPropSolids = false;
       tile.decorationCount = 0; tile.plantPoolCount = 0; tile.streetFurnitureCount = 0;
       tile.ambientLifeCount = 0;
@@ -1248,6 +1314,28 @@ export class GeoWorld {
           tile.key, furnitureValues, context.streetFurniture?.stride || 6,
         );
       } catch (error) { warnings.push(`street furniture: ${error.message || error}`); }
+      try {
+        // `DET-06`: rock clusters join the shared family pools; the tight
+        // major-mass OBBs ride beside them for the collision merge below.
+        const rockValues = context.rockClusters instanceof Float32Array
+          ? context.rockClusters : new Float32Array();
+        tile.rockCount = this.rockPools.addOwner(
+          tile.key, rockValues, context.rockClusterStride || 8,
+        );
+        tile.rockProxies = context.rockProxies instanceof Float32Array ? context.rockProxies : null;
+        tile.rockMeta = context.rockClusterMeta ?? null;
+      } catch (error) { warnings.push(`rocks: ${error.message || error}`); }
+      try {
+        // `DET-07`: vehicles render from the family pools and carry exactly one
+        // body proxy each into the same solid stream.
+        const vehicleValues = context.vehicles instanceof Float32Array
+          ? context.vehicles : new Float32Array();
+        tile.vehicleCount = this.vehiclePools.addOwner(
+          tile.key, vehicleValues, context.vehicleStride || 8,
+        );
+        tile.vehicleProxies = context.vehicleProxies instanceof Float32Array ? context.vehicleProxies : null;
+        tile.vehicleMeta = context.vehicleMeta ?? null;
+      } catch (error) { warnings.push(`vehicles: ${error.message || error}`); }
       try {
         // Bridge detail is its own bounded pool: a malformed or over-capped
         // span stream must never suppress furniture or decoration mounting.
@@ -1353,12 +1441,41 @@ export class GeoWorld {
       tile.supportSlots = message.geometry.supportSlots;
       tile.supportSlotStates = message.geometry.supportSlotStates;
       tile.supportSlotStride = message.geometry.supportSlotStride ?? 0;
-      // `DET-10`: a prop without an authored solid proxy contributes nothing here;
-      // a family that declares one contributes exactly its declared boxes.
-      const propSolids = tile.propSolids?.length
-        ? new Float32Array([...tile.colliders, ...tile.propSolids])
-        : tile.colliders;
-      tile.collisionGrid = buildCollisionGrid(propSolids);
+      // `DET-10`/`DET-06`/`DET-07`: a prop without an authored solid proxy
+      // contributes nothing here; rock and vehicle streams contribute exactly
+      // their declared major-mass/body boxes. Every appended box joins the same
+      // AABB stream the broad phase indexes, with its own vertical span and
+      // query mask, so the narrow phase reads real bounds for each record.
+      const extraSolids = solidBoxesFromStreams({
+        propSolids: tile.propSolids,
+        rockProxies: tile.rockProxies,
+        vehicleProxies: tile.vehicleProxies,
+      });
+      tile.extraSolidBoxes = extraSolids.colliders.length / 4;
+      const baseColliders = tile.colliders;
+      if (extraSolids.colliders.length) {
+        tile.colliders = new Float32Array([...baseColliders, ...extraSolids.colliders]);
+        const polygonCount = baseColliders.length / 4;
+        const defaultMask = GEO_QUERY_MASK.SOLID_PLAYER | GEO_QUERY_MASK.CAMERA_BLOCKER |
+          GEO_QUERY_MASK.LOS_BLOCKER | GEO_QUERY_MASK.PLACEMENT;
+        const spans = new Float32Array(polygonCount * 2 + extraSolids.spans.length);
+        for (let index = 0; index < polygonCount; index++) {
+          // A base polygon without an authored span keeps the full-height
+          // behaviour a missing span used to mean.
+          const hasSpan = tile.collisionSpans && index * 2 + 1 < tile.collisionSpans.length;
+          spans[index * 2] = hasSpan ? tile.collisionSpans[index * 2] : -Infinity;
+          spans[index * 2 + 1] = hasSpan ? tile.collisionSpans[index * 2 + 1] : Infinity;
+        }
+        spans.set(extraSolids.spans, polygonCount * 2);
+        tile.collisionSpans = spans;
+        const masks = new Uint16Array(polygonCount + extraSolids.masks.length);
+        for (let index = 0; index < polygonCount; index++) {
+          masks[index] = tile.collisionMasks?.[index] ?? defaultMask;
+        }
+        masks.set(extraSolids.masks, polygonCount);
+        tile.collisionMasks = masks;
+      }
+      tile.collisionGrid = buildCollisionGrid(tile.colliders);
       tile.collisionHasPropSolids = Boolean(tile.propSolids?.length);
       try {
         // A hero is already compiled and hidden-face reduced, so the pool only
@@ -1406,7 +1523,7 @@ export class GeoWorld {
 
   get stats() {
     let roads = 0, buildings = 0, land = 0, water = 0, decorations = 0, streetFurniture = 0, bridges = 0, labels = 0;
-    let landmarks = 0;
+    let landmarks = 0, rocks = 0, rockProxies = 0, vehicles = 0, vehicleProxies = 0;
     let plantClearanceRejected = 0, plantClearanceAdapted = 0, plantObstacleSamples = 0, waterDomainSegments = 0;
     let morphologySamples = 0, morphologyPlants = 0, waterDomainBytes = 0;
     let buildingDetailBuildings = 0, buildingDetailBoxes = 0, buildingDetailTriangles = 0, buildingDetailBytes = 0;
@@ -1421,6 +1538,10 @@ export class GeoWorld {
       streetFurniture += tile.streetFurnitureCount;
       bridges += tile.bridgeCount;
       landmarks += tile.landmarkCount ?? 0;
+      rocks += tile.rockCount ?? 0;
+      rockProxies += tile.rockMeta?.proxyCount ?? 0;
+      vehicles += tile.vehicleCount ?? 0;
+      vehicleProxies += tile.vehicleMeta?.proxyCount ?? 0;
       labels += tile.labels.length;
       plantClearanceRejected += tile.clearanceDiagnostics?.rejected ?? 0;
       plantClearanceAdapted += tile.clearanceDiagnostics?.adapted ?? 0;
@@ -1448,6 +1569,8 @@ export class GeoWorld {
     const ambientLifeDiagnostics = this.ambientLifePools.diagnostics;
     const bridgeDiagnostics = this.bridgePools.diagnostics;
     const landmarkDiagnostics = this.landmarkPools.diagnostics;
+    const rockDiagnostics = this.rockPools.diagnostics;
+    const vehicleDiagnostics = this.vehiclePools.diagnostics;
     return Object.freeze({
       provider: this.provider,
       providerSchema: this.providerSchema,
@@ -1481,6 +1604,17 @@ export class GeoWorld {
       landmarkStructuralCompounds: landmarkDiagnostics.structuralCompounds,
       // Must stay zero: a hero never keeps one enclosing AABB.
       landmarkEnclosingCompounds: landmarkDiagnostics.enclosingCompounds,
+      // `DET-06`/`DET-07`: grammar pools and their declared solid proxies.
+      rocks,
+      rockProxies,
+      rockTriangles: rockDiagnostics.visibleTriangles,
+      rockAddedDrawCalls: rockDiagnostics.addedDrawCalls,
+      vehicles,
+      vehicleProxies,
+      vehicleTriangles: vehicleDiagnostics.visibleTriangles,
+      vehicleAddedDrawCalls: vehicleDiagnostics.addedDrawCalls,
+      vehicleSteadyFrameMatrixUpdates: vehicleDiagnostics.steadyFrameMatrixUpdates,
+      rockSteadyFrameMatrixUpdates: rockDiagnostics.steadyFrameMatrixUpdates,
       // MAP-09 persistent tile cache. The ceilings are the active profile's own,
       // so the debug panel can show how much of the allowance is in use.
       tileCacheEntries: this.tileCacheDiagnostics?.entries ?? 0,
@@ -2395,6 +2529,8 @@ export class GeoWorld {
     this.streetFurniturePools.removeOwner(tile.key);
     this.bridgePools.removeOwner(tile.key);
     this.landmarkPools.removeOwner(tile.key);
+    this.rockPools.removeOwner(tile.key);
+    this.vehiclePools.removeOwner(tile.key);
     this.ambientLifePools.removeOwner(tile.key);
     tile.plantPoolCount = 0;
     tile.streetFurnitureCount = 0;
@@ -2480,7 +2616,11 @@ export class GeoWorld {
             x + radius < tile.colliders[index] || x - radius > tile.colliders[index + 2] ||
             z + radius < tile.colliders[index + 1] || z - radius > tile.colliders[index + 3]) continue;
         const hasExactFootprint = tile.collisionVertices?.length && tile.collisionRingOffsets?.length > 1 && tile.collisionPolygonOffsets?.length > 1;
-        if (!hasExactFootprint) return true;
+        // A plain authored box (prop/rock/vehicle proxy) owns no exact ring: its
+        // AABB above is the narrow phase. Building polygons stay exact.
+        if (!hasExactFootprint || !packedPolygonExists(
+          index / 4, tile.collisionVertices, tile.collisionRingOffsets, tile.collisionPolygonOffsets,
+        )) return true;
         this.queryDiagnostics.exactTests++;
         if (circleIntersectsFootprint(
           x, z, radius, index / 4,
@@ -2548,7 +2688,11 @@ export class GeoWorld {
           candidate,
         );
         if (!candidate.hit || candidate.time > out.time) continue;
-        if (hasExactFootprints) {
+        // Plain authored boxes have no exact ring: the conservative AABB sweep
+        // above is their narrow phase.
+        if (hasExactFootprints && packedPolygonExists(
+          index / 4, tile.collisionVertices, tile.collisionRingOffsets, tile.collisionPolygonOffsets,
+        )) {
           this.queryDiagnostics.exactTests++;
           sweepCircleAgainstFootprint(
             x, z, dx, dz, radius, index / 4,
@@ -2617,7 +2761,9 @@ export class GeoWorld {
               currentX + radius < tile.colliders[index] || currentX - radius > tile.colliders[index + 2] ||
               currentZ + radius < tile.colliders[index + 1] || currentZ - radius > tile.colliders[index + 3]) continue;
           const penetration = this.penetrationCandidate;
-          if (hasExactFootprints) {
+          if (hasExactFootprints && packedPolygonExists(
+            index / 4, tile.collisionVertices, tile.collisionRingOffsets, tile.collisionPolygonOffsets,
+          )) {
             this.queryDiagnostics.exactTests++;
             circleFootprintPenetration(
               currentX, currentZ, radius, index / 4,
@@ -2788,7 +2934,9 @@ export class GeoWorld {
           candidate,
         );
         if (candidate.hit && candidate.time <= out.time) {
-          if (hasExactFootprints) {
+          if (hasExactFootprints && packedPolygonExists(
+            polygonIndex, tile.collisionVertices, tile.collisionRingOffsets, tile.collisionPolygonOffsets,
+          )) {
             this.queryDiagnostics.exactTests++;
             sweepCircleAgainstFootprint(
               x, z, dx, dz, radius, polygonIndex,
