@@ -18,6 +18,8 @@ export const GDO_FEATURE_VERSIONS = Object.freeze({
   streetFurniture: 1,
   bridgeGrammar: 1,
   landmarkGrammar: 1,
+  rockGrammar: 1,
+  vehicleGrammar: 1,
   tileCache: 1,
   lifecycleContract: 1,
   debugHooks: 1,

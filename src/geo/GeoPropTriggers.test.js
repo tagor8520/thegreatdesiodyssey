@@ -171,6 +171,12 @@ test('an authored proxy is the only prop geometry that reaches the collision gri
         propTriggers: new Float32Array([10, .5, 10, inventory[0].trigger.radius, 0, 0]),
         propSolids: new Float32Array(solids), propStride: 6,
         propDiagnostics: { namespace: 'gdo:propGrammar:v1', placed: 2, families: GDO_PROP_FAMILIES.length, solidProxies: solids.length / 4, triggers: 1, truncated: false },
+        // This test is about prop proxy separation; the `DET-06`/`DET-07`
+        // streams stay empty so nothing else shares the solid channel.
+        rockClusters: new Float32Array(), rockProxies: new Float32Array(),
+        rockClusterMeta: null,
+        vehicles: new Float32Array(), vehicleProxies: new Float32Array(),
+        vehicleMeta: null,
         decorations: decorated,
       },
       timings: {},
@@ -191,16 +197,20 @@ test('an authored proxy is the only prop geometry that reaches the collision gri
       timings: {},
     });
     assert.ok(tile.collisionGrid, 'the grid was rebuilt');
-    // `buildCollisionGrid` indexes boxes by `index / 4`, so the prop solid's own
-    // index is proof that the declared proxy — and nothing else — entered the grid.
+    // The grid indexes the same AABB stream the narrow phase reads: the tile's
+    // own colliders first, then each authored prop box at its own offset.
     const inGrid = new Set(tile.collisionGrid.large);
     for (const cell of tile.collisionGrid.grid.values()) for (const index of cell) inGrid.add(index);
-    // `buildCollisionGrid` stores each box's *number* offset, so the prop solid's
-    // offset is where the tile's own colliders end.
-    const propSolidOffset = tile.colliders.length;
+    const propSolidOffset = 4; // the fixture's single collider occupies offsets 0–3
+    assert.equal(tile.colliders.length, 4 + solids.length,
+      'the stream carries the tile box plus the authored proxies');
     assert.equal(inGrid.has(propSolidOffset), true, 'the declared proxy is in the grid');
     assert.equal(inGrid.has(0), true, 'the tile collider is still there');
     assert.equal(inGrid.size, 1 + solids.length / 4, 'exactly the tile collider and the authored proxies');
+    // Behaviour, not just membership: the proxy blocks at its declared box and
+    // nowhere else on the tile.
+    assert.equal(world.collidesCircle(10, 10, .05), true, 'the declared proxy blocks the player');
+    assert.equal(world.collidesCircle(18, 14, .05), false, 'open ground stays open');
     // The body is bigger than its proxy — more boxes, and taller dressing above
     // the counter — and only the proxy is present: the visual modules never
     // became colliders.
@@ -208,7 +218,9 @@ test('an authored proxy is the only prop geometry that reaches the collision gri
     const bodyHeight = Math.max(...inventory[0].boxes.map(box => box.offset[1] + box.size[1] / 2));
     assert.ok(inventory[0].solidProxy.length < inventory[0].boxes.length, 'the proxy is a subset of the body');
     assert.ok(bodyHeight > proxyHeight, 'the body stands taller than its proxy');
-    const colliderCount = (tile.colliders.length / 4) + (tile.propSolids.length / 4);
+    // The merged stream is the single source of truth: authored proxies sit at
+    // their own offsets inside `tile.colliders`, so they are counted once.
+    const colliderCount = tile.colliders.length / 4;
     assert.equal(tile.propSolids.length / 4, solids.length / 4);
     assert.equal(colliderCount, 1 + solids.length / 4);
     assert.equal(queryPropTriggerStream(tile.propTriggers, 6, 10, .5, 10).prop, 0);

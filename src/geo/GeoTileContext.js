@@ -9,6 +9,8 @@ import { GEO_SURFACE_Y, landSurfaceY } from './GeoLayers.js';
 import { terrainHeightAt } from './GeoTerrain.js';
 import { compileStreetFurniture } from './GeoStreetFurnitureGrammar.js';
 import { compileBridges } from './GeoBridgeGrammar.js';
+import { placeRockClusters } from './GeoRockGrammar.js';
+import { placeVehicles } from './GeoVehicleGrammar.js';
 import {
   GEO_WATER_CLASS,
   GEO_WATER_DOMAIN_LIMITS,
@@ -688,39 +690,6 @@ function collectNavigationLines(vectorTile, request) {
   return { lines, names, levels, kinds, widths, truncated };
 }
 
-function addLegacyParkedCars(vectorTile, request, decorations, seed) {
-  const vectorLayer = pickMapLayer(vectorTile.layers, GEO_MAP_ROLE.TRANSPORT)?.layer;
-  if (!vectorLayer || decorations.length / 6 >= MAX_DECORATIONS) return;
-  for (let featureIndex = 0; featureIndex < vectorLayer.length && decorations.length / 6 < MAX_DECORATIONS; featureIndex++) {
-    const feature = vectorLayer.feature(featureIndex);
-    if (feature.type !== 2) continue;
-    const style = roadStyle(feature.properties);
-    if (style.transport.physicalLevel !== 0 ||
-        !['primary', 'secondary', 'tertiary', 'major', 'medium'].includes(style.kind)) continue;
-    for (const line of feature.loadGeometry()) {
-      for (let index = 1; index < line.length && decorations.length / 6 < MAX_DECORATIONS; index++) {
-        const [x1, z1] = pointToWorld(line[index - 1], feature.extent, request);
-        const [x2, z2] = pointToWorld(line[index], feature.extent, request);
-        const dx = x2 - x1, dz = z2 - z1, length = Math.hypot(dx, dz);
-        if (length < 3.2) continue;
-        const nx = -dz / length, nz = dx / length;
-        const count = Math.min(5, Math.floor(length / 3.2));
-        for (let item = 1; item <= count && decorations.length / 6 < MAX_DECORATIONS; item++) {
-          if ((item + featureIndex) % 9 !== 0) continue;
-          const amount = item / (count + 1), side = (item + featureIndex) % 2 ? 1 : -1;
-          const offset = side * Math.max(.13, style.width * .31);
-          const scale = .86 + random01(seed ^ featureIndex ^ item) * .22;
-          decorations.push(
-            x1 + dx * amount + nx * offset,
-            z1 + dz * amount + nz * offset,
-            scale, 7, Math.atan2(dx, dz), (seed + item) % 4,
-          );
-        }
-      }
-    }
-  }
-}
-
 export function buildContextData(vectorTile, request) {
   const terrainSeed = Number.isFinite(request.terrainSeed) ? request.terrainSeed : 0;
   const land = { positions: [], normals: [], colors: [], indices: [] };
@@ -911,8 +880,32 @@ export function buildContextData(vectorTile, request) {
   const groundCoverCapReached = addGroundCover(request, decorations,
     clearanceContext, polygonRecords, generationDiagnostics, tileSeed);
   addAmbientLife(request, decorations, centerEnvironment, tileSeed);
-  // DET-07 will replace this retained baseline with a versioned vehicle grammar.
-  addLegacyParkedCars(vectorTile, request, decorations, tileSeed);
+  // `GME-07`'s mapped line stream feeds both the navigation graph and the
+  // `DET-07` vehicle placements, so neither re-reads the provider.
+  const navigation = collectNavigationLines(vectorTile, request);
+  // `DET-07` replaced the retained pre-grammar parked-car baseline: vehicles
+  // compile through `gdo:vehicleGrammar:v1` with one tight body proxy each.
+  const vehicles = placeVehicles({
+    lines: navigation.lines,
+    kinds: navigation.kinds,
+    widths: navigation.widths,
+    terrainSeed,
+    seed: tileSeed,
+    obstacles,
+    waterDomain,
+  });
+  // `DET-06`: rock clusters founded on the shared `TER-06` morphology, with
+  // major-mass-only proxies.
+  const rockClusters = placeRockClusters({
+    tileMinX,
+    tileMinZ,
+    tileSize: request.tileSize,
+    terrainSeed,
+    seed: tileSeed,
+    obstacles,
+    waterDomain,
+    landKindAt: (x, z) => mappedLandKindAt(x, z, polygonRecords),
+  });
   const props = placeProps(vectorTile, request, {
     decorations, obstacles, waterDomain, clearanceContext,
     landKindAt: (x, z) => mappedLandKindAt(x, z, polygonRecords),
@@ -1006,6 +999,18 @@ export function buildContextData(vectorTile, request) {
     ])),
     propStride: 6,
     propSolids: new Float32Array(props.solids),
+    // `DET-06`: cluster placements (stride 8) and tight major-mass OBBs (stride 7).
+    rockClusters: rockClusters.placements,
+    rockClusterStride: rockClusters.stride,
+    rockProxies: rockClusters.proxies,
+    rockProxyStride: rockClusters.proxyStride,
+    rockClusterMeta: rockClusters.meta,
+    // `DET-07`: parked vehicle placements (stride 8) and one body OBB per vehicle.
+    vehicles: vehicles.placements,
+    vehicleStride: vehicles.stride,
+    vehicleProxies: vehicles.proxies,
+    vehicleProxyStride: vehicles.proxyStride,
+    vehicleMeta: vehicles.meta,
     decorations: new Float32Array(decorations),
     decorationStride: 6,
     decorationClearances: new Float32Array(decorationClearances),
@@ -1017,7 +1022,7 @@ export function buildContextData(vectorTile, request) {
     morphologyDiagnostics: finalizedMorphologyDiagnostics,
     labels: collectLabels(vectorTile, request),
     // `GME-07`: the mapped polylines the local navigation graph is built from.
-    navigation: collectNavigationLines(vectorTile, request),
+    navigation,
     biome,
     environment,
   };
