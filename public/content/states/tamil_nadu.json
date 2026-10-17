@@ -1,0 +1,262 @@
+{
+  "schemaVersion": 1,
+  "stateId": "tamil_nadu",
+  "stateName": "Tamil Nadu - Idli, Sambar & Jigarthanda",
+  "bgColor": "#4d2a2a",
+  "fogColor": "#733f3f",
+  "ambientColor": "#ffd0a8",
+  "collectibles": [
+    {
+      "id": "idli_sambar",
+      "name": "Idli with Sambar",
+      "description": "🍚 Steamed and soft! +1.6x Shield for 12s",
+      "icon": "🍚",
+      "buff": {
+        "type": "shield",
+        "multiplier": 1.6,
+        "duration": 12000
+      },
+      "spawnPosition": {
+        "x": 40,
+        "y": 1,
+        "z": 14
+      },
+      "voxels": [
+        [
+          0,
+          0,
+          0,
+          "#4A6B3A"
+        ],
+        [
+          1,
+          0,
+          0,
+          "#5C8046"
+        ],
+        [
+          2,
+          0,
+          0,
+          "#4A6B3A"
+        ],
+        [
+          0,
+          0,
+          1,
+          "#5C8046"
+        ],
+        [
+          1,
+          0,
+          1,
+          "#C4A35A"
+        ],
+        [
+          2,
+          0,
+          1,
+          "#5C8046"
+        ],
+        [
+          0,
+          0,
+          2,
+          "#4A6B3A"
+        ],
+        [
+          1,
+          0,
+          2,
+          "#5C8046"
+        ],
+        [
+          2,
+          0,
+          2,
+          "#4A6B3A"
+        ],
+        [
+          0,
+          1,
+          0,
+          "#FFFDF5"
+        ],
+        [
+          1,
+          1,
+          0,
+          "#FFFFFF"
+        ],
+        [
+          2,
+          1,
+          0,
+          "#FFFDF5"
+        ],
+        [
+          0,
+          1,
+          1,
+          "#FFFFFF"
+        ],
+        [
+          1,
+          1,
+          1,
+          "#FFFDF5"
+        ],
+        [
+          2,
+          1,
+          1,
+          "#FFFFFF"
+        ],
+        [
+          0,
+          1,
+          2,
+          "#FFFDF5"
+        ],
+        [
+          1,
+          1,
+          2,
+          "#FFFFFF"
+        ],
+        [
+          2,
+          1,
+          2,
+          "#FFFDF5"
+        ]
+      ]
+    },
+    {
+      "id": "jigarthanda",
+      "name": "Jigarthanda",
+      "description": "🥤 Madurai cooler! +1.9x Jump for 10s",
+      "icon": "🥤",
+      "buff": {
+        "type": "jump",
+        "multiplier": 1.9,
+        "duration": 10000
+      },
+      "spawnPosition": {
+        "x": -44,
+        "y": 1,
+        "z": 26
+      },
+      "voxels": [
+        [
+          0,
+          0,
+          0,
+          "#8B4A2B"
+        ],
+        [
+          1,
+          0,
+          0,
+          "#A65A33"
+        ],
+        [
+          2,
+          0,
+          0,
+          "#8B4A2B"
+        ],
+        [
+          0,
+          0,
+          1,
+          "#A65A33"
+        ],
+        [
+          1,
+          0,
+          1,
+          "#B96A3C"
+        ],
+        [
+          2,
+          0,
+          1,
+          "#A65A33"
+        ],
+        [
+          0,
+          1,
+          0,
+          "#E8D5B0"
+        ],
+        [
+          1,
+          1,
+          0,
+          "#F5E7C6"
+        ],
+        [
+          2,
+          1,
+          0,
+          "#E8D5B0"
+        ],
+        [
+          0,
+          1,
+          1,
+          "#F5E7C6"
+        ],
+        [
+          1,
+          1,
+          1,
+          "#FFFFFF"
+        ],
+        [
+          2,
+          1,
+          1,
+          "#F5E7C6"
+        ],
+        [
+          0,
+          2,
+          0,
+          "#E8D5B0"
+        ],
+        [
+          1,
+          2,
+          0,
+          "#F5E7C6"
+        ],
+        [
+          2,
+          2,
+          0,
+          "#E8D5B0"
+        ],
+        [
+          0,
+          2,
+          1,
+          "#F5E7C6"
+        ],
+        [
+          1,
+          2,
+          1,
+          "#FFF6DE"
+        ],
+        [
+          2,
+          2,
+          1,
+          "#F5E7C6"
+        ]
+      ]
+    }
+  ]
+}

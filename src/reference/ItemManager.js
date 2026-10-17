@@ -44,9 +44,11 @@ export function createFoodModel(id) {
 }
 
 export class ItemManager {
-  constructor(scene, { seed = 2026, perType = 5, onCollect = () => {} } = {}) {
+  constructor(scene, { seed = 2026, perType = 5, onCollect = () => {}, activeRadius = Infinity, initialFocus = null } = {}) {
     if (!Number.isInteger(perType) || perType < 1 || perType > 100) throw new RangeError('perType must be 1–100');
-    this.scene = scene; this.onCollect = onCollect; this.items = new Map(); this.score = 0; this.collected = 0; this.disposed = false;
+    if (!(activeRadius > 0)) throw new RangeError('activeRadius must be positive');
+    this.scene = scene; this.onCollect = onCollect; this.activeRadius = activeRadius;
+    this.items = new Map(); this.score = 0; this.collected = 0; this.disposed = false;
     const random = randomFor(91, 17, seed), positions = [];
     for (const definition of FOOD_ITEMS) for (let i = 0; i < perType; i++) {
       let position = null;
@@ -62,14 +64,26 @@ export class ItemManager {
       if (!position) { this.dispose(); throw new Error(`Unable to place ${definition.id}`); }
       positions.push(position);
       const mesh = createFoodModel(definition.id), id = `${definition.id}:${i}`;
-      mesh.name = `food:${id}`; mesh.position.copy(position).y += 1.25; scene.add(mesh);
+      mesh.name = `food:${id}`; mesh.position.copy(position).y += 1.25;
+      if (initialFocus && Number.isFinite(activeRadius)) {
+        mesh.visible = Math.hypot(position.x - initialFocus.x, position.z - initialFocus.z) <= activeRadius;
+      }
+      scene.add(mesh);
       this.items.set(id, { id, definition, mesh, baseY: position.y + 1.25, phase: random() * Math.PI * 2, bounds: new THREE.Box3() });
     }
     this.total = this.items.size;
   }
   update(seconds, playerBounds) {
     if (this.disposed) return;
+    const centerX = (playerBounds.min.x + playerBounds.max.x) * .5;
+    const centerZ = (playerBounds.min.z + playerBounds.max.z) * .5;
+    const activeRadiusSq = this.activeRadius * this.activeRadius;
     for (const [id, item] of this.items) {
+      const dx = item.mesh.position.x - centerX, dz = item.mesh.position.z - centerZ;
+      const active = dx * dx + dz * dz <= activeRadiusSq;
+      item.mesh.visible = active;
+      if (!active) continue;
+
       item.mesh.position.y = item.baseY + Math.sin(seconds * 2 + item.phase) * .22;
       item.mesh.rotation.y = seconds * .9 + item.phase;
       const p = item.mesh.position;

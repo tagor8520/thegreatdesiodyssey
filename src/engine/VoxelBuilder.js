@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { compileCollectibleRecipe } from './RecipeCompiler.js';
 
 const materialCache = new Map();
 
@@ -18,45 +19,49 @@ function getMaterial(hexColor) {
 }
 
 /**
+ * `CNT-02`: a compiled module list is the one place voxel layout arithmetic
+ * lives. This adapter only turns compiled modules into `three` objects, so a
+ * contributor never writes layout code — and a content pack never needs a
+ * hand-written builder.
+ *
+ * @param {object} compiled - result of `compileCollectibleRecipe`
+ * @param {object} [options]
+ * @returns {THREE.Group}
+ */
+export function buildModuleGroup(compiled, { scale = compiled?.scale ?? .2, shadow = true } = {}) {
+  if (!compiled || !Array.isArray(compiled.modules)) {
+    throw new TypeError('Module group needs a compiled recipe');
+  }
+  const group = new THREE.Group();
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  for (const entry of compiled.modules) {
+    const mesh = new THREE.Mesh(geo, getMaterial(entry.color ?? '#ffffff'));
+    mesh.position.set(entry.x, entry.y, entry.z);
+    // Compiled sizes are already world-space metres, so this is exact for both
+    // the uniform-voxel collectible path and mixed-size landmark modules.
+    mesh.scale.set(entry.sizeX, entry.sizeY, entry.sizeZ);
+    mesh.castShadow = shadow;
+    mesh.receiveShadow = shadow;
+    mesh.name = entry.id;
+    group.add(mesh);
+  }
+  return group;
+}
+
+/**
  * Builds a composite Three.js Group from an array of voxel descriptors.
+ *
+ * Since `CNT-02` this is a thin wrapper over the recipe compiler: the voxel rows
+ * are compiled into modules and the modules are built. A legacy caller keeps the
+ * exact geometry it always had — proven by the compiler's parity gate.
+ *
  * @param {Array<[number, number, number, string]>} voxelData - [x, y, z, hexColor]
  * @param {number} scale - uniform scale factor for each voxel unit
  * @returns {THREE.Group}
  */
 export function buildVoxelMesh(voxelData, scale = 0.2) {
-  const group = new THREE.Group();
-  const geo = new THREE.BoxGeometry(1, 1, 1);
-
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-
-  for (const [x, y, z] of voxelData) {
-    if (x < minX) minX = x;
-    if (y < minY) minY = y;
-    if (z < minZ) minZ = z;
-    if (x > maxX) maxX = x;
-    if (y > maxY) maxY = y;
-    if (z > maxZ) maxZ = z;
-  }
-
-  const cx = (minX + maxX) / 2;
-  const cy = (minY + maxY) / 2;
-  const cz = (minZ + maxZ) / 2;
-
-  for (const [x, y, z, hexColor] of voxelData) {
-    const mesh = new THREE.Mesh(geo, getMaterial(hexColor));
-    mesh.position.set(
-      (x - cx) * scale,
-      (y - cy) * scale,
-      (z - cz) * scale
-    );
-    mesh.scale.setScalar(scale);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    group.add(mesh);
-  }
-
-  return group;
+  const compiled = compileCollectibleRecipe({ id: 'voxel-mesh', voxels: voxelData }, { scale });
+  return buildModuleGroup(compiled, { scale });
 }
 
 /**

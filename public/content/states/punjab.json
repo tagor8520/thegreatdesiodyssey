@@ -1,0 +1,286 @@
+{
+  "schemaVersion": 1,
+  "stateId": "punjab",
+  "stateName": "Punjab - Sarson da Saag Country",
+  "bgColor": "#2a4d2a",
+  "fogColor": "#3f733f",
+  "ambientColor": "#ffe9a8",
+  "collectibles": [
+    {
+      "id": "makki_di_roti",
+      "name": "Makki di Roti & Sarson da Saag",
+      "description": "🥘 Pure ghee power! +2x Speed for 15s",
+      "icon": "🥘",
+      "buff": {
+        "type": "speed",
+        "multiplier": 2.0,
+        "duration": 15000
+      },
+      "spawnPosition": {
+        "x": 26,
+        "y": 1,
+        "z": -8
+      },
+      "voxels": [
+        [
+          0,
+          0,
+          0,
+          "#C68A2E"
+        ],
+        [
+          1,
+          0,
+          0,
+          "#D9A03A"
+        ],
+        [
+          2,
+          0,
+          0,
+          "#C68A2E"
+        ],
+        [
+          0,
+          0,
+          1,
+          "#D9A03A"
+        ],
+        [
+          1,
+          0,
+          1,
+          "#E8B65A"
+        ],
+        [
+          2,
+          0,
+          1,
+          "#D9A03A"
+        ],
+        [
+          0,
+          0,
+          2,
+          "#C68A2E"
+        ],
+        [
+          1,
+          0,
+          2,
+          "#D9A03A"
+        ],
+        [
+          2,
+          0,
+          2,
+          "#C68A2E"
+        ],
+        [
+          0,
+          1,
+          0,
+          "#2F6B2A"
+        ],
+        [
+          1,
+          1,
+          0,
+          "#3C8335"
+        ],
+        [
+          2,
+          1,
+          0,
+          "#2F6B2A"
+        ],
+        [
+          0,
+          1,
+          1,
+          "#3C8335"
+        ],
+        [
+          1,
+          1,
+          1,
+          "#4C9B42"
+        ],
+        [
+          2,
+          1,
+          1,
+          "#3C8335"
+        ],
+        [
+          0,
+          1,
+          2,
+          "#2F6B2A"
+        ],
+        [
+          1,
+          1,
+          2,
+          "#3C8335"
+        ],
+        [
+          2,
+          1,
+          2,
+          "#2F6B2A"
+        ]
+      ]
+    },
+    {
+      "id": "patiala_lassi",
+      "name": "Patiala Lassi",
+      "description": "🥛 Heavy lassi! +3x Stamina for 20s",
+      "icon": "🥛",
+      "buff": {
+        "type": "stamina",
+        "multiplier": 3.0,
+        "duration": 20000
+      },
+      "spawnPosition": {
+        "x": -30,
+        "y": 1,
+        "z": 12
+      },
+      "voxels": [
+        [
+          0,
+          0,
+          0,
+          "#EFEFE6"
+        ],
+        [
+          1,
+          0,
+          0,
+          "#FFFDF5"
+        ],
+        [
+          2,
+          0,
+          0,
+          "#EFEFE6"
+        ],
+        [
+          0,
+          0,
+          1,
+          "#FFFDF5"
+        ],
+        [
+          1,
+          0,
+          1,
+          "#FFFFFF"
+        ],
+        [
+          2,
+          0,
+          1,
+          "#FFFDF5"
+        ],
+        [
+          0,
+          1,
+          0,
+          "#EFEFE6"
+        ],
+        [
+          1,
+          1,
+          0,
+          "#FFFFFF"
+        ],
+        [
+          2,
+          1,
+          0,
+          "#EFEFE6"
+        ],
+        [
+          0,
+          1,
+          1,
+          "#FFFDF5"
+        ],
+        [
+          1,
+          1,
+          1,
+          "#FFFFFF"
+        ],
+        [
+          2,
+          1,
+          1,
+          "#FFFDF5"
+        ],
+        [
+          0,
+          2,
+          0,
+          "#F5EFE0"
+        ],
+        [
+          1,
+          2,
+          0,
+          "#FFFDF5"
+        ],
+        [
+          2,
+          2,
+          0,
+          "#F5EFE0"
+        ],
+        [
+          0,
+          2,
+          1,
+          "#F5EFE0"
+        ],
+        [
+          1,
+          2,
+          1,
+          "#FFFDF5"
+        ],
+        [
+          2,
+          2,
+          1,
+          "#F5EFE0"
+        ],
+        [
+          1,
+          3,
+          0,
+          "#D9C9A3"
+        ],
+        [
+          1,
+          3,
+          1,
+          "#D9C9A3"
+        ],
+        [
+          1,
+          4,
+          0,
+          "#C2B08A"
+        ],
+        [
+          1,
+          4,
+          1,
+          "#C2B08A"
+        ]
+      ]
+    }
+  ]
+}

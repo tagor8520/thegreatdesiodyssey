@@ -1,13 +1,28 @@
 import * as THREE from 'three';
 
+export function curatedCameraSweepRadius(camera, skin = .15) {
+  const halfHeight = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * camera.near;
+  const halfWidth = halfHeight * Math.max(.25, camera.aspect || 1);
+  return THREE.MathUtils.clamp(Math.hypot(halfWidth, halfHeight) + skin, .6, 1.25);
+}
+
 /** Owns mouse input only on the game canvas; UI buttons never request lock. */
 export class ThirdPersonCamera {
-  constructor(camera, canvas, target, { groundHeight = () => 0, onHint = () => {} } = {}) {
+  constructor(camera, canvas, target, {
+    groundHeight = () => 0,
+    clipCamera = null,
+    onHint = () => {},
+    overviewGlobal = true,
+    overviewHeight = 195,
+    overviewDistance = 262,
+  } = {}) {
     this.camera = camera; this.canvas = canvas; this.document = canvas?.ownerDocument;
-    this.groundHeight = groundHeight; this.onHint = onHint;
-    this.yaw = 0; this.pitch = .55; this.distance = 32; this.mapMode = false;
+    this.groundHeight = groundHeight; this.clipCamera = clipCamera; this.onHint = onHint;
+    this.overviewGlobal = overviewGlobal; this.overviewHeight = overviewHeight; this.overviewDistance = overviewDistance;
+    this.yaw = 0; this.pitch = .55; this.distance = 32; this.resolvedDistance = this.distance; this.mapMode = false;
     this.target = target.clone().add(new THREE.Vector3(0, 2, 0));
     this.desired = new THREE.Vector3(); this.lookTarget = new THREE.Vector3();
+    this.direction = new THREE.Vector3(); this.clipResult = {};
     this.dragging = false; this.disposed = false;
     this.look = event => {
       if (this.disposed || this.mapMode || (!this.locked && !this.dragging)) return;
@@ -48,14 +63,31 @@ export class ThirdPersonCamera {
   get locked() { return !!this.canvas && this.document?.pointerLockElement === this.canvas; }
   release() { this.dragging = false; if (this.locked) this.document.exitPointerLock(); }
   update(dt, position, snap = false) {
-    if (this.mapMode) this.lookTarget.set(0, 0, -7);
+    if (this.mapMode && this.overviewGlobal) this.lookTarget.set(0, 0, -7);
     else this.lookTarget.copy(position).y += 2;
     this.target.lerp(this.lookTarget, snap ? 1 : 1 - Math.exp(-10 * dt));
-    if (this.mapMode) this.desired.set(0, 195, 262);
+    if (this.mapMode) this.desired.set(0, this.overviewHeight, this.overviewDistance);
     else this.desired.set(Math.sin(this.yaw) * Math.cos(this.pitch) * this.distance,
       Math.sin(this.pitch) * this.distance, Math.cos(this.yaw) * Math.cos(this.pitch) * this.distance);
     this.desired.add(this.target);
-    this.camera.position.lerp(this.desired, snap ? 1 : 1 - Math.exp(-12 * dt));
+    const idealX = this.desired.x, idealY = this.desired.y, idealZ = this.desired.z;
+    const clip = !this.mapMode && this.clipCamera
+      ? this.clipCamera(this.target, this.desired, curatedCameraSweepRadius(this.camera), this.clipResult)
+      : null;
+    const allowedDistance = this.desired.distanceTo(this.target);
+    if (snap || this.mapMode || !Number.isFinite(this.resolvedDistance)) {
+      this.resolvedDistance = allowedDistance;
+    } else if (clip?.blocked) {
+      this.resolvedDistance = Math.min(this.resolvedDistance, allowedDistance);
+    } else {
+      this.resolvedDistance = THREE.MathUtils.lerp(
+        this.resolvedDistance,
+        allowedDistance,
+        1 - Math.exp(-4 * Math.max(0, dt)),
+      );
+    }
+    this.direction.set(idealX, idealY, idealZ).sub(this.target).normalize();
+    this.camera.position.copy(this.target).addScaledVector(this.direction, this.resolvedDistance);
     this.camera.position.y = Math.max(this.camera.position.y, this.groundHeight(this.camera.position.x, this.camera.position.z) + 2);
     this.camera.lookAt(this.target);
   }

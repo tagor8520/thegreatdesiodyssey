@@ -4,7 +4,14 @@ import * as THREE from 'three';
 import { Player, tileHeight } from './Player.js';
 import { BridgeManager, BRIDGES } from './BridgeManager.js';
 import { ItemManager, FOOD_ITEMS } from './ItemManager.js';
-import { biomeAt } from './BiomeManager.js';
+import { createHoardingCameraBlockers, HOARDINGS } from './HoardingManager.js';
+import {
+  biomeAt,
+  createLandmarkCameraBlockers,
+  createOrdinaryStructureCameraBlockers,
+  LANDMARKS,
+} from './BiomeManager.js';
+import { curatedCameraSweepRadius } from './ThirdPersonCamera.js';
 
 function setup(spawn) {
   const scene = new THREE.Scene(), bridges = new BridgeManager(scene);
@@ -64,6 +71,79 @@ test('normalized diagonal motion and consistent movement across frame rates', ()
   };
   assert.ok(Math.abs(run(['KeyD'],1/60) - run(['KeyD','KeyW'],1/60)) < .05);
   assert.ok(Math.abs(run(['KeyD'],1/30) - run(['KeyD'],1/120)) < .05);
+});
+
+test('curated camera uses near-plane sizing and bridge structure blockers', () => {
+  const scene = new THREE.Scene();
+  const bridges = new BridgeManager(scene);
+  bridges.cameraBlockers.length = 0;
+  bridges.cameraBlockers.push(new THREE.Box3(
+    new THREE.Vector3(1, 0, -1),
+    new THREE.Vector3(2, 2, 1),
+  ));
+  const camera = new THREE.PerspectiveCamera(42, 16 / 9, 1, 300);
+  const radius = curatedCameraSweepRadius(camera);
+  assert.ok(radius >= .6 && radius <= 1.25);
+  const target = new THREE.Vector3(0, 1, 0);
+  const desired = new THREE.Vector3(4, 1, 0);
+  const result = bridges.clipCamera(target, desired, .2, {});
+  assert.equal(result.blocked, true);
+  assert.ok(desired.x < .8, 'camera should stop before the expanded structural box');
+  const high = new THREE.Vector3(4, 5, 0);
+  assert.equal(bridges.clipCamera(new THREE.Vector3(0, 5, 0), high, .2, {}).blocked, false);
+  bridges.dispose();
+});
+
+test('curated landmark compounds block masonry but preserve the Gateway arch', () => {
+  const blockers = createLandmarkCameraBlockers();
+  assert.equal(blockers.length, 34);
+  assert.ok(blockers.every(box => box.userData.role === 'camera-blocker'));
+  const bridges = new BridgeManager(new THREE.Scene(), { cameraBlockers: blockers });
+  const [x, z] = LANDMARKS.gateway;
+
+  const throughArch = new THREE.Vector3(x, 10, z + 16);
+  assert.equal(
+    bridges.clipCamera(new THREE.Vector3(x, 10, z - 16), throughArch, .6, {}).blocked,
+    false,
+    'the genuine central opening must not be filled by an oversized landmark bound',
+  );
+
+  const throughPier = new THREE.Vector3(x - 9, 10, z + 16);
+  const result = bridges.clipCamera(new THREE.Vector3(x - 9, 10, z - 16), throughPier, .6, {});
+  assert.equal(result.blocked, true);
+  assert.ok(throughPier.z < z - 5, 'camera should stop before Gateway masonry');
+  const throughArchStones = new THREE.Vector3(x + 1.7, 18.4, z + 16);
+  assert.equal(
+    bridges.clipCamera(new THREE.Vector3(x + 1.7, 18.4, z - 16), throughArchStones, .2, {}).blocked,
+    true,
+    'stepped arch masonry should block without filling the central opening',
+  );
+
+  bridges.cameraBlockers.push(...createHoardingCameraBlockers());
+  const sign = HOARDINGS[0];
+  const underSign = new THREE.Vector3(sign.x, 5, sign.z + 4);
+  assert.equal(bridges.clipCamera(new THREE.Vector3(sign.x, 5, sign.z - 4), underSign, .2, {}).blocked, false);
+  const throughBoard = new THREE.Vector3(sign.x, 8, sign.z + 4);
+  assert.equal(bridges.clipCamera(new THREE.Vector3(sign.x, 8, sign.z - 4), throughBoard, .2, {}).blocked, true);
+  bridges.dispose();
+});
+
+test('ordinary curated skyline and railway masses expose tight camera proxies', () => {
+  const blockers = createOrdinaryStructureCameraBlockers(2026, 1);
+  const building = blockers.find(box => box.userData.id.startsWith('tech-tower:'));
+  assert.ok(building);
+  assert.ok(blockers.some(box => box.userData.id.startsWith('skyline-tower:')));
+  assert.equal(blockers.filter(box => box.userData.id.startsWith('railway:deck')).length, 1);
+  assert.equal(blockers.filter(box => box.userData.id.startsWith('railway:pier')).length, 16);
+
+  const bridges = new BridgeManager(new THREE.Scene(), { cameraBlockers: blockers });
+  const center = building.getCenter(new THREE.Vector3());
+  const desired = new THREE.Vector3(center.x, center.y, building.max.z + 5);
+  assert.equal(bridges.clipCamera(
+    new THREE.Vector3(center.x, center.y, building.min.z - 5), desired, .2, {},
+  ).blocked, true);
+  assert.ok(desired.z < building.min.z);
+  bridges.dispose();
 });
 
 test('camera yaw rotates forward movement and pitch is bounded', () => {

@@ -9,7 +9,23 @@ export const ITEMS = Object.freeze([
 
 /** Engine-owned store: publish telemetry at 2 Hz, never every animation frame. */
 export function createUIStore() {
-  let snapshot = Object.freeze({ started: false, soundEnabled: true, fps: null, pingMs: null, selected: 0, score: 0, collected: 0, total: 0, lastPickup: null, cameraHint: 'Click to look · Scroll to zoom' });
+  let snapshot = Object.freeze({
+    started: false,
+    soundEnabled: true,
+    fps: null,
+    pingMs: null,
+    drawCalls: null,
+    triangles: null,
+    residentChunks: 0,
+    quality: 'Auto',
+    renderScale: 1,
+    selected: 0,
+    score: 0,
+    collected: 0,
+    total: 0,
+    lastPickup: null,
+    cameraHint: 'Click to look · Scroll to zoom',
+  });
   const listeners = new Set();
   return {
     getSnapshot: () => snapshot,
@@ -60,7 +76,10 @@ function ItemIcon({ id }) {
 }
 
 export function GameUI({ store, onSelect, onStart, onExit, onToggleSound }) {
-  const { started, soundEnabled, fps, pingMs, selected, score, collected, total, lastPickup, cameraHint } = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+  const {
+    started, soundEnabled, fps, pingMs, drawCalls, triangles, residentChunks,
+    quality, renderScale, selected, score, collected, total, lastPickup, cameraHint,
+  } = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
   useEffect(() => {
     function keydown(event) {
       if (!store.getSnapshot().started) return;
@@ -78,8 +97,11 @@ export function GameUI({ store, onSelect, onStart, onExit, onToggleSound }) {
       <button type="button" onClick={onToggleSound} aria-label={soundEnabled ? 'Mute sound' : 'Enable sound'} aria-pressed={soundEnabled} style={{ border: '1px solid #c6ae79', borderRadius: 7, padding: '9px 12px', background: '#142a30df', color: '#fff6e3', cursor: 'pointer' }}>Sound {soundEnabled ? 'on' : 'off'}</button>
       <button type="button" onClick={onExit} aria-label="Exit game" style={{ border: '1px solid #d98d78', borderRadius: 7, padding: '9px 14px', background: '#4a2020e8', color: '#fff6e3', cursor: 'pointer', fontWeight: 700 }}>Exit</button>
     </div>
-    <div style={{ position: 'absolute', top: 'max(10px, env(safe-area-inset-top))', left: 'max(12px, env(safe-area-inset-left))', padding: '8px 12px', background: 'rgba(18,29,39,.82)', border: '1px solid #a2b4be', borderRadius: 8, fontWeight: 600, fontSize: 'clamp(12px, 1.4vw, 20px)', fontVariantNumeric: 'tabular-nums' }}>
-      WebGL Stats: {fps === null ? '—' : Math.round(fps)} FPS, Ping: {pingMs === null ? '—' : `${Math.round(pingMs)}ms`}
+    <div style={{ position: 'absolute', top: 'max(10px, env(safe-area-inset-top))', left: 'max(12px, env(safe-area-inset-left))', padding: '8px 12px', background: 'rgba(18,29,39,.82)', border: '1px solid #a2b4be', borderRadius: 8, fontWeight: 600, fontSize: 'clamp(11px, 1.2vw, 16px)', fontVariantNumeric: 'tabular-nums' }}>
+      {fps === null ? '—' : Math.round(fps)} FPS · {quality} · {Math.round(renderScale * 100)}%
+      <div style={{ marginTop: 3, fontSize: '.72em', color: '#cfddd9' }}>
+        {drawCalls === null ? '—' : drawCalls} calls · {triangles === null ? '—' : `${Math.round(triangles / 1000)}k tris`} · {residentChunks} chunks · Ping {pingMs === null ? '—' : `${Math.round(pingMs)}ms`}
+      </div>
     </div>
     <div style={{ position: 'absolute', top: 66, left: 12, padding: '10px 14px', background: '#142a30df', border: '1px solid #e8c781', borderRadius: 8 }}>
       <div role="status" aria-label="Score" style={{ fontSize: 20, fontWeight: 700 }}>Score: {score}</div>

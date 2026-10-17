@@ -1,5 +1,8 @@
 import * as THREE from 'three';
-import { buildVoxelMesh } from './VoxelBuilder.js';
+import { buildModuleGroup } from './VoxelBuilder.js';
+import { GDO_CONTENT_SCHEMA_NAMESPACE, loadContentState } from './ContentSchema.js';
+import { compileStatePack } from './RecipeCompiler.js';
+import { GDO_STATE_PACK_IDS, statePackRuntimePath } from './StateCatalog.js';
 
 const PICKUP_RADIUS = 1.8;
 
@@ -18,6 +21,40 @@ export class StateManager {
     this.inventory = [];    // collected items
     this.currentState = null;
     this.clock = new THREE.Clock();
+
+    // `CNT-01`: the last schema verdict for the pack this manager tried to load.
+    // A refused pack spawns nothing and keeps its named reasons here, so a bad
+    // content file fails loudly at load time instead of halfway through a scene.
+    this.lastStateReport = null;
+    this.stateLoads = 0;
+    this.stateRejections = 0;
+    // `CNT-02`: the compiled module list for the current pack (null until one loads).
+    this.compiledState = null;
+  }
+
+  /** Diagnostics view for the loaded pack: version, migration, verdict, recipes. */
+  stateDiagnostics() {
+    const report = this.lastStateReport;
+    const recipes = this.compiledState?.diagnostics ?? null;
+    return Object.freeze({
+      namespace: GDO_CONTENT_SCHEMA_NAMESPACE,
+      // `CNT-02`: what the pack compiled to, so a debug session sees the module
+      // count and the fingerprint the runtime actually spawned.
+      recipeNamespace: this.compiledState?.namespace ?? null,
+      recipeFingerprint: this.compiledState?.fingerprint ?? null,
+      recipeModules: recipes?.modules ?? 0,
+      recipeFamilies: recipes?.families ?? 0,
+      recipePrunedModules: recipes?.prunedModules ?? 0,
+      loads: this.stateLoads,
+      rejections: this.stateRejections,
+      loaded: Boolean(this.currentState),
+      stateId: this.currentState?.stateId ?? null,
+      schemaVersion: this.currentState?.schemaVersion ?? 0,
+      migratedFrom: report?.migration?.from ?? null,
+      migrationSteps: Object.freeze([...(report?.migration?.steps ?? [])]),
+      errors: Object.freeze([...(report?.errors ?? [])]),
+      warnings: Object.freeze([...(report?.warnings ?? [])]),
+    });
   }
 
   /**
@@ -25,24 +62,47 @@ export class StateManager {
    * @param {string} stateId - e.g. "kerala"
    */
   async loadState(stateId) {
-    const url = `/content/states/${stateId}.json`;
+    // `CNT-04`: a catalogued pack's URL comes from the catalogue, so the runtime
+    // and the validated content folder cannot drift apart.
+    const url = GDO_STATE_PACK_IDS.includes(stateId)
+      ? statePackRuntimePath(stateId)
+      : `/content/states/${stateId}.json`;
     const res = await fetch(url);
     if (!res.ok) {
       console.error(`Failed to load state: ${stateId}`);
       return;
     }
     const stateData = await res.json();
-    this.currentState = stateData;
+    // `CNT-01`: migrate legacy packs forward, then validate against the declared
+    // schema before anything spawns. A refused pack reports every named reason
+    // and leaves the scene untouched.
+    const report = loadContentState(stateData);
+    this.lastStateReport = report;
+    this.stateLoads++;
+    if (!report.ok) {
+      this.stateRejections++;
+      console.error(`[Desi Odyssey] State pack "${stateId}" was refused by ${report.namespace}`,
+        report.errors.map(error => `${error.path}: ${error.code}`).join(', '));
+      return;
+    }
+    if (report.migration.migrated) {
+      console.info(`[Desi Odyssey] Migrated state pack "${stateId}" from v${report.migration.from} to v${report.migration.to}`,
+        report.migration.steps.join(', '));
+    }
+    this.currentState = report.data;
 
     // Update HUD state label
     if (this.hud.stateLabel) {
-      this.hud.stateLabel.textContent = stateData.stateName;
+      this.hud.stateLabel.textContent = report.data.stateName;
     }
 
-    // Spawn collectibles
-    for (const item of stateData.collectibles) {
-      const mesh = buildVoxelMesh(item.voxels, 0.22);
-      const sp = item.spawnPosition;
+    // `CNT-02`: the pack is compiled once into modules, and the spawn loop reads
+    // the compiled list instead of the raw JSON — layout arithmetic and cap
+    // enforcement live in the compiler, so a new pack needs no code here.
+    this.compiledState = compileStatePack(stateData, { scale: .22, profile: 'low' });
+    for (const item of this.compiledState.collectibles) {
+      const mesh = buildModuleGroup(item, { scale: .22 });
+      const sp = item.spawn;
       mesh.position.set(sp.x, sp.y + 0.5, sp.z);
       mesh.castShadow = true;
       this.scene.add(mesh);
@@ -64,7 +124,7 @@ export class StateManager {
         mesh,
         ring,
         data: item,
-        stateData,
+        stateData: { stateName: report.data.stateName },
         collected: false,
         baseY: sp.y + 0.5,
       });
