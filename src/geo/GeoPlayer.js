@@ -116,6 +116,10 @@ export class GeoPlayer {
     this.jumpQueued = false;
     // `COL-08`: reused water records — a step never allocates.
     this.waterContact = {};
+    // `GME-09`: the traversal ride anchor and camera rule. A passenger wears
+    // the boat's transform; the camera reads the mode's declared scales.
+    this.rideAnchor = null;
+    this.traversalCamera = null;
     this.waterMotion = {};
     this.fallImpact = {};
     this.waterState = GDO_WATER_STATE.DRY;
@@ -343,6 +347,16 @@ export class GeoPlayer {
   }
 
   /** `COL-08`: the live water state, the current it feels, and the last landing. */
+  /**
+   * `GME-09`: wear (or drop) the traversal ride anchor. While set, the body
+   * rides the anchor's transform and stays dry aboard; clearing it returns the
+   * body to the water contact's own rules on the next step.
+   */
+  setRideAnchor(anchor) {
+    this.rideAnchor = anchor ?? null;
+    return this.rideAnchor;
+  }
+
   waterDiagnostics() {
     const out = this.waterDiagnosticsRecord;
     const contact = this.waterContact ?? {};
@@ -367,6 +381,20 @@ export class GeoPlayer {
   }
 
   step(dt) {
+    // `GME-09`: a passenger rides the boat's own transform — no walking, no
+    // swimming, and dry aboard. The traversal controller owns the anchor; this
+    // step only wears it.
+    if (this.rideAnchor) {
+      this.position.x = this.rideAnchor.x;
+      this.position.y = this.rideAnchor.y;
+      this.position.z = this.rideAnchor.z;
+      this.velocity.x = 0;
+      this.velocity.y = 0;
+      this.velocity.z = 0;
+      this.grounded = true;
+      this.waterState = GDO_WATER_STATE.DRY;
+      return;
+    }
     // `GME-05`: direction keys are filtered through the move action's declared
     // binding, so a rebind or a newly declared movement key needs no edit here.
     const moveKeys = this.actions.action('move')?.keyboard ?? [];
@@ -524,11 +552,18 @@ export class GeoPlayer {
     }
 
     this.cameraTarget.copy(this.position);
-    this.cameraTarget.y += .12;
+    // `GME-09`: the traversal camera rule — declared per-mode scales applied to
+    // the live orbit, never re-derived here.
+    const traversal = this.traversalCamera;
+    const distanceScale = traversal?.distanceScale ?? 1;
+    const pitch = THREE.MathUtils.clamp(
+      this.thirdPersonPitch + (traversal?.pitchBias ?? 0), .16, 1.32,
+    );
+    this.cameraTarget.y += .12 + (traversal?.heightBias ?? 0);
     this.cameraIdeal.set(
-      Math.sin(this.yaw) * Math.cos(this.thirdPersonPitch) * this.distance,
-      Math.sin(this.thirdPersonPitch) * this.distance,
-      Math.cos(this.yaw) * Math.cos(this.thirdPersonPitch) * this.distance,
+      Math.sin(this.yaw) * Math.cos(pitch) * this.distance * distanceScale,
+      Math.sin(pitch) * this.distance * distanceScale,
+      Math.cos(this.yaw) * Math.cos(pitch) * this.distance * distanceScale,
     ).add(this.cameraTarget);
     const cameraGround = this.world.supportAt?.(
       this.cameraIdeal.x, this.cameraIdeal.z, this.cameraSupportResult,
