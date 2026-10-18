@@ -178,6 +178,11 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   trafficCpuUpdatesPerFrame: 16,
   trafficProxies: 12,
   trafficSteadyFrameAllocations: 0,
+  // `PHY-01` query-driven doors/gates (`gdo:localDoors:v1`).
+  doors: 16,
+  doorsPerTile: 24,
+  doorProxyUpdatesPerFrame: 8,
+  doorSteadyFrameAllocations: 0,
   pedestrianSteadyFrameAllocations: 0,
   // `GME-08`: research §4.7 — one bounded board of affordance-proven objectives.
   activityTemplates: 8,
@@ -423,6 +428,10 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'trafficCpuUpdatesPerFrame', budget: 'trafficCpuUpdatesPerFrame', label: 'traffic CPU updates/frame' }),
   Object.freeze({ metric: 'trafficProxies', budget: 'trafficProxies', label: 'traffic dynamic proxies' }),
   Object.freeze({ metric: 'trafficSteadyFrameAllocations', budget: 'trafficSteadyFrameAllocations', label: 'traffic steady-frame allocations' }),
+  Object.freeze({ metric: 'doors', budget: 'doors', label: 'live kinematic doors' }),
+  Object.freeze({ metric: 'doorsPerTile', budget: 'doorsPerTile', label: 'authored entrance doors/tile' }),
+  Object.freeze({ metric: 'doorProxyUpdatesPerFrame', budget: 'doorProxyUpdatesPerFrame', label: 'door proxy updates/frame' }),
+  Object.freeze({ metric: 'doorSteadyFrameAllocations', budget: 'doorSteadyFrameAllocations', label: 'door steady-frame allocations' }),
   Object.freeze({ metric: 'activityBoard', budget: 'activityBoard', label: 'emitted local activities' }),
   Object.freeze({ metric: 'activityTargets', budget: 'activityTargets', label: 'activity targets per objective' }),
   Object.freeze({ metric: 'activityChecks', budget: 'activityChecks', label: 'activity affordance checks' }),

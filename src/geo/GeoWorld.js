@@ -44,6 +44,7 @@ import {
   GDO_TRAFFIC_PROFILES, createLocalTraffic, trafficSeedFor,
 } from '../engine/LocalTraffic.js';
 import { createTrafficPools } from './GeoTrafficPools.js';
+import { createLocalDoors } from '../engine/LocalDoors.js';
 
 /** `GME-07`: guidance refresh thresholds, so a steady frame re-uses its record. */
 export const GDO_NAV_GUIDANCE_MOVE = .75;
@@ -669,6 +670,15 @@ export class GeoWorld {
     this.trafficSummary = null;
     this.lastTrafficMilliseconds = null;
     this.trafficGround = { x: 0, z: 0 };
+    // `PHY-01`: query-driven doors and gates. One scalar per leaf, authored
+    // easing, a thin OBB written to the `COL-09` grid only while moving, and a
+    // close sensor that never sweeps a leaf through the player.
+    this.doors = createLocalDoors({ profile, ledger: this.lifecycle });
+    this.hostDoorEntries = [];
+    this.doorProxyPositions = new Map();
+    this.lastDoorMilliseconds = null;
+    this.doorsSummary = null;
+    this.doorsCounters = null;
     // The audit script's far point: a tile-local offset, so an audit never asks the
     // tile manager for a tile it cannot wait for. A host that knows its own map
     // sets a better one; the default only has to be beyond every active radius.
@@ -1468,6 +1478,10 @@ export class GeoWorld {
       tile.supportSlots = message.geometry.supportSlots;
       tile.supportSlotStates = message.geometry.supportSlotStates;
       tile.supportSlotStride = message.geometry.supportSlotStride ?? 0;
+      // `PHY-01`: the selected buildings' authored entrance poses (stride 8).
+      tile.doorways = message.geometry.doorways instanceof Float32Array ? message.geometry.doorways : null;
+      tile.doorwaysStride = message.geometry.doorwaysStride ?? 8;
+      this.setDoorGraph();
       // `DET-10`/`DET-06`/`DET-07`: a prop without an authored solid proxy
       // contributes nothing here; rock and vehicle streams contribute exactly
       // their declared major-mass/body boxes. Every appended box joins the same
@@ -2147,6 +2161,98 @@ export class GeoWorld {
   /** The road graph traffic drives on: the lanes' declared filter. */
   get trafficLanes() { return this.traffic?.diagnostics ? this.traffic : null; }
 
+  /**
+   * `PHY-01`: rebuild the door board from the resident tiles' authored entrance
+   * streams plus the host's own doors. A tile's leaves leave with it — the same
+   * rule the graph and the traffic follow.
+   */
+  setDoorGraph() {
+    if (this.disposed || !this.doors) return null;
+    const entries = this.hostDoorEntries.slice();
+    for (const tile of this.tiles.values()) {
+      const stream = tile.doorways;
+      if (!(stream instanceof Float32Array)) continue;
+      const stride = tile.doorwaysStride ?? 8;
+      for (let offset = 0; offset + stride <= stream.length; offset += stride) {
+        entries.push({
+          id: `entrance:${tile.key}:${offset / stride}`,
+          x: stream[offset], z: stream[offset + 1], y: stream[offset + 2],
+          heading: stream[offset + 3], width: stream[offset + 4], height: stream[offset + 5],
+          hinge: stream[offset + 6] === -1 ? -1 : 1,
+          kind: stream[offset + 7] === 1 ? 1 : 0,
+          source: 'entrance',
+        });
+      }
+    }
+    return this.doors.rebuild(entries);
+  }
+
+  /** Host authoring: one more door, the same mechanism (`PHY-01`). */
+  addDoor(id, decl) {
+    const entry = { ...decl, id, source: 'host' };
+    this.hostDoorEntries.push(entry);
+    this.setDoorGraph();
+    return this.doors?.addDoor(id, entry) ?? null;
+  }
+
+  /**
+   * The `GME-05` `interact` verb's door half: the nearest leaf inside its own
+   * trigger radius toggles. A miss refuses by name so the verb can fall through
+   * to props without guessing.
+   */
+  toggleDoorNear(x, y, z, { nowMilliseconds = 0 } = {}) {
+    return this.doors?.toggleNear(x, y, z, { nowMilliseconds }) ?? null;
+  }
+
+  /**
+   * `PHY-01`: one bounded door pass, then the change list is drained into the
+   * `COL-09` dynamic grid. A settled leaf contributes nothing — the collider is
+   * written only while the one scalar moves (research §9.3).
+   */
+  updateDoors(nowMilliseconds = 0, position = this.trafficGround) {
+    if (this.disposed || !this.doors) return null;
+    const previous = this.lastDoorMilliseconds;
+    const dt = Number.isFinite(previous) ? Math.max(0, nowMilliseconds - previous) : 0;
+    this.lastDoorMilliseconds = nowMilliseconds;
+    this.doors.update({
+      nowMilliseconds,
+      dtMilliseconds: dt,
+      player: { x: position.x, y: position.y ?? 0, z: position.z, radius: .09, height: .28 },
+    });
+    const { changes, count } = this.doors.changes();
+    for (let index = 0; index < count; index++) {
+      const change = changes[index];
+      const proxyId = `door:${change.id}`;
+      if (change.kind === 'remove') {
+        this.dynamicProxies.remove(proxyId);
+        this.doorProxyPositions.delete(proxyId);
+        continue;
+      }
+      const decl = {
+        kind: 'obb',
+        x: change.x, z: change.z,
+        halfX: change.halfWidth, halfZ: change.halfDepth,
+        rotation: change.rotation,
+        ySpan: [change.bottom, change.top],
+      };
+      const last = this.doorProxyPositions.get(proxyId);
+      if (change.kind === 'move' && last && this.dynamicProxies.has(proxyId)) {
+        // Cell-crossing only: the grid re-inserts strictly at crossings.
+        this.dynamicProxies.move(proxyId, decl.x - last.x, decl.z - last.z, { y: decl.ySpan[0] });
+      } else if (this.dynamicProxies.has(proxyId)) {
+        this.dynamicProxies.move(proxyId, 0, 0, { y: decl.ySpan[0] });
+      } else {
+        this.dynamicProxies.insert(proxyId, decl, {
+          mask: GEO_QUERY_MASK.SOLID_PLAYER | GEO_QUERY_MASK.CAMERA_BLOCKER,
+        });
+      }
+      this.doorProxyPositions.set(proxyId, { x: decl.x, z: decl.z });
+    }
+    this.doorsSummary = this.doors.summary(this.doorsSummaryRecord ??= {});
+    this.doorsCounters = this.doors.counters;
+    return this.doorsSummary;
+  }
+
   /** The sidewalk graph the pedestrians walk: a declared filter over the roads. */
   get pedestrianSidewalk() { return this.pedestrians.graph; }
 
@@ -2550,6 +2656,7 @@ export class GeoWorld {
     // after the fade pass has settled, so the sprite pack reads this frame's view.
     this.updatePedestrians(nowMilliseconds, position);
     this.updateTraffic(nowMilliseconds, position);
+    this.updateDoors(nowMilliseconds, position);
     this.observeDiscovery(position.x, position.z, nowMilliseconds);
     // `ENV-04`: the weather pass follows the player, so its climate sample is
     // the environment the player is standing in.
@@ -2636,6 +2743,7 @@ export class GeoWorld {
     this.navigation.removeTile(tile.key);
     this.setPedestrianGraph();
     this.setTrafficGraph();
+    this.setDoorGraph();
     if (this.navigationRoute?.ok) {
       const first = this.navigationRoute.nodes[0];
       if (!this.navigation.graph.nodes.some(node => node.id === first)) this.cancelNavigation();

@@ -562,6 +562,11 @@ export function buildBuildingGeometry(vectorTile, request) {
   const layer = pickMapLayer(vectorTile.layers, GEO_MAP_ROLE.BUILDING)?.layer;
   const positions = [], normals = [], colors = [], indices = [], colliderValues = [];
   const detailPositions = [], detailNormals = [], detailColors = [], detailIndices = [];
+  // `PHY-01`: the selected buildings' authored entrance poses, one stride-8
+  // record each (`x, z, y, heading, width, height, hinge, kind`) — the door
+  // stream the `gdo:localDoors:v1` board swings.
+  const doorwayValues = [];
+  let doorwayCapReached = false;
   const supportSlotValues = [], supportSlotStates = [];
   const buildingDetailEnabled = request?.buildingDetails !== false;
   // Landmark heroes are always on (bounded to one hero per tile) and reuse the
@@ -876,6 +881,17 @@ export function buildBuildingGeometry(vectorTile, request) {
       detailBoxCapReached = true;
       continue;
     }
+    if (detail.entrancePose) {
+      if (doorwayValues.length / GEO_BUILDING_DETAIL_LIMITS.doorwaysStride < GEO_BUILDING_DETAIL_LIMITS.doorwaysPerTile) {
+        doorwayValues.push(
+          detail.entrancePose.x, detail.entrancePose.z, detail.entrancePose.y,
+          detail.entrancePose.heading, detail.entrancePose.width, detail.entrancePose.height,
+          1, 0,
+        );
+      } else {
+        doorwayCapReached = true;
+      }
+    }
     for (const box of boxes) appendBox(
       detailPositions, detailNormals, detailColors, detailIndices,
       box.centerX, box.bottom, box.centerZ,
@@ -1021,6 +1037,7 @@ export function buildBuildingGeometry(vectorTile, request) {
         candidates: buildingDetailCandidateCount,
         selectedBuildings: selectedDetailBuildings,
         roadFacingBuildings: buildingDetailRoadFacing,
+        doorways: doorwayValues.length / GEO_BUILDING_DETAIL_LIMITS.doorwaysStride,
         roadSegments: buildingRoadIndex.meta.segments,
         roadCellReferences: buildingRoadIndex.meta.cellReferences,
         roadTests: buildingDetailRoadTests,
@@ -1032,6 +1049,7 @@ export function buildBuildingGeometry(vectorTile, request) {
           roadTests: buildingDetailQueryCapReached,
           selectedBuildings: buildingDetailCandidateCount > GEO_BUILDING_DETAIL_LIMITS.selectedBuildingsPerTile,
           boxes: detailBoxCapReached,
+          doorways: doorwayCapReached,
           bytes: false,
         }),
       }),
@@ -1053,5 +1071,7 @@ export function buildBuildingGeometry(vectorTile, request) {
     supportSlots: new Float32Array(supportSlotValues),
     supportSlotStates: new Uint8Array(supportSlotStates),
     supportSlotStride: GEO_SUPPORT_SLOT_STRIDE,
+    doorways: new Float32Array(doorwayValues),
+    doorwaysStride: GEO_BUILDING_DETAIL_LIMITS.doorwaysStride,
   };
 }

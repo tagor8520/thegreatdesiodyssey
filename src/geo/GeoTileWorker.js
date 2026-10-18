@@ -69,7 +69,7 @@ function geometryTransfers(geometry, includeColliders = false) {
   for (const key of ['shallow', 'deep', 'manner', 'flow', 'classCode']) {
     if (geometry[key] instanceof Float32Array) transfers.push(geometry[key].buffer);
   }
-  for (const key of ['propTriggers', 'propSolids']) {
+  for (const key of ['propTriggers', 'propSolids', 'doorways']) {
     if (geometry[key] instanceof Float32Array) transfers.push(geometry[key].buffer);
   }
   if (geometry.detailPositions instanceof Float32Array) transfers.push(

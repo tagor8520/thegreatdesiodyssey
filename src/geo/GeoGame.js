@@ -361,6 +361,29 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     // second, longer hold cancels the guidance instead of re-targeting.
     player.setActionHandler('guide', entry => { chooseNavigationTarget(); return entry; });
   }
+  // `PHY-01`: the `interact` verb's dispatch. A `DET-04` entrance door inside
+  // its trigger radius toggles first (one scalar open amount, the close sensor
+  // keeps it from sweeping through the player), then the `DET-10` prop trigger
+  // query, and a miss is named rather than silently dropped.
+  if (coordinateActions.has('interact')) {
+    player.setActionHandler('interact', entry => {
+      const door = world.toggleDoorNear(
+        player.position.x, player.position.y, player.position.z,
+        { nowMilliseconds: performance.now() },
+      );
+      if (door) {
+        logger.info('doors', 'leaf toggled', { id: door.id, target: door.target, state: door.state });
+        return entry;
+      }
+      const prop = world.queryPropTrigger?.(player.position.x, player.position.y, player.position.z);
+      if (prop) {
+        logger.info('interaction', 'prop trigger', { family: prop.family, distance: prop.distance });
+        return entry;
+      }
+      logger.info('interaction', 'nothing in reach', {});
+      return entry;
+    });
+  }
   const cancelGuidance = () => {
     const had = world.cancelNavigation();
     navigationTargetIndex = -1;
