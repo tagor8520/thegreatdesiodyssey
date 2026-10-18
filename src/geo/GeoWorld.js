@@ -46,6 +46,7 @@ import {
 import { createTrafficPools } from './GeoTrafficPools.js';
 import { createLocalDoors } from '../engine/LocalDoors.js';
 import { createLocalSave } from '../engine/LocalSave.js';
+import { GDO_TRAVERSAL_MODE, createTraversalController } from '../engine/WaterTraversal.js';
 
 /** `GME-07`: guidance refresh thresholds, so a steady frame re-uses its record. */
 export const GDO_NAV_GUIDANCE_MOVE = .75;
@@ -2639,6 +2640,40 @@ export class GeoWorld {
    * cadence; a refused write is counted inside `localSave.diagnostics`, never
    * thrown into the frame.
    */
+  /**
+   * `GME-09`: the live `LIF-05` boat records, stable-id'd for the traversal
+   * controller. A recycled boat drops out of this list and its passenger
+   * enters the water exactly where the boat left them.
+   */
+  boatRecords() {
+    const resident = this.traffic?.residentRecords() ?? { records: [], count: 0 };
+    const boats = [];
+    for (let index = 0; index < resident.count; index++) {
+      const record = resident.records[index];
+      if (record.kind !== 1) continue;  // `GDO_TRAFFIC_KIND.BOAT`
+      boats.push({
+        id: `boat:${record.slot}`,
+        x: record.x, y: record.y, z: record.z,
+        heading: record.heading, speed: Math.abs(record.speed ?? 0),
+        afloat: true,
+      });
+    }
+    return boats;
+  }
+
+  /**
+   * `GME-09`: the boarding verb's world half — the near, still, afloat rule
+   * against the live boats. A refusal is named inside the controller.
+   */
+  boardNearestBoat(x, y, z) {
+    return this.traversal?.tryBoard(this.boatRecords(), { x, y, z }) ?? null;
+  }
+
+  /** `GME-09`: the disembark verb's world half. */
+  exitBoat() {
+    return this.traversal?.tryExit() ?? null;
+  }
+
   persistLocalSave(nowMilliseconds = performance.now()) {
     if (!this.localSave) return false;
     return this.localSave.persist(this.localSave.capture({

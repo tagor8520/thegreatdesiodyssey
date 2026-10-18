@@ -384,6 +384,35 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       return entry;
     });
   }
+  // `GME-09`: the traversal verb — one action enters and leaves a boat, bound
+  // for the desktop and the pad together through the one `GME-05` registry.
+  const boardRegistration = coordinateActions.register({
+    id: 'board', kind: 'tap', label: 'Board', hint: 'F',
+    capability: 'interaction', keyboard: ['KeyF'],
+    pointer: null, touch: { control: 'button', label: 'BOARD' },
+  });
+  if (coordinateActions.has('board')) {
+    player.setActionHandler('board', entry => {
+      const traversal = world.traversal;
+      if (traversal?.mode === 'in-boat') {
+        const exit = world.exitBoat();
+        if (exit) player.position.set(exit.x, exit.y, exit.z);
+        player.setRideAnchor(null);
+        logger.info('traversal', 'disembarked', { at: exit });
+        return entry;
+      }
+      const anchor = world.boardNearestBoat(player.position.x, player.position.y, player.position.z);
+      if (anchor) {
+        player.setRideAnchor(anchor);
+        logger.info('traversal', 'aboard', { boat: traversal.boatId });
+      } else {
+        logger.info('traversal', 'boarding refused', { reason: traversal?.diagnostics?.refusals });
+      }
+      return entry;
+    });
+  } else {
+    logger.info('traversal', 'board verb skipped', { reason: boardRegistration?.reason ?? 'capability' });
+  }
   const cancelGuidance = () => {
     const had = world.cancelNavigation();
     navigationTargetIndex = -1;
@@ -649,6 +678,16 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     const dayWrote = timeOfDay.update(now);
     world.setWeatherSkyState(timeOfDay.state);
     player.update(dt);
+    // `GME-09`: the traversal rules run beside the body — enter/exit water off
+    // the `COL-08` contact state, the boat ride off the `LIF-05` records, and
+    // the camera reads the mode's declared scales.
+    world.traversal?.update({
+      contact: { state: player.waterState },
+      boatRecords: world.boatRecords(),
+      nowMilliseconds: now,
+    });
+    player.setRideAnchor(world.traversal?.mode === 'in-boat' ? world.traversal.rideAnchor : null);
+    player.traversalCamera = world.traversal?.cameraRule() ?? null;
     world.update(player.position, camera, renderer.domElement.height, now);
     // `ENV-04`: the day cycle and the weather machine write the same sun, fog, and
     // exposure channels. When `ENV-02` lands a keyframe it overwrites the weather's
