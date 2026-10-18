@@ -40,6 +40,10 @@ import {
   createLocalPedestrians, pedestrianHudText, pedestrianSeedFor,
 } from '../engine/LocalPedestrians.js';
 import { PedestrianPools, createPedestrianMaterial } from '../engine/PedestrianPools.js';
+import {
+  GDO_TRAFFIC_PROFILES, createLocalTraffic, trafficSeedFor,
+} from '../engine/LocalTraffic.js';
+import { createTrafficPools } from './GeoTrafficPools.js';
 
 /** `GME-07`: guidance refresh thresholds, so a steady frame re-uses its record. */
 export const GDO_NAV_GUIDANCE_MOVE = .75;
@@ -653,6 +657,18 @@ export class GeoWorld {
     this.pedestrianSummary = null;
     this.lastPedestrianMilliseconds = null;
     this.pedestrianGround = { x: 0, z: 0 };
+    // `LIF-05`: bounded traffic and boats. The board drives kinematically on the
+    // `GME-07` road graph (vehicles) and the `TER-08` waterway polylines (boats),
+    // with the research's forward safety sensor and recycle rule — and its
+    // solidity is a separate, capped `COL-09` decision made only near the player.
+    this.traffic = createLocalTraffic({
+      profile,
+      seed: trafficSeedFor({ worldVersion: GDO_FEATURE_VERSIONS.localTraffic, latitude, longitude }),
+      ledger: this.lifecycle,
+    });
+    this.trafficSummary = null;
+    this.lastTrafficMilliseconds = null;
+    this.trafficGround = { x: 0, z: 0 };
     // The audit script's far point: a tile-local offset, so an audit never asks the
     // tile manager for a tile it cannot wait for. A host that knows its own map
     // sets a better one; the default only has to be beyond every active radius.
@@ -853,6 +869,15 @@ export class GeoWorld {
       renderOrder: GEO_LAYER.ambience.renderBand + 1,
       layer: GEO_LAYER.ambience,
       reducedMotion,
+      ledger: this.lifecycle,
+    });
+    // `LIF-05`: the traffic pool serves `DET-07` vehicle bodies and `DET-07`-rule
+    // boat hulls through one bounded instance upload, and owns the capped
+    // `COL-09` proxy registration for movers near the player.
+    this.trafficPools = createTrafficPools({
+      profile: 'low',
+      scene: this.root,
+      policy: GDO_TRAFFIC_PROFILES.low,
       ledger: this.lifecycle,
     });
     this.ambientView = {
@@ -1249,6 +1274,8 @@ export class GeoWorld {
         // `LIF-04`: the sidewalk graph follows the road graph, so a pedestrian
         // board is always walking the world the tiles actually describe.
         this.setPedestrianGraph();
+        // `LIF-05`: traffic lanes and boat routes follow the same commit.
+        this.setTrafficGraph();
       }
       tile.biome = context.biome || tile.biome;
       tile.environment = context.environment || tile.environment;
@@ -1711,6 +1738,10 @@ export class GeoWorld {
       pedestrianRefusals: this.pedestrians.diagnostics.neighbourhoodRefusals,
       pedestrianDrawCalls: this.pedestrianPools?.diagnostics.drawCalls ?? 0,
       pedestrianParked: this.pedestrianPools?.diagnostics.parkedSlots ?? 0,
+      trafficMoving: this.trafficSummary?.moving ?? 0,
+      trafficStopped: this.trafficSummary?.stopped ?? 0,
+      trafficProxies: this.trafficCounters
+        ? (this.trafficCounters.proxyRegistered - this.trafficCounters.proxyRemoved) : 0,
       // `GME-08`: the activity board, what completed, and what was refused
       // because the resident context could not prove the affordance.
       activityTemplates: this.activities.diagnostics().templates,
@@ -2084,6 +2115,38 @@ export class GeoWorld {
     return this.pedestrians.setGraph(this.navigation.graph);
   }
 
+  /**
+   * `LIF-05`: the traffic lane graph and the boat routes. Lanes are a declared
+   * class filter over the landed road graph; boats chain the resident tiles'
+   * `TER-08` waterway polylines (stride 8: endpoints, half-width, class, flow).
+   * A graph change parks every live mover into the recycle gap — an edge that
+   * left with a tile is never driven on after eviction.
+   */
+  setTrafficGraph() {
+    if (this.disposed || !this.traffic) return null;
+    let segments = 0;
+    for (const tile of this.tiles.values()) {
+      const waterways = tile.waterDomain?.waterways;
+      if (waterways instanceof Float32Array) segments += waterways.length;
+    }
+    const merged = new Float32Array(segments);
+    let offset = 0;
+    for (const tile of this.tiles.values()) {
+      const waterways = tile.waterDomain?.waterways;
+      if (waterways instanceof Float32Array) {
+        merged.set(waterways, offset);
+        offset += waterways.length;
+      }
+    }
+    return this.traffic.rebuildGraph(this.navigation.graph, {
+      waterways: merged,
+      waterwayStride: 8,
+    });
+  }
+
+  /** The road graph traffic drives on: the lanes' declared filter. */
+  get trafficLanes() { return this.traffic?.diagnostics ? this.traffic : null; }
+
   /** The sidewalk graph the pedestrians walk: a declared filter over the roads. */
   get pedestrianSidewalk() { return this.pedestrians.graph; }
 
@@ -2175,6 +2238,30 @@ export class GeoWorld {
     this.pedestrianSummary = this.pedestrians.summary(this.pedestrianSummaryRecord ??= {});
     this.pedestrianPack = pack;
     return this.pedestrianSummary;
+  }
+
+  /**
+   * `LIF-05`: one bounded traffic pass — kinematic route movement at the
+   * researched rates, the forward safety sensor, the recycle rule — then the
+   * pool's one bounded instance upload and its capped `COL-09` proxy decisions.
+   */
+  updateTraffic(nowMilliseconds = 0, position = this.trafficGround) {
+    if (this.disposed || !this.traffic) return null;
+    const previous = this.lastTrafficMilliseconds;
+    const dt = Number.isFinite(previous) ? Math.max(0, nowMilliseconds - previous) : 0;
+    this.lastTrafficMilliseconds = nowMilliseconds;
+    this.trafficGround = { x: position.x, z: position.z };
+    this.traffic.update({
+      nowMilliseconds, dtMilliseconds: dt, x: position.x, z: position.z,
+    });
+    const view = this.refreshAmbientView(nowMilliseconds);
+    const counters = this.trafficPools?.sync(this.traffic, {
+      nowMilliseconds, view, dynamicProxies: this.dynamicProxies,
+    }) ?? null;
+    this.trafficPools?.update(nowMilliseconds);
+    this.trafficSummary = this.traffic.summary(this.trafficSummaryRecord ??= {});
+    this.trafficCounters = counters;
+    return this.trafficSummary;
   }
 
   /**
@@ -2462,6 +2549,7 @@ export class GeoWorld {
     // `LIF-04`: pedestrians advance on the same camera and avatar the frame uses,
     // after the fade pass has settled, so the sprite pack reads this frame's view.
     this.updatePedestrians(nowMilliseconds, position);
+    this.updateTraffic(nowMilliseconds, position);
     this.observeDiscovery(position.x, position.z, nowMilliseconds);
     // `ENV-04`: the weather pass follows the player, so its climate sample is
     // the environment the player is standing in.
@@ -2547,6 +2635,7 @@ export class GeoWorld {
     // nodes left with it is dropped rather than followed into a world that is gone.
     this.navigation.removeTile(tile.key);
     this.setPedestrianGraph();
+    this.setTrafficGraph();
     if (this.navigationRoute?.ok) {
       const first = this.navigationRoute.nodes[0];
       if (!this.navigation.graph.nodes.some(node => node.id === first)) this.cancelNavigation();

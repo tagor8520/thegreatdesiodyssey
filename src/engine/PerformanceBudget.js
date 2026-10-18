@@ -172,6 +172,12 @@ export const GDO_LOW_PROFILE_BUDGETS = Object.freeze({
   // global simulation, and zero steady-frame allocations.
   pedestrianAgents: 16,
   pedestrianCpuUpdatesPerFrame: 16,
+  // `LIF-05` bounded traffic and boats (`gdo:localTraffic:v1`).
+  trafficAgents: 8,
+  boatAgents: 3,
+  trafficCpuUpdatesPerFrame: 16,
+  trafficProxies: 12,
+  trafficSteadyFrameAllocations: 0,
   pedestrianSteadyFrameAllocations: 0,
   // `GME-08`: research §4.7 — one bounded board of affordance-proven objectives.
   activityTemplates: 8,
@@ -412,6 +418,11 @@ const CHECKS = Object.freeze([
   Object.freeze({ metric: 'pedestrianAgents', budget: 'pedestrianAgents', label: 'live pedestrian agents' }),
   Object.freeze({ metric: 'pedestrianCpuUpdatesPerFrame', budget: 'pedestrianCpuUpdatesPerFrame', label: 'pedestrian CPU updates/frame' }),
   Object.freeze({ metric: 'pedestrianSteadyFrameAllocations', budget: 'pedestrianSteadyFrameAllocations', label: 'pedestrian steady-frame allocations' }),
+  Object.freeze({ metric: 'trafficAgents', budget: 'trafficAgents', label: 'live traffic vehicles' }),
+  Object.freeze({ metric: 'boatAgents', budget: 'boatAgents', label: 'live boats' }),
+  Object.freeze({ metric: 'trafficCpuUpdatesPerFrame', budget: 'trafficCpuUpdatesPerFrame', label: 'traffic CPU updates/frame' }),
+  Object.freeze({ metric: 'trafficProxies', budget: 'trafficProxies', label: 'traffic dynamic proxies' }),
+  Object.freeze({ metric: 'trafficSteadyFrameAllocations', budget: 'trafficSteadyFrameAllocations', label: 'traffic steady-frame allocations' }),
   Object.freeze({ metric: 'activityBoard', budget: 'activityBoard', label: 'emitted local activities' }),
   Object.freeze({ metric: 'activityTargets', budget: 'activityTargets', label: 'activity targets per objective' }),
   Object.freeze({ metric: 'activityChecks', budget: 'activityChecks', label: 'activity affordance checks' }),
