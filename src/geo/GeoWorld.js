@@ -242,7 +242,7 @@ function createBufferGeometry(data) {
  * one box per declared proxy, never a visual-derived shape. Props keep their
  * authored 4-float AABBs and span the full query height.
  */
-export function solidBoxesFromStreams({ propSolids = null, rockProxies = null, vehicleProxies = null } = {}) {
+export function solidBoxesFromStreams({ propSolids = null, rockProxies = null, vehicleProxies = null, wallSolids = null, wallSpans = null } = {}) {
   const colliders = [], spans = [], masks = [];
   const FULL_MIN = -1e30, FULL_MAX = 1e30;
   const push = (minX, minZ, maxX, maxZ, bottom, top) => {
@@ -254,6 +254,23 @@ export function solidBoxesFromStreams({ propSolids = null, rockProxies = null, v
     masks.push(GEO_QUERY_MASK.SOLID_PLAYER | GEO_QUERY_MASK.CAMERA_BLOCKER |
       GEO_QUERY_MASK.PLACEMENT);
   };
+  // `TER-10`: wall compounds carry their real vertical span and do hide labels —
+  // a wall is an opaque mapped structure, not ground clutter. The compound is
+  // exact: its openings are absent from the stream by construction.
+  const pushWall = (minX, minZ, maxX, maxZ, bottom, top) => {
+    if (![minX, minZ, maxX, maxZ, bottom, top].every(Number.isFinite) || maxX < minX || maxZ < minZ) return;
+    colliders.push(minX, minZ, maxX, maxZ);
+    spans.push(bottom, top);
+    masks.push(GEO_QUERY_MASK.SOLID_PLAYER | GEO_QUERY_MASK.CAMERA_BLOCKER |
+      GEO_QUERY_MASK.LOS_BLOCKER | GEO_QUERY_MASK.PLACEMENT);
+  };
+  if (wallSolids) {
+    for (let index = 0; index + 3 < wallSolids.length; index += 4) {
+      const bottom = wallSpans && index / 4 * 2 + 1 < wallSpans.length ? wallSpans[index / 4 * 2] : FULL_MIN;
+      const top = wallSpans && index / 4 * 2 + 1 < wallSpans.length ? wallSpans[index / 4 * 2 + 1] : FULL_MAX;
+      pushWall(wallSolids[index], wallSolids[index + 1], wallSolids[index + 2], wallSolids[index + 3], bottom, top);
+    }
+  }
   if (propSolids) {
     for (let index = 0; index + 3 < propSolids.length; index += 4) {
       push(propSolids[index], propSolids[index + 1], propSolids[index + 2], propSolids[index + 3], FULL_MIN, FULL_MAX);
@@ -1014,7 +1031,7 @@ export class GeoWorld {
       key, x, y, root, bounds, ground,
       lifecycleEntries: new Map(),
       state: 'queued', requestId: this.nextRequestId++, priority,
-      roads: null, land: null, water: null, decorations: [], buildings: null, buildingDetails: null,
+      roads: null, land: null, water: null, decorations: [], buildings: null, buildingDetails: null, walls: null, wallSolids: null, wallSpans: null,
       labels: [], biome: null, environment: null, roadMeta: null, buildingMeta: null, timings: null,
       waterDomain: null, waterDomainMeta: null, streetFurnitureMeta: null, streetFurnitureCount: 0,
       bridgeMeta: null, bridgeCount: 0, bridgeTargets: null,
@@ -1463,6 +1480,11 @@ export class GeoWorld {
         this._releaseTileGeometry(tile, 'buildingDetails');
         tile.buildingDetails = null;
       }
+      if (tile.walls) {
+        tile.walls.removeFromParent();
+        this._releaseTileGeometry(tile, 'walls');
+        tile.walls = null;
+      }
       if (geometry) {
         this._ownTileGeometry(tile, 'buildings', geometry);
         tile.buildings = new THREE.Mesh(geometry, this.buildingMaterial);
@@ -1471,6 +1493,20 @@ export class GeoWorld {
         tile.buildings.userData.geoLayer = GEO_LAYER.building;
         tile.root.add(tile.buildings);
       }
+      // `TER-10`: the site walls mount with the buildings — one merged batch,
+      // vertex-coloured boxes through the shared building material — and their
+      // exact compound joins the solid stream below (gates stay open).
+      const wallGeometry = message.walls ? createBufferGeometry(message.walls) : null;
+      if (wallGeometry && message.walls.indices.length) {
+        this._ownTileGeometry(tile, 'walls', wallGeometry);
+        tile.walls = new THREE.Mesh(wallGeometry, this.buildingMaterial);
+        tile.walls.name = `walls:${tile.key}`;
+        tile.walls.renderOrder = GEO_LAYER.building.renderBand + 1;
+        tile.walls.userData.geoLayer = GEO_LAYER.building;
+        tile.root.add(tile.walls);
+      }
+      tile.wallSolids = message.walls?.solids instanceof Float32Array ? message.walls.solids : null;
+      tile.wallSpans = message.walls?.solidSpans instanceof Float32Array ? message.walls.solidSpans : null;
       const detailGeometry = createBufferGeometry({
         positions: message.geometry.detailPositions,
         normals: message.geometry.detailNormals,
@@ -1512,6 +1548,8 @@ export class GeoWorld {
         propSolids: tile.propSolids,
         rockProxies: tile.rockProxies,
         vehicleProxies: tile.vehicleProxies,
+        wallSolids: tile.wallSolids,
+        wallSpans: tile.wallSpans,
       });
       tile.extraSolidBoxes = extraSolids.colliders.length / 4;
       const baseColliders = tile.colliders;
