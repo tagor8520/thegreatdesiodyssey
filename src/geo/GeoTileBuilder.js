@@ -6,6 +6,15 @@ import {
   GEO_MAP_ROLE, GEO_MAP_SCHEMA, describeMapBuilding, describeMapTransport, pickMapLayer, resolveMapSchema,
 } from './GeoMapSemantics.js';
 import {
+  GDO_TRANSIT_FAMILY,
+  GDO_TRANSIT_LIMITS,
+  GDO_TRANSIT_RECIPES,
+  classifyTransitCrossing,
+  planLevelCrossing,
+  planSegmentTransitDetail,
+  transitFamily,
+} from './GeoTransitGrammar.js';
+import {
   GEO_SUPPORT_SLOT_STRIDE,
   appendPackedSupportSlots,
   generateRoofSupportSlots,
@@ -130,12 +139,19 @@ export function roadClass(properties, schema = GEO_MAP_SCHEMA.UNKNOWN) {
 export function roadStyle(properties, schema = GEO_MAP_SCHEMA.UNKNOWN) {
   const transport = describeMapTransport(properties, schema);
   const kind = transport.roadClass;
-  const family = transport.rail ? 'rail' : kind;
-  const widthMetres = ROAD_WIDTH_METRES[family] ?? ROAD_WIDTH_METRES.minor;
-  let color = ROAD_COLORS[family] ?? ROAD_COLORS.default;
+  // `TER-09`: a transit line takes its declared family recipe — ballast/beam/
+  // pavement width and palette — instead of a generic road fallback.
+  const transit = transitFamily(transport);
+  const family = transit !== GDO_TRANSIT_FAMILY.NONE ? transit : transport.rail ? 'rail' : kind;
+  const recipe = GDO_TRANSIT_RECIPES[family] ?? null;
+  const widthMetres = recipe ? recipe.widthMetres : ROAD_WIDTH_METRES[family] ?? ROAD_WIDTH_METRES.minor;
+  let color = recipe ? recipe.surfaceColor : ROAD_COLORS[family] ?? ROAD_COLORS.default;
   if (kind === 'path') color = ROAD_COLORS.path;
   if (transport.tunnel) color = color.map(component => component * .62);
-  return { kind, family, width: widthMetres * requestScale(properties), color, transport };
+  return {
+    kind, family, width: widthMetres * requestScale(properties), color, transport,
+    transit: transit !== GDO_TRANSIT_FAMILY.NONE ? transit : null,
+  };
 }
 
 // Isolated for tests and future per-provider scaling. All source widths are metres.
@@ -232,6 +248,10 @@ export function buildRoadGeometry(vectorTile, request) {
       junctions: 0,
       junctionsTruncated: false,
       truncated: false,
+      transit: Object.freeze({
+        quads: 0, boxes: 0, crossings: 0, crossingParts: 0,
+        truncated: false, families: Object.freeze({}),
+      }),
       transportLevels: transportLevelSummary(levelStats),
     }),
     supportSegments: new Float32Array(),
@@ -239,6 +259,29 @@ export function buildRoadGeometry(vectorTile, request) {
   };
 
   let segments = 0, detailQuads = 0, features = 0, truncated = false, junctionsTruncated = false;
+  // `TER-09`: one bounded transit-detail budget beside the road budget. The
+  // grammar plans parts; this emitter lands them in the same typed arrays, so
+  // rails, markings, and crossings draw in the one road batch.
+  const transitBudget = { quads: 0, boxes: 0, crossings: 0, crossingParts: 0 };
+  const transitFamilies = new Map();
+  const crossings = [];
+  const crossingKeys = new Set();
+  let transitTruncated = false;
+  const transitEmitter = {
+    quad(x1, z1, x2, z2, halfWidth, y1, y2, color) {
+      appendFlatQuad(positions, normals, colors, indices, x1, z1, x2, z2, halfWidth, y1, color, 0, y2);
+    },
+    box(x, y, z, sizeX, sizeY, sizeZ, color) {
+      appendBox(positions, normals, colors, indices, x, y, z, sizeX, sizeY, sizeZ, color);
+    },
+  };
+  const recordTransitFamily = (familyName, plan) => {
+    const stats = transitFamilies.get(familyName) ?? { segments: 0, quads: 0, boxes: 0 };
+    stats.segments += 1;
+    stats.quads += plan.quads;
+    stats.boxes += plan.boxes;
+    transitFamilies.set(familyName, stats);
+  };
   const terrainSeed = Number.isFinite(request.terrainSeed) ? request.terrainSeed : 0;
   const addJunction = (x, z, first, second = first) => {
     const physicalLevel = first.physicalLevel;
@@ -278,7 +321,38 @@ export function buildRoadGeometry(vectorTile, request) {
     for (const candidate of candidates) {
       if (candidate.physicalLevel !== segment.physicalLevel || candidate.featureIndex === segment.featureIndex) continue;
       const intersection = centerlineIntersection(candidate, segment) ?? sharedCenterlineEndpoint(candidate, segment);
-      if (intersection) addJunction(intersection[0], intersection[1], candidate, segment);
+      if (intersection) {
+        addJunction(intersection[0], intersection[1], candidate, segment);
+        // `TER-09`: the crossing rule runs where the lines actually meet. Only
+        // an ordinary road against a rail family at the same ground level
+        // becomes a level crossing; every other pairing is refused by name
+        // inside the grammar and stays a plain junction patch.
+        const verdict = classifyTransitCrossing(
+          { family: candidate.family, physicalLevel: candidate.physicalLevel },
+          { family: segment.family, physicalLevel: segment.physicalLevel },
+        );
+        if (verdict.crossing) {
+          const key = `${Math.round(intersection[0] * 1000)}:${Math.round(intersection[1] * 1000)}`;
+          if (!crossingKeys.has(key)) {
+            crossingKeys.add(key);
+            if (crossings.length >= GDO_TRANSIT_LIMITS.maxCrossings) transitTruncated = true;
+            else {
+              const railSegment = verdict.railFamily === candidate.family ? candidate : segment;
+              const roadSegment = railSegment === candidate ? segment : candidate;
+              const roadLength = Math.hypot(roadSegment.x2 - roadSegment.x1, roadSegment.z2 - roadSegment.z1) || 1;
+              const railLength = Math.hypot(railSegment.x2 - railSegment.x1, railSegment.z2 - railSegment.z1) || 1;
+              crossings.push({
+                x: intersection[0], z: intersection[1],
+                roadX: (roadSegment.x2 - roadSegment.x1) / roadLength,
+                roadZ: (roadSegment.z2 - roadSegment.z1) / roadLength,
+                railX: (railSegment.x2 - railSegment.x1) / railLength,
+                railZ: (railSegment.z2 - railSegment.z1) / railLength,
+                roadColor: roadSegment.color,
+              });
+            }
+          }
+        }
+      }
     }
     if (cells > 128) longJunctionSegments.push(segment);
     else for (let cellX = minCellX; cellX <= maxCellX; cellX++) for (let cellZ = minCellZ; cellZ <= maxCellZ; cellZ++) {
@@ -324,12 +398,28 @@ export function buildRoadGeometry(vectorTile, request) {
           x1, z1, x2, z2, halfWidth, surfaceOffset,
           color: style.color,
           physicalLevel: transport.physicalLevel,
+          family: style.family,
           featureIndex,
         };
         if (previousJunctionSegment) addJunction(x1, z1, previousJunctionSegment, junctionSegment);
         registerJunctionSegment(junctionSegment);
         previousJunctionSegment = junctionSegment;
         appendFlatQuad(positions, normals, colors, indices, x1, z1, x2, z2, halfWidth, y1, style.color, 0, y2);
+
+        // `TER-09`: the transit family's declared geometry rides the same batch.
+        if (style.transit) {
+          const plan = planSegmentTransitDetail({
+            family: style.transit,
+            x1, z1, x2, z2,
+            heightAt: (px, pz) => terrainHeightAt(px, pz, terrainSeed) + surfaceOffset,
+            emitter: transitEmitter,
+            budget: transitBudget,
+            firstOfLine: pointIndex === 1,
+            lastOfLine: pointIndex === line.length - 1,
+          });
+          if (plan.truncated) transitTruncated = true;
+          recordTransitFamily(style.transit, plan);
+        }
 
         // Curbs and sparse centre markings are batched into the road mesh. They
         // add legibility at street level without another material or draw call.
@@ -385,6 +475,24 @@ export function buildRoadGeometry(vectorTile, request) {
   }
 
   for (const junction of junctions) appendJunctionPatch(positions, normals, colors, indices, junction, terrainSeed);
+  // `TER-09`: the level-crossing patches land last so the slab reads on top of
+  // the rails it crosses.
+  for (const crossing of crossings) {
+    const plan = planLevelCrossing({
+      x: crossing.x, z: crossing.z,
+      heightAt: (px, pz) => terrainHeightAt(px, pz, terrainSeed),
+      roadDirectionX: crossing.roadX, roadDirectionZ: crossing.roadZ,
+      railDirectionX: crossing.railX, railDirectionZ: crossing.railZ,
+      roadColor: crossing.roadColor,
+      emitter: transitEmitter,
+      budget: transitBudget,
+    });
+    if (plan.truncated) transitTruncated = true;
+  }
+  const transitFamilySummary = {};
+  for (const [familyName, stats] of [...transitFamilies.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+    transitFamilySummary[familyName] = Object.freeze({ ...stats });
+  }
   return {
     ...geometryResult(positions, normals, colors, indices, {
       features,
@@ -393,6 +501,14 @@ export function buildRoadGeometry(vectorTile, request) {
       junctions: junctions.length,
       junctionsTruncated,
       truncated,
+      transit: Object.freeze({
+        quads: transitBudget.quads,
+        boxes: transitBudget.boxes,
+        crossings: crossings.length,
+        crossingParts: transitBudget.crossingParts,
+        truncated: transitTruncated,
+        families: Object.freeze(transitFamilySummary),
+      }),
       transportLevels: transportLevelSummary(levelStats),
     }),
     supportSegments: new Float32Array(supportSegmentValues),

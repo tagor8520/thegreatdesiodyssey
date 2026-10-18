@@ -13,6 +13,7 @@ import {
   validateCoordinate,
 } from './GeoMath.js';
 import { roadStyle, buildRoadGeometry, buildBuildingGeometry } from './GeoTileBuilder.js';
+import { GDO_TRANSIT_FAMILY, GDO_TRANSIT_REFUSAL } from './GeoTransitGrammar.js';
 import { buildContextData } from './GeoTileContext.js';
 import { GDO_VEGETATION_MORPHOLOGY_NAMESPACE } from './PlantMorphology.js';
 import { GEO_BRIDGE_STRIDE, compileBridges } from './GeoBridgeGrammar.js';
@@ -331,6 +332,64 @@ test('same-grade roads receive one bounded deterministic junction patch while se
   assert.equal(capped.meta.junctionsTruncated, true);
   assert.equal(capped.supportSegments.length, 72 * capped.supportSegmentStride,
     'junction truncation must not lose the authoritative road-support payload');
+});
+
+test('TER-09 transit families draw their declared geometry inside one bounded batch', () => {
+  const rail = roadStyle({ class: 'rail' });
+  assert.equal(rail.transit, GDO_TRANSIT_FAMILY.HEAVY_RAIL);
+  assert.ok(Math.abs(rail.width - .46) < 1e-12, 'heavy rail takes its declared ballast width');
+  const tram = roadStyle({ class: 'rail', subclass: 'tram' });
+  assert.equal(tram.transit, GDO_TRANSIT_FAMILY.TRAM);
+  const runway = roadStyle({ kind: 'runway' }, 'shortbread');
+  assert.equal(runway.transit, GDO_TRANSIT_FAMILY.RUNWAY);
+  assert.ok(Math.abs(runway.width - 2.4) < 1e-12);
+
+  const heavy = buildRoadGeometry({ layers: { transportation: layer(lineFeature({ class: 'rail' })) } }, request);
+  assert.equal(heavy.meta.features, 1);
+  assert.ok(heavy.meta.transit.families[GDO_TRANSIT_FAMILY.HEAVY_RAIL].quads > 2,
+    'rail heads and the sleeper rhythm ride the batch');
+  assert.equal(heavy.meta.transit.crossings, 0);
+  assert.equal(heavy.meta.transit.truncated, false);
+
+  const tramGeometry = buildRoadGeometry({ layers: { transportation: layer(
+    lineFeature({ class: 'rail', subclass: 'tram' }),
+  ) } }, request);
+  assert.equal(tramGeometry.meta.transit.families[GDO_TRANSIT_FAMILY.TRAM].quads, 2,
+    'street-running tram draws its two inlaid rails only');
+
+  const runwayGeometry = buildRoadGeometry({ layers: { streets: layer(lineFeature({ kind: 'runway' })) } }, request);
+  assert.ok(runwayGeometry.meta.transit.families[GDO_TRANSIT_FAMILY.RUNWAY].quads > 2,
+    'a runway draws edges, centreline dashes, and its line-end thresholds');
+
+  // The whole transit plan is deterministic data.
+  const repeated = buildRoadGeometry({ layers: { transportation: layer(lineFeature({ class: 'rail' })) } }, request);
+  assert.deepEqual([...heavy.positions], [...repeated.positions]);
+  assert.deepEqual([...heavy.indices], [...repeated.indices]);
+});
+
+test('TER-09 level crossings appear only where a ground road meets a ground railway', () => {
+  const road = lineBetween([0, 2048], [4096, 2048], { class: 'minor' });
+  const rail = lineBetween([2048, 0], [2048, 4096], { class: 'rail' });
+  const crossing = buildRoadGeometry({ layers: { transportation: layer(road, rail) } }, request);
+  assert.equal(crossing.meta.transit.crossings, 1);
+  assert.equal(crossing.meta.transit.crossingParts, 5, 'a road slab and one post/boom pair per approach');
+  assert.equal(crossing.meta.junctions, 1, 'the junction patch still seals the seam under the slab');
+
+  // A grade-separated railway is not a crossing — the layering owns that pair.
+  const overpass = lineBetween([2048, 0], [2048, 4096], { class: 'rail', bridge: true });
+  const separated = buildRoadGeometry({ layers: { transportation: layer(road, overpass) } }, request);
+  assert.equal(separated.meta.transit.crossings, 0);
+
+  // Two roads never invent a crossing, and a tram crossing is refused as a
+  // transit junction by the grammar while the builder simply draws no patch.
+  const secondRoad = lineBetween([2048, 0], [2048, 4096], { class: 'secondary' });
+  const plain = buildRoadGeometry({ layers: { transportation: layer(road, secondRoad) } }, request);
+  assert.equal(plain.meta.transit.crossings, 0);
+
+  const tram = lineBetween([2048, 0], [2048, 4096], { class: 'rail', subclass: 'tram' });
+  const tramCrossing = buildRoadGeometry({ layers: { transportation: layer(road, tram) } }, request);
+  assert.equal(tramCrossing.meta.transit.crossings, 1, 'tram is a rail family and crosses at grade');
+  assert.equal(GDO_TRANSIT_REFUSAL.TRANSIT_JUNCTION, 'transit-junction');
 });
 
 test('building builder preserves mapped X/Z footprint, emits upward roofs, and creates colliders', () => {
