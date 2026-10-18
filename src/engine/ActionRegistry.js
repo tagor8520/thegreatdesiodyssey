@@ -135,6 +135,7 @@ function validate(action, index) {
  * and future UI code before sealing.
  */
 export function createActionRegistry({ actions = GDO_DEFAULT_ACTIONS, capabilities = null, limits = GDO_ACTION_LIMITS } = {}) {
+  const defaults = [...actions];
   const registered = [];
   const skipped = [];
   const byId = new Map();
@@ -190,6 +191,51 @@ export function createActionRegistry({ actions = GDO_DEFAULT_ACTIONS, capabiliti
     actions() { return Object.freeze([...registered]); },
     action(id) { return byId.get(text(id)) ?? null; },
     has(id) { return byId.has(text(id)); },
+    /**
+     * `GME-10`: rebind one action's keyboard codes. A code another action owns
+     * is a named refusal (`code-conflict`) — the registry never silently steals
+     * a binding — and an unknown action or an empty set refuses the same way.
+     * The touch side is untouched: a pad button is its own surface, and the
+     * remapped keyboard reaches the same action the pad already names.
+     */
+    rebind(id, keyboard) {
+      const action = byId.get(text(id)) ?? null;
+      if (!action) return Object.freeze({ ok: false, reason: 'unknown-action', action: text(id) });
+      const codes = [];
+      for (const code of keyboard ?? []) {
+        const value = String(code);
+        if (!codes.includes(value)) codes.push(value);
+      }
+      if (!codes.length) return Object.freeze({ ok: false, reason: 'empty-binding', action: action.id });
+      if (codes.length > limits.keyboardCodes) {
+        return Object.freeze({ ok: false, reason: 'keyboard-cap', action: action.id });
+      }
+      const conflicts = codes.filter(code =>
+        keyboardBindings.has(code) && keyboardBindings.get(code) !== action.id);
+      if (conflicts.length) {
+        return Object.freeze({
+          ok: false, reason: 'code-conflict', action: action.id,
+          conflicts: Object.freeze(conflicts),
+        });
+      }
+      for (const code of action.keyboard) {
+        if (keyboardBindings.get(code) === action.id) keyboardBindings.delete(code);
+      }
+      const next = Object.freeze({ ...action, keyboard: Object.freeze(codes) });
+      const index = registered.indexOf(action);
+      if (index >= 0) registered[index] = next;
+      byId.set(next.id, next);
+      for (const code of codes) keyboardBindings.set(code, next.id);
+      return Object.freeze({ ok: true, action: next.id, keyboard: next.keyboard });
+    },
+    /** The construction-time bindings, so a reset is data and not a reload. */
+    defaultBindings() {
+      const out = Object.create(null);
+      for (const action of defaults) {
+        if (byId.has(action.id)) out[action.id] = Object.freeze([...(action.keyboard ?? [])]);
+      }
+      return Object.freeze(out);
+    },
     /**
      * Every keyboard code any registered action owns, in declared action order,
      * so the table is reproducible regardless of registration order.

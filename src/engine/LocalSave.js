@@ -21,13 +21,40 @@ import { GDO_FEATURE_VERSIONS, featureNamespace } from './FeatureVersions.js';
 export const GDO_SAVE_NAMESPACE = featureNamespace('saveSchema');
 export const GDO_SAVE_SCHEMA = GDO_FEATURE_VERSIONS.saveSchema;
 
-/** The declared settings vocabulary. Anything else is refused by name. */
+/**
+ * The declared settings vocabulary. Anything else is refused by name. The
+ * `keyBindings` marker is not an enum: it is the `GME-10` remap map, validated
+ * by shape (bounded action/code counts and canonical key codes) instead of by
+ * membership.
+ */
 export const GDO_SAVE_SETTINGS = Object.freeze({
   profile: Object.freeze(['low', 'balanced', 'high']),
   touchControls: Object.freeze([true, false]),
   reducedMotion: Object.freeze([true, false]),
   cameraFade: Object.freeze([true, false]),
+  weatherEffects: Object.freeze([true, false]),
+  keyBindings: 'key-bindings',
 });
+
+const KEY_CODE_PATTERN = /^(Key[A-Z]|Digit[0-9]|Arrow(Up|Down|Left|Right)|Space|Shift(Left|Right)|Control(Left|Right)|Alt(Left|Right)|Tab|Enter|Escape|Slash|Comma|Period|Bracket(Left|Right)|Minus|Equal|Backquote)$/;
+
+function validKeyBindings(bindings) {
+  if (!bindings || typeof bindings !== 'object' || Array.isArray(bindings)) return null;
+  const entries = Object.entries(bindings);
+  if (entries.length > 16) return null;
+  const clean = Object.create(null);
+  for (const [id, codes] of entries) {
+    if (typeof id !== 'string' || !id || !Array.isArray(codes) || codes.length > 8) return null;
+    const list = [];
+    for (const code of codes) {
+      const value = String(code);
+      if (!KEY_CODE_PATTERN.test(value)) return null;
+      if (!list.includes(value)) list.push(value);
+    }
+    clean[id] = Object.freeze(list);
+  }
+  return clean;
+}
 
 export const GDO_SAVE_REFUSAL = Object.freeze({
   MALFORMED: 'malformed-json',
@@ -58,6 +85,15 @@ function validateSettings(settings, refusals) {
       continue;
     }
     const allowed = GDO_SAVE_SETTINGS[key];
+    if (allowed === 'key-bindings') {
+      const bindings = validKeyBindings(value);
+      if (!bindings) {
+        refusals[GDO_SAVE_REFUSAL.INVALID_SETTING]++;
+        continue;
+      }
+      clean[key] = bindings;
+      continue;
+    }
     if (!allowed.includes(value)) {
       refusals[GDO_SAVE_REFUSAL.INVALID_SETTING]++;
       continue;

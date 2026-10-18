@@ -26,6 +26,7 @@ import { weatherHudText } from '../engine/WeatherState.js';
 import { pedestrianHudText } from '../engine/LocalPedestrians.js';
 import { GDO_PEDESTRIAN_AUDIT_SCRIPT, createPedestrianAuditRunner, pedestrianAuditPlayerAt } from '../engine/PedestrianAudit.js';
 import { actionCapabilitiesForDomain, createActionRegistry } from '../engine/ActionRegistry.js';
+import { createAccessibilitySettings } from '../engine/AccessibilitySettings.js';
 import { createTouchActionControls, touchActionMarkup } from './GeoActionControls.js';
 import { createContentValidatorExtras } from '../engine/ContentValidatorTool.js';
 import './geo.css';
@@ -413,6 +414,18 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   } else {
     logger.info('traversal', 'board verb skipped', { reason: boardRegistration?.reason ?? 'capability' });
   }
+  // `GME-10`: the accessibility surface — remapping over the one registry and
+  // the motion/effect toggles — restored from the `NET-01` settings at boot and
+  // persisted through the same envelope. The keyboard remap reaches the pad and
+  // the help sentence because they all read the registry.
+  const accessibility = createAccessibilitySettings({
+    registry: coordinateActions,
+    reducedMotion: world.saveSettings?.reducedMotion ?? false,
+  });
+  accessibility.applySaveSettings(world.saveSettings ?? {});
+  world.accessibility = accessibility;
+  world.setReducedMotion?.(accessibility.settings.reducedMotion);
+  if (!accessibility.settings.cameraFade) world.cameraFade?.setReducedMotion?.(true);
   const cancelGuidance = () => {
     const had = world.cancelNavigation();
     navigationTargetIndex = -1;

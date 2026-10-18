@@ -128,8 +128,13 @@ test('NET-01 settings are validated against the declared vocabulary', () => {
   assert.equal(save.refusals[GDO_SAVE_REFUSAL.UNKNOWN_SETTING], 1);
   assert.equal(save.refusals[GDO_SAVE_REFUSAL.INVALID_SETTING], 2);
   for (const key of Object.keys(GDO_SAVE_SETTINGS)) {
-    assert.ok(Array.isArray(GDO_SAVE_SETTINGS[key]), 'every setting declares its vocabulary');
-    assert.ok(GDO_SAVE_SETTINGS[key].length > 0);
+    const vocabulary = GDO_SAVE_SETTINGS[key];
+    if (Array.isArray(vocabulary)) {
+      assert.ok(vocabulary.length > 0);
+    } else {
+      // The `GME-10` remap map validates by shape, not by enum membership.
+      assert.equal(vocabulary, 'key-bindings');
+    }
   }
 });
 
