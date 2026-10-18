@@ -80,6 +80,7 @@ import {
   classifyWaterContact,
   planWaterExit,
 } from '../engine/WaterContact.js';
+import { GDO_AMBIENT_KINDS } from '../engine/AmbientAudio.js';
 import {
   acquireProceduralMaterialLibrary,
   configureSemanticMaterial,
@@ -2659,6 +2660,52 @@ export class GeoWorld {
       });
     }
     return boats;
+  }
+
+  /**
+   * `ENV-06`: the ambient audio zone feed. A live boat is a moving water voice
+   * (it rides the `TER-08` waterways), and a deterministic ring of `COL-08`
+   * shoreline probes around the listener emits `water`/`surf` zones from the
+   * real contact state — no fabricated soundscape. Bounded, ordered, and safe
+   * against a throwing probe: a failed sample yields no zone.
+   */
+  ambientAudioZones(maxZones, x, z) {
+    const limit = Math.max(0, Math.min(Math.floor(maxZones) || 0, 40));
+    const zones = [];
+    if (limit === 0 || !Number.isFinite(x) || !Number.isFinite(z)) return zones;
+    for (const boat of this.boatRecords()) {
+      if (zones.length >= limit) break;
+      zones.push({
+        id: `water:${boat.id}`,
+        kind: GDO_AMBIENT_KINDS.WATER,
+        x: boat.x, z: boat.z,
+        radius: 24, gain: .72,
+      });
+    }
+    const probes = 8;
+    for (const radius of [6, 14]) {
+      for (let i = 0; i < probes && zones.length < limit; i += 1) {
+        const angle = (i / probes) * Math.PI * 2;
+        const px = x + Math.cos(angle) * radius;
+        const pz = z + Math.sin(angle) * radius;
+        let contact = null;
+        try {
+          contact = this.waterContact(px, pz, { feetY: 0, bodyHeight: .18, gravity: 5.2, profile: 'low' },
+            this.ambientWaterProbe ??= {});
+        } catch {
+          continue;
+        }
+        if (!contact || contact.state === GDO_WATER_STATE.DRY) continue;
+        zones.push({
+          id: `shore:${radius}:${i}`,
+          kind: contact.state === GDO_WATER_STATE.WADING ? GDO_AMBIENT_KINDS.SURF : GDO_AMBIENT_KINDS.WATER,
+          x: px, z: pz,
+          radius: contact.state === GDO_WATER_STATE.WADING ? 12 : 18,
+          gain: contact.state === GDO_WATER_STATE.WADING ? .45 : .62,
+        });
+      }
+    }
+    return zones;
   }
 
   /**
