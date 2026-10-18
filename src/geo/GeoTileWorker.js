@@ -1,4 +1,4 @@
-import { buildBuildingGeometry, buildRoadGeometry, decodeVectorTile } from './GeoTileBuilder.js';
+import { buildBuildingGeometry, buildRoadGeometry, buildWallGeometry, decodeVectorTile } from './GeoTileBuilder.js';
 import { resolveMapSchema } from './GeoMapSemantics.js';
 import { acquireTileCache } from './GeoTileCache.js';
 import { buildContextData } from './GeoTileContext.js';
@@ -176,13 +176,26 @@ async function buildTile(request) {
 
     const buildingsStarted = performance.now();
     const buildings = buildBuildingGeometry(fetched.vectorTile, phaseRequest);
+    // `TER-10`: the site walls travel with the buildings phase — one plan per
+    // mapped site, its drawn boxes and its exact compound (openings intact).
+    const walls = buildWallGeometry(fetched.vectorTile, phaseRequest);
     const buildingsMilliseconds = performance.now() - buildingsStarted;
+    const buildingTransfers = geometryTransfers(buildings, true);
+    buildingTransfers.push(
+      walls.positions.buffer,
+      walls.normals.buffer,
+      walls.colors.buffer,
+      walls.indices.buffer,
+      walls.solids.buffer,
+      walls.solidSpans.buffer,
+    );
     self.postMessage({
       type: 'tile-phase',
       requestId: request.requestId,
       key: request.key,
       phase: 'buildings',
       geometry: buildings,
+      walls,
       bytes: fetched.data.byteLength,
       provider: fetched.provider,
       providerId: fetched.providerId,
@@ -194,7 +207,7 @@ async function buildTile(request) {
         totalMilliseconds: performance.now() - requestStarted,
       },
       complete: true,
-    }, geometryTransfers(buildings, true));
+    }, buildingTransfers);
   } catch (error) {
     if (!controller.signal.aborted && !cancelled.has(request.requestId)) {
       self.postMessage({

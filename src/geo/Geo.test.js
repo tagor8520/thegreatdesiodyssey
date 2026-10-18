@@ -12,7 +12,7 @@ import {
   worldToCoordinate,
   validateCoordinate,
 } from './GeoMath.js';
-import { roadStyle, buildRoadGeometry, buildBuildingGeometry } from './GeoTileBuilder.js';
+import { roadStyle, buildRoadGeometry, buildBuildingGeometry, buildWallGeometry } from './GeoTileBuilder.js';
 import { GDO_TRANSIT_FAMILY, GDO_TRANSIT_REFUSAL } from './GeoTransitGrammar.js';
 import { buildContextData } from './GeoTileContext.js';
 import { GDO_VEGETATION_MORPHOLOGY_NAMESPACE } from './PlantMorphology.js';
@@ -390,6 +390,51 @@ test('TER-09 level crossings appear only where a ground road meets a ground rail
   const tramCrossing = buildRoadGeometry({ layers: { transportation: layer(road, tram) } }, request);
   assert.equal(tramCrossing.meta.transit.crossings, 1, 'tram is a rail family and crosses at grade');
   assert.equal(GDO_TRANSIT_REFUSAL.TRANSIT_JUNCTION, 'transit-junction');
+});
+
+test('TER-10 walls: site polygons build wall boxes and an exact compound with open gates', () => {
+  const site = buildingFeature({ landuse: 'school' });
+  const access = lineBetween([0, 0], [4096, 0], { class: 'minor' });
+  const tile = {
+    layers: {
+      landuse: layer(site),
+      transportation: layer(access),
+    },
+  };
+  const walls = buildWallGeometry(tile, request);
+  assert.equal(walls.meta.sites, 1);
+  assert.ok(walls.meta.openings >= 1 && walls.meta.openings <= 2, 'the gate comes from the mapped road');
+  assert.ok(walls.positions.length > 0, 'the wall is drawn');
+  assert.ok(walls.solids.length > 0, 'the compound exists');
+  assert.equal(walls.solids.length / 4, walls.meta.solids);
+  assert.equal(walls.solidSpans.length / 2, walls.meta.solids);
+  assert.equal(walls.openings.length / 2, walls.meta.openings);
+
+  // THE GATE at the builder level: no compound box contains an opening.
+  for (let index = 0; index < walls.openings.length; index += 2) {
+    const x = walls.openings[index], z = walls.openings[index + 1];
+    for (let box = 0; box < walls.solids.length; box += 4) {
+      const inside = x > walls.solids[box] && x < walls.solids[box + 2] &&
+        z > walls.solids[box + 1] && z < walls.solids[box + 3];
+      assert.equal(inside, false, `opening (${x}, ${z}) sits inside a wall box`);
+    }
+  }
+
+  // Deterministic: the same tile twice is byte-identical.
+  const repeated = buildWallGeometry(tile, request);
+  assert.deepEqual([...walls.positions], [...repeated.positions]);
+  assert.deepEqual([...walls.solids], [...repeated.solids]);
+
+  // A land kind with no site recipe builds nothing — silence, not a wall.
+  const none = buildWallGeometry({ layers: { landuse: layer(buildingFeature({ landuse: 'industrial' })) } }, request);
+  assert.equal(none.meta.sites, 0);
+  assert.equal(none.positions.length, 0);
+  assert.equal(none.solids.length, 0);
+
+  // A wallless tile (no land layer) returns the empty shape, not an error.
+  const empty = buildWallGeometry({ layers: { transportation: layer(access) } }, request);
+  assert.equal(empty.meta.sites, 0);
+  assert.equal(empty.openings.length, 0);
 });
 
 test('building builder preserves mapped X/Z footprint, emits upward roofs, and creates colliders', () => {

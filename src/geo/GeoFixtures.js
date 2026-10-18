@@ -1,6 +1,6 @@
 import { GDO_FEATURE_VERSIONS, featureNamespace } from '../engine/FeatureVersions.js';
 import { GEO_MAP_SCHEMA, resolveMapSchema } from './GeoMapSemantics.js';
-import { buildBuildingGeometry, buildRoadGeometry } from './GeoTileBuilder.js';
+import { buildBuildingGeometry, buildRoadGeometry, buildWallGeometry } from './GeoTileBuilder.js';
 import { buildContextData } from './GeoTileContext.js';
 import { streetFurnitureRecipes } from './GeoStreetFurnitureGrammar.js';
 import { bridgeRecipes, GEO_BRIDGE_FAMILY_NAMES, GEO_BRIDGE_STRIDE } from './GeoBridgeGrammar.js';
@@ -354,6 +354,9 @@ export function compileGeoFixture(id, variant = 'openmaptiles') {
     roads: buildRoadGeometry(fixture.vectorTile, request),
     context: buildContextData(fixture.vectorTile, request),
     buildings: buildBuildingGeometry(fixture.vectorTile, request),
+    // `TER-10`: the wall/compound path rides the same production builders and
+    // the same equivalence/fingerprint gate.
+    walls: buildWallGeometry(fixture.vectorTile, request),
   });
 }
 
@@ -381,6 +384,8 @@ export function geoFixtureTypedViews(compilation) {
       // DET-09 hero geometry travels in the same buildings phase.
       'landmarkPositions', 'landmarkNormals', 'landmarkColors', 'landmarkIndices',
     ]],
+    // TER-10: the wall batch and its exact compound (openings included).
+    ['walls', compilation.walls, ['positions', 'normals', 'colors', 'indices', 'solids', 'solidSpans', 'openings']],
   ];
   const views = [];
   for (const [group, value, fields] of groups) for (const field of fields) {
@@ -415,6 +420,7 @@ function semanticSnapshot(compilation) {
     labels: compilation.context.labels,
     biome: compilation.context.biome,
     buildings: compilation.buildings.meta,
+    walls: compilation.walls.meta,
   });
 }
 
@@ -455,7 +461,7 @@ function typedBytes(value) { return ArrayBuffer.isView(value) && !(value instanc
 export function collectGeoFixtureBudgetMetrics(compilation) {
   if (!compilation?.fixture) throw new TypeError('Compiled geographic fixture required');
   const presentDraws = [compilation.terrain, compilation.roads, compilation.context.land,
-    compilation.context.water, compilation.buildings]
+    compilation.context.water, compilation.buildings, compilation.walls]
     .reduce((count, geometry) => count + Number(Boolean(geometry?.indices?.length)), 0) +
     Number(Boolean(compilation.buildings?.detailIndices?.length)) +
     // A hero is one merged, hidden-face-reduced draw for the focused tile.
@@ -514,7 +520,7 @@ export function collectGeoFixtureBudgetMetrics(compilation) {
       rawTriangles(compilation.buildings) + compilation.buildings.detailIndices.length / 3 +
       compilation.buildings.landmarkIndices.length / 3 +
       decorationTriangles + streetFurnitureVisibleTriangles + ambientLifeVisibleTriangles +
-      bridgeVisibleTriangles,
+      bridgeVisibleTriangles + rawTriangles(compilation.walls),
     buildingDetailBuildings: compilation.buildings.meta.buildingGrammar?.selectedBuildings ?? 0,
     buildingDetailBoxes: compilation.buildings.meta.buildingGrammar?.boxes ?? 0,
     buildingDetailTriangles: compilation.buildings.meta.buildingGrammar?.triangles ?? 0,

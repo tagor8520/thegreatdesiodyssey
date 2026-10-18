@@ -15,6 +15,15 @@ import {
   transitFamily,
 } from './GeoTransitGrammar.js';
 import {
+  GDO_WALL_FAMILY,
+  GDO_WALL_LIMITS,
+  deriveEntrancesFromRoads,
+  emitWallGeometry,
+  planWallSite,
+  wallCollisionCompound,
+  wallSiteRecipe,
+} from './GeoWallGrammar.js';
+import {
   GEO_SUPPORT_SLOT_STRIDE,
   appendPackedSupportSlots,
   generateRoofSupportSlots,
@@ -564,6 +573,134 @@ function collectBuildingRoadSegments(vectorTile, request) {
   segments.sort((first, second) =>
     first[0] - second[0] || first[1] - second[1] || first[2] - second[2] || first[3] - second[3]);
   return { segments, truncated };
+}
+
+/**
+ * `TER-10`: walls, barriers and entrances. Mapped site polygons walk through
+ * the one `gdo:wallGrammar:v1` plan — site recipe per land kind, geometry-
+ * derived entrance gaps where real ground roads reach the ring — and both
+ * consumers read the same runs: the drawn yaw-aligned boxes and the exact
+ * collision compound, whose openings are literally absent. The compound is a
+ * plain 4-float AABB stream (like prop solids) returned beside the geometry.
+ */
+export function buildWallGeometry(vectorTile, request) {
+  const layer = pickMapLayer(vectorTile.layers, GEO_MAP_ROLE.LAND)?.layer;
+  const positions = [], normals = [], colors = [], indices = [];
+  const solidValues = [];
+  const solidSpanValues = [];
+  const openingValues = [];
+  const counts = { sites: 0, runs: 0, openings: 0, segments: 0, posts: 0, solids: 0, entrances: 0 };
+  const refusals = Object.create(null);
+  const families = new Map();
+  let truncated = false;
+  const terrainSeed = Number.isFinite(request.terrainSeed) ? request.terrainSeed : 0;
+  const emitter = {
+    box(x, bottom, z, sizeX, sizeY, sizeZ, color, yaw = 0) {
+      appendBox(positions, normals, colors, indices, x, bottom, z, sizeX, sizeY, sizeZ, color, yaw);
+    },
+  };
+  const emptyMeta = {
+    sites: 0, runs: 0, openings: 0, segments: 0, posts: 0, solids: 0,
+    truncated: false,
+    families: Object.freeze({}),
+    refusals: Object.freeze({}),
+  };
+  if (!layer) {
+    return {
+      ...geometryResult(positions, normals, colors, indices, emptyMeta),
+      solids: new Float32Array(),
+      solidSpans: new Float32Array(),
+      openings: new Float32Array(),
+    };
+  }
+
+  // Entrances come from real access: the bounded ground-road set the building
+  // detail already collects (rail, runway, elevated, and tunnel lines are not
+  // entrance sources).
+  const sourceRoads = collectBuildingRoadSegments(vectorTile, request);
+  if (sourceRoads.truncated) truncated = true;
+
+  sites: for (let featureIndex = 0; featureIndex < layer.length; featureIndex += 1) {
+    if (counts.sites >= GDO_WALL_LIMITS.maxSites) {
+      truncated = true;
+      break;
+    }
+    const feature = layer.feature(featureIndex);
+    if (feature.type !== 3) continue;
+    const properties = feature.properties ?? {};
+    const kind = String(properties.kind || properties.class || properties.subclass ||
+      properties.type || properties.landuse || '').toLowerCase();
+    const site = wallSiteRecipe(kind);
+    if (site.family === GDO_WALL_FAMILY.NONE) continue;
+
+    const polygons = classifyRings(feature.loadGeometry());
+    for (const polygon of polygons) {
+      const rings = polygon.map(withoutClosingPoint).filter(ring => ring.length >= 3);
+      if (!rings.length) continue;
+      const outer = rings[0].map(point => pointToWorld(point, feature.extent, request));
+      if (outer.length > GDO_WALL_LIMITS.maxRingPoints) {
+        truncated = true;
+        continue;
+      }
+      const entrancePoints = deriveEntrancesFromRoads({
+        ring: outer,
+        roadSegments: sourceRoads.segments,
+        maxEntrances: 2,
+      });
+      const plan = planWallSite({ ring: outer, kind, entrancePoints, budget: counts });
+      for (const [name, amount] of Object.entries(plan.refusals)) {
+        refusals[name] = (refusals[name] || 0) + amount;
+      }
+      if (plan.family === GDO_WALL_FAMILY.NONE || !plan.runs.length) continue;
+      counts.sites += 1;
+      counts.runs += plan.runs.length;
+      counts.openings += plan.openings.length;
+      for (const opening of plan.openings) openingValues.push(opening.x, opening.z);
+      const familyStats = families.get(plan.family) ?? { sites: 0, boxes: 0, openings: 0 };
+      familyStats.sites += 1;
+      familyStats.openings += plan.openings.length;
+
+      const drawn = emitWallGeometry(plan, {
+        emitter,
+        heightAt: (x, z) => terrainHeightAt(x, z, terrainSeed),
+        budget: counts,
+      });
+      familyStats.boxes += drawn.boxes;
+      if (drawn.truncated) truncated = true;
+
+      const compound = wallCollisionCompound(plan, {
+        budget: counts,
+        heightAt: (x, z) => terrainHeightAt(x, z, terrainSeed),
+      });
+      if (compound.truncated) truncated = true;
+      for (const box of compound.boxes) {
+        solidValues.push(box.minX, box.minZ, box.maxX, box.maxZ);
+        solidSpanValues.push(box.bottom, box.top);
+      }
+      families.set(plan.family, familyStats);
+    }
+  }
+
+  const familySummary = {};
+  for (const [familyName, stats] of [...families.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+    familySummary[familyName] = Object.freeze({ ...stats });
+  }
+  return {
+    ...geometryResult(positions, normals, colors, indices, {
+      sites: counts.sites,
+      runs: counts.runs,
+      openings: counts.openings,
+      segments: counts.segments,
+      posts: counts.posts,
+      solids: counts.solids,
+      truncated,
+      families: Object.freeze(familySummary),
+      refusals: Object.freeze({ ...refusals }),
+    }),
+    solids: new Float32Array(solidValues),
+    solidSpans: new Float32Array(solidSpanValues),
+    openings: new Float32Array(openingValues),
+  };
 }
 
 function polygonArea(points) {
