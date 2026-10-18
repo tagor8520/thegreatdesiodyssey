@@ -13,6 +13,9 @@ export const GEO_BUILDING_DETAIL_LIMITS = Object.freeze({
   modulesPerBuilding: 8,
   boxesPerBuilding: 20,
   boxesPerTile: 96,
+  // `PHY-01`: authored entrance doors per tile, stride 8 in the `doorways` stream.
+  doorwaysPerTile: 24,
+  doorwaysStride: 8,
   trianglesPerTile: 20_000,
   bytesPerTile: 256 * 1024,
   addedDrawCalls: 1,
@@ -364,6 +367,7 @@ export function createBuildingDetailRecipe({
   const silhouette = [], surface = [], accents = [];
   const entrance = roadFacing?.found && roadFacing.edgeLength >= .38;
   let entranceBounds = null;
+  let entrancePose = null;
   if (entrance) {
     const doorWidth = Math.min(.42, Math.max(.22, roadFacing.edgeLength * .28));
     const doorHeight = Math.min(.36, Math.max(.24, height * .34));
@@ -389,6 +393,17 @@ export function createBuildingDetailRecipe({
       maximumAlong: canopyWidth / 2,
       bottom: foundationY,
       top: foundationY + doorHeight + .04,
+    });
+    // `PHY-01`: the entrance's world pose — the doorway the `gdo:localDoors:v1`
+    // board swings. The yaw is the facade's own (`appendBox` convention), so a
+    // closed leaf lies exactly along the mapped wall the detail already draws.
+    entrancePose = Object.freeze({
+      x: roadFacing.centerX + roadFacing.normalX * panelDepth,
+      y: foundationY,
+      z: roadFacing.centerZ + roadFacing.normalZ * panelDepth,
+      heading: roadFacing.yaw,
+      width: doorWidth,
+      height: doorHeight,
     });
 
     if (roadFacing.edgeLength >= .7 && height >= .7) {
@@ -513,6 +528,7 @@ export function createBuildingDetailRecipe({
     recipe,
     compiled,
     entranceBounds,
+    entrancePose,
     roadFacingSource: entrance ? 'mapped-road' : 'none',
     roofSlotIds: Object.freeze(slots.length ? [slots[0].id] : []),
   });
