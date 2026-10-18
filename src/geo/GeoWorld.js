@@ -2677,7 +2677,9 @@ export class GeoWorld {
   persistLocalSave(nowMilliseconds = performance.now()) {
     if (!this.localSave) return false;
     return this.localSave.persist(this.localSave.capture({
-      settings: this.saveSettings,
+      // `GME-10`: the accessibility surface owns the live settings when present,
+      // so a remap or a motion toggle is in the very next envelope.
+      settings: this.accessibility?.toSaveSettings?.() ?? this.saveSettings,
       discovery: this.discoveryJournal?.toJSON?.() ?? null,
       activities: (this.activities?.board ?? []).map(entry => ({
         id: entry.id, progress: entry.progress, state: entry.state,
