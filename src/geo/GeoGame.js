@@ -27,6 +27,7 @@ import { pedestrianHudText } from '../engine/LocalPedestrians.js';
 import { GDO_PEDESTRIAN_AUDIT_SCRIPT, createPedestrianAuditRunner, pedestrianAuditPlayerAt } from '../engine/PedestrianAudit.js';
 import { actionCapabilitiesForDomain, createActionRegistry } from '../engine/ActionRegistry.js';
 import { createAccessibilitySettings } from '../engine/AccessibilitySettings.js';
+import { createAmbientAudio } from '../engine/AmbientAudio.js';
 import { createTouchActionControls, touchActionMarkup } from './GeoActionControls.js';
 import { createContentValidatorExtras } from '../engine/ContentValidatorTool.js';
 import './geo.css';
@@ -426,6 +427,26 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   world.accessibility = accessibility;
   world.setReducedMotion?.(accessibility.settings.reducedMotion);
   if (!accessibility.settings.cameraFade) world.cameraFade?.setReducedMotion?.(true);
+  // `ENV-06`: the procedural ambient beds. Every voice is generated (noise
+  // loops through filters — no samples, legal by construction), the plan is
+  // capped by distance and activity, and a browser without audio (or a blocked
+  // autoplay policy) simply runs the same plan silently.
+  const AudioContextCtor = typeof window !== 'undefined'
+    ? (window.AudioContext || window.webkitAudioContext || null) : null;
+  let audioContext = null;
+  if (AudioContextCtor) {
+    try {
+      audioContext = new AudioContextCtor();
+    } catch {
+      audioContext = null;
+    }
+  }
+  const ambientAudio = createAmbientAudio({
+    profile: world.profile === 'high' ? 'large' : world.profile === 'balanced' ? 'default' : 'compact',
+    context: audioContext,
+    ledger: lifecycle,
+  });
+  world.ambientAudio = ambientAudio;
   const cancelGuidance = () => {
     const had = world.cancelNavigation();
     navigationTargetIndex = -1;
@@ -676,6 +697,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   longTaskObserver?.observe({ type: 'longtask', buffered: false });
   if (longTaskObserver) lifecycle.observer(longTaskObserver, 'long-task');
   let auditClock = 0;
+  let ambientAudioClock = 0;
   const frame = now => {
     if (disposed || lost) return;
     animationFrame = requestAnimationFrame(frame);
@@ -706,6 +728,25 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     // exposure channels. When `ENV-02` lands a keyframe it overwrites the weather's
     // scale, so one bounded re-apply puts the moderated numbers back.
     if (dayWrote) world.reapplyWeather();
+    // `ENV-06`: every quarter second the zone feed re-reads the water domain
+    // and the live boats, and the module applies its rate-limited plan —
+    // distance-capped zones, activity-capped voices, generated audio only.
+    ambientAudioClock += frameGap;
+    if (ambientAudioClock >= 250) {
+      ambientAudioClock = 0;
+      ambientAudio.setZones(world.ambientAudioZones(
+        ambientAudio.profile.maxZones,
+        player.position.x,
+        player.position.z,
+      ));
+      ambientAudio.update({
+        listenerX: player.position.x,
+        listenerZ: player.position.z,
+        weather: world.weather?.state ?? null,
+        activity: Math.min(1, Math.max(0, timeOfDay.state.sunIntensity ?? 1)),
+        nowMilliseconds: now,
+      });
+    }
     debugOverlay?.update(world, player.position, renderer, now);
     renderer.render(scene, camera);
     updateMapLabels(now);
@@ -1260,6 +1301,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
       touchCleanups.forEach(cleanup => cleanup());
       joystick.dispose();
       debugOverlay?.dispose();
+      ambientAudio.dispose();
       player.dispose();
       world.dispose();
       lightRig.dispose();
