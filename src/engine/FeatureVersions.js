@@ -55,7 +55,7 @@ export const GDO_FEATURE_VERSIONS = Object.freeze({
   ambientLifeScheduler: 1,
   ambientLifeMotion: 1,
   contentSchema: 1,
-  saveSchema: 0,
+  saveSchema: 1,
 });
 
 export const GDO_GENERATOR_VERSION = Object.entries(GDO_FEATURE_VERSIONS)

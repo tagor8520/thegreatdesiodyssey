@@ -117,7 +117,8 @@ test('feature versions provide stable namespaces and explicit unavailable schema
   assert.equal(featureAvailable('qualityFixture'), true);
   assert.equal(featureAvailable('diagnostics'), true);
   assert.equal(featureAvailable('objectGrammar'), true);
-  assert.equal(featureAvailable('saveSchema'), false);
+  // `NET-01` produced the save schema the placeholder promised.
+  assert.equal(featureAvailable('saveSchema'), true);
   assert.equal(featureAvailable('vegetationGrammar'), true);
   assert.equal(featureAvailable('vegetationGeometry'), true);
   assert.equal(featureAvailable('vegetationLod'), true);
