@@ -45,6 +45,7 @@ import {
 } from '../engine/LocalTraffic.js';
 import { createTrafficPools } from './GeoTrafficPools.js';
 import { createLocalDoors } from '../engine/LocalDoors.js';
+import { createLocalSave } from '../engine/LocalSave.js';
 
 /** `GME-07`: guidance refresh thresholds, so a steady frame re-uses its record. */
 export const GDO_NAV_GUIDANCE_MOVE = .75;
@@ -679,6 +680,10 @@ export class GeoWorld {
     this.lastDoorMilliseconds = null;
     this.doorsSummary = null;
     this.doorsCounters = null;
+    // `NET-01`: the save's settings half. The host writes its live settings
+    // here; the envelope only ever carries the declared vocabulary.
+    this.saveSettings = { profile, touchControls: false, reducedMotion: false, cameraFade: true };
+    this.localSave = null;
     // The audit script's far point: a tile-local offset, so an audit never asks the
     // tile manager for a tile it cannot wait for. A host that knows its own map
     // sets a better one; the default only has to be beyond every active radius.
@@ -930,6 +935,20 @@ export class GeoWorld {
       if (store && typeof store.getItem === 'function') {
         this.discoveryStorage = createJournalStorage(store);
         this.discoveryStorage.load(this.discoveryJournal, 0);
+        // `NET-01`: the versioned local save — settings, discovery, and progress
+        // in one migration-safe envelope over the same store. A v0 bare journal
+        // payload migrates in; a future schema refuses by name.
+        this.localSave = createLocalSave({ storage: store, ledger: this.lifecycle });
+        const payload = this.localSave.load();
+        if (payload) {
+          this.localSave.restore(payload, {
+            journal: this.discoveryJournal,
+            settingsTarget: this.saveSettings,
+          });
+          if (payload.progress?.activities?.length && this.activities?.restoreProgress) {
+            this.activities.restoreProgress(payload.progress.activities);
+          }
+        }
       }
     } catch { this.discoveryStorage = null; }
     this.nextDiscoveryPassMilliseconds = 0;
@@ -2614,6 +2633,25 @@ export class GeoWorld {
     return this.discoveryStorage?.load(this.discoveryJournal, 0) ?? 0;
   }
 
+  /**
+   * `NET-01`: persist the aggregate record — settings, discovery, progress —
+   * as one versioned envelope. Called on dispose and by hosts at their own
+   * cadence; a refused write is counted inside `localSave.diagnostics`, never
+   * thrown into the frame.
+   */
+  persistLocalSave(nowMilliseconds = performance.now()) {
+    if (!this.localSave) return false;
+    return this.localSave.persist(this.localSave.capture({
+      settings: this.saveSettings,
+      discovery: this.discoveryJournal?.toJSON?.() ?? null,
+      activities: (this.activities?.board ?? []).map(entry => ({
+        id: entry.id, progress: entry.progress, state: entry.state,
+      })),
+      worldVersion: GDO_FEATURE_VERSIONS.saveSchema,
+      nowMilliseconds,
+    }));
+  }
+
   update(position, camera = this.viewCamera, viewportHeight = this.viewportHeight, nowMilliseconds = performance.now()) {
     if (this.disposed) return;
     if (camera?.isCamera) this.viewCamera = camera;
@@ -3941,9 +3979,11 @@ export class GeoWorld {
 
   dispose() {
     if (this.disposed) return;
+    // `NET-01`/`GME-06`: the last pass may have happened before the final
+    // visit, so the aggregate save and the journal get one explicit write
+    // before their storage is released.
+    this.persistLocalSave();
     this.disposed = true;
-    // `GME-06`: the last pass may have happened before the final visit, so the
-    // journal gets one explicit save before its storage is released.
     this.discoveryStorage?.save(this.discoveryJournal);
     if (this.plantMountTimer != null) clearTimeout(this.plantMountTimer);
     this.plantMountTimer = null;

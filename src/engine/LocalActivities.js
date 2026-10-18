@@ -371,6 +371,27 @@ export function createLocalActivities({
     get completed() { return records.filter(entry => entry.state === GDO_ACTIVITY_STATE.COMPLETE).length; },
     get origin() { return origin; },
     get travelled() { return rounded(metresTravelled); },
+    /**
+     * `NET-01`: adopt saved progress by the board's own deterministic ids. An
+     * id the save names but the board does not carry is skipped, never invented,
+     * and a board rebuild still preserves whatever it holds afterwards.
+     */
+    restoreProgress(entries = []) {
+      let restored = 0;
+      for (const saved of entries) {
+        if (!saved || typeof saved.id !== 'string') continue;
+        const record = records.find(entry => entry.id === saved.id);
+        if (!record) continue;
+        if (Number.isFinite(saved.progress) && saved.progress >= 0) {
+          record.progress = saved.progress;
+        }
+        if (saved.state === GDO_ACTIVITY_STATE.COMPLETE || saved.state === GDO_ACTIVITY_STATE.ACTIVE) {
+          record.state = saved.state;
+        }
+        restored++;
+      }
+      return restored;
+    },
     diagnostics() {
       return Object.freeze({
         namespace: LOCAL_ACTIVITIES_NAMESPACE,
