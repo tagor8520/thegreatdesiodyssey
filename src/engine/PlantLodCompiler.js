@@ -7,6 +7,7 @@ import {
   acquirePlantArchetypeLibrary,
   plantSkeletonFingerprint,
 } from './PlantGrammar.js';
+import { createColonizedArchetypeCache } from './PlantSpaceColonization.js';
 import {
   GDO_PLANT_GEOMETRY_PROFILES,
   compilePlantGeometry,
@@ -817,9 +818,15 @@ function profileCacheStats(profileName) {
   };
 }
 
-function createPlantLodLibrary(profileName, environmentKey, seedSalt) {
+function createPlantLodLibrary(profileName, environmentKey, seedSalt, archetypeSource = 'grammar') {
   const profile = GDO_PLANT_LOD_PROFILES[profileName];
-  const skeletonHandle = acquirePlantArchetypeLibrary({ profile: profileName, environmentKey, seedSalt });
+  // `VEG-11`: colonized archetypes are an opt-in source. They are authored
+  // once per archetype and shared by every placement, exactly like the fractal
+  // grammar's — the LOD pipeline cannot tell the difference.
+  const colonized = archetypeSource === 'colonized'
+    ? createColonizedArchetypeCache({ limits: { archetypes: profile.maxCachedSets } })
+    : null;
+  const skeletonHandle = colonized ? null : acquirePlantArchetypeLibrary({ profile: profileName, environmentKey, seedSalt });
   const sets = new Map();
   let disposed = false, hits = 0, misses = 0, totalCompileMilliseconds = 0, maximumCompileMilliseconds = 0;
   const getLodSet = (family, archetypeIndex = 0) => {
@@ -835,7 +842,9 @@ function createPlantLodLibrary(profileName, environmentKey, seedSalt) {
     if (stats.sets >= profile.maxCachedSets || stats.geometries + 3 > profile.maxCachedGeometries) {
       throw new Error(`Plant LOD cache cap reached for ${profileName}`);
     }
-    const skeleton = skeletonHandle.library.getArchetype(family, archetypeIndex);
+    const skeleton = colonized
+      ? colonized.getArchetype(family, archetypeIndex, { profile: profileName, environmentKey, seedSalt })
+      : skeletonHandle.library.getArchetype(family, archetypeIndex);
     const started = now();
     const lodSet = compilePlantLodSet(skeleton);
     const elapsed = now() - started;
@@ -852,6 +861,8 @@ function createPlantLodLibrary(profileName, environmentKey, seedSalt) {
     namespace: GDO_PLANT_LOD_NAMESPACE,
     profile: profileName,
     environmentKey,
+    archetypeSource,
+    get archetypeCache() { return colonized ? colonized.diagnostics : null; },
     get cachedSets() { return sets.size; },
     get cachedGeometries() { return sets.size * 3; },
     get hits() { return hits; },
@@ -882,7 +893,8 @@ function createPlantLodLibrary(profileName, environmentKey, seedSalt) {
     clear() {
       if (disposed) return;
       sets.clear();
-      skeletonHandle.release();
+      if (colonized) colonized.clear();
+      else skeletonHandle.release();
       disposed = true;
     },
   });
@@ -892,17 +904,21 @@ export function acquirePlantLodLibrary({
   profile = 'low',
   environmentKey = 'default',
   seedSalt = 0,
+  archetypeSource = 'grammar',
 } = {}) {
   if (!GDO_PLANT_LOD_PROFILES[profile]) throw new RangeError(`Unknown plant profile: ${profile}`);
   if (typeof environmentKey !== 'string' || !environmentKey || environmentKey.length > 64) throw new RangeError('Invalid environment key');
   if (!Number.isInteger(seedSalt)) throw new RangeError('Plant seed salt must be an integer');
-  const key = `${GDO_PLANT_LOD_NAMESPACE}:${profile}:${environmentKey}:${seedSalt}`;
+  if (archetypeSource !== 'grammar' && archetypeSource !== 'colonized') {
+    throw new RangeError(`Unknown plant archetype source: ${archetypeSource}`);
+  }
+  const key = `${GDO_PLANT_LOD_NAMESPACE}:${profile}:${environmentKey}:${seedSalt}:${archetypeSource}`;
   let record = lodLibraryRecords.get(key);
   if (!record) {
     if (lodLibraryRecords.size >= GDO_MAX_ACTIVE_PLANT_LOD_LIBRARIES) {
       throw new Error(`Active plant-LOD-library cap reached: ${GDO_MAX_ACTIVE_PLANT_LOD_LIBRARIES}`);
     }
-    record = { library: createPlantLodLibrary(profile, environmentKey, seedSalt), references: 0 };
+    record = { library: createPlantLodLibrary(profile, environmentKey, seedSalt, archetypeSource), references: 0 };
     lodLibraryRecords.set(key, record);
   }
   record.references++;
