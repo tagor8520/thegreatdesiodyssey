@@ -112,6 +112,7 @@ import {
   terrainHeightAt,
   terrainSeedForCoordinate,
 } from './GeoTerrain.js';
+import { applyElevationToGrid, createElevationEnricher } from './GeoElevation.js';
 import {
   SOURCE_ZOOM,
   createGeoReference,
@@ -580,6 +581,13 @@ export class GeoWorld {
     // MAP-09 storage policy follows the active quality profile; the low ceiling
     // is the default so an unset profile can never widen persistent storage.
     this.profile = GEO_TILE_CACHE_PROFILES.includes(profile) ? profile : 'low';
+    // `TER-04`: elevation enrichment starts **absent**. Nothing mounts it until
+    // a host supplies a tile fetch, and the procedural field is the fallback in
+    // every other case (no provider, offline, malformed raster, missed deadline).
+    this.elevation = null;
+    this.elevationTiles = new Map();
+    this.elevationUpgrades = 0;
+    this.elevationFallbacks = 0;
     this.tileCacheDiagnostics = null;
     this.tileCacheServed = 0;
     // `DET-10`: props are counted once per placement, and only authored proxies
@@ -998,6 +1006,73 @@ export class GeoWorld {
     this._requestTile(initial.x, initial.y, 0);
   }
 
+  /**
+   * `TER-04`: opt into optional public elevation. Passing no `fetchTile` (or
+   * calling this with nothing) leaves the world exactly as it was — there is no
+   * code path in which terrain *depends* on the provider.
+   */
+  enableElevation({ fetchTile = null, zoom = 12, limits = {} } = {}) {
+    this.elevation = createElevationEnricher({ fetchTile, zoom, limits });
+    return this.elevation.diagnostics;
+  }
+
+  /** Geographic bounds of a resident tile, straight off the one geo reference. */
+  tileGeographicBounds(tileX, tileY) {
+    const bounds = this._tileBounds(tileX, tileY);
+    const northWest = worldToCoordinate(this.reference, bounds.minX, bounds.minZ);
+    const southEast = worldToCoordinate(this.reference, bounds.maxX, bounds.maxZ);
+    return {
+      north: northWest.latitude, west: northWest.longitude,
+      south: southEast.latitude, east: southEast.longitude,
+    };
+  }
+
+  _requestTileElevation(tile, groundGeometry) {
+    if (!this.elevation?.available) { this.elevationFallbacks++; return; }
+    let record;
+    try {
+      record = this.elevation.request({ bounds: this.tileGeographicBounds(tile.x, tile.y) });
+    } catch (error) {
+      this.elevationFallbacks++;
+      return;
+    }
+    tile.elevation = record;
+    if (record.status !== 'provisional' || !record.promise) {
+      this.elevationFallbacks++;
+      return;
+    }
+    record.promise.then(settled => {
+      if (this.disposed || settled?.status !== 'ready') return;
+      // The tile may have been evicted while the request was in flight.
+      if (this.tiles.get(tile.key) !== tile || !tile.ground) return;
+      this._applyTileElevation(tile, settled);
+    }).catch(() => {});
+  }
+
+  /**
+   * Upgrade one mounted tile's ground to the enriched field: positions and
+   * normals are replaced, indices are shared, and the geometry the tile ledger
+   * owns is swapped through the same path so eviction still frees it.
+   */
+  _applyTileElevation(tile, layer) {
+    const geometry = tile.ground?.geometry;
+    if (!geometry) return false;
+    const base = this._tileTerrainBase?.get(tile.key);
+    if (!base) return false;
+    const enriched = applyElevationToGrid(base, layer, tile.bounds);
+    if (enriched === base) return false;
+    const next = createBufferGeometry(enriched);
+    if (!next) return false;
+    this._ownTileGeometry(tile, 'elevated', next);
+    tile.ground.geometry = next;
+    tile.ground.userData.elevation = enriched.elevation;
+    tile.elevation = layer;
+    tile.elevated = true;
+    this.elevationUpgrades++;
+    this._emitStatus();
+    return true;
+  }
+
   _tileBounds(tileX, tileY) {
     const size = this.reference.tileSize;
     const minX = (tileX - this.reference.originX) * size;
@@ -1026,7 +1101,10 @@ export class GeoWorld {
     const root = new THREE.Group();
     root.name = `map-tile:${key}`;
     const bounds = this._tileBounds(x, y);
-    const groundGeometry = createBufferGeometry(buildTerrainGrid(bounds, this.terrainSeed));
+    // One deterministic base grid per tile: it is the mounted surface *and* the
+    // exact base a late `TER-04` upgrade re-derives relief from.
+    const terrainBase = buildTerrainGrid(bounds, this.terrainSeed);
+    const groundGeometry = createBufferGeometry(terrainBase);
     const ground = new THREE.Mesh(groundGeometry, this.groundMaterial);
     ground.renderOrder = GEO_LAYER.ground.renderBand;
     ground.userData.geoLayer = GEO_LAYER.ground;
@@ -1063,6 +1141,16 @@ export class GeoWorld {
       retryCount: 0, retryAt: 0,
     };
     this._ownTileGeometry(tile, 'ground', groundGeometry);
+    // The pre-enrichment grid is retained (one bounded record per resident
+    // tile) so a late upgrade re-derives relief from the same deterministic
+    // base rather than compounding onto numbers it already moved.
+    (this._tileTerrainBase ??= new Map()).set(key, terrainBase);
+    tile.elevation = null;
+    tile.elevated = false;
+    // Flat first, always: the tile mounts the procedural field and only gains
+    // relief later if an optional provider answers in time (research: roads and
+    // ground never wait on a network dependency).
+    if (this.elevation) this._requestTileElevation(tile, groundGeometry);
     this.tiles.set(key, tile);
     this.queue.push(tile);
     this.queue.sort((a, b) => a.priority - b.priority);
@@ -2945,6 +3033,8 @@ export class GeoWorld {
 
   _evictTile(tile) {
     if (!tile || !this.tiles.delete(tile.key)) return;
+    this._tileTerrainBase?.delete(tile.key);
+    this.elevationTiles.delete(tile.key);
     if (tile.state === 'loading' || tile.state === 'roads-ready') {
       this.worker.postMessage({ type: 'cancel', requestId: tile.requestId });
       this.activeRequests = Math.max(0, this.activeRequests - 1);
