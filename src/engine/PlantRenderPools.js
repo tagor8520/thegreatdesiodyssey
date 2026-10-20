@@ -227,6 +227,7 @@ export function createPlantPoolMaterial(materialLibrary = null, options = {}) {
     shader.uniforms.gdoPlantWindClock = wind.uniforms.clock;
     shader.uniforms.gdoPlantWindField = wind.uniforms.field;
     shader.uniforms.gdoPlantWindAmplitude = wind.uniforms.amplitude;
+    shader.uniforms.gdoPlantPhaseGroupOffsets = wind.uniforms.phaseGroups;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
         attribute vec3 gdoPlantPosition1;
@@ -242,6 +243,7 @@ export function createPlantPoolMaterial(materialLibrary = null, options = {}) {
         uniform float gdoPlantWindClock;
         uniform vec4 gdoPlantWindField;
         uniform float gdoPlantWindAmplitude;
+        uniform vec4 gdoPlantPhaseGroupOffsets;
         varying vec3 vGdoPlantTint;
         varying vec3 vGdoPlantTraits;
 
@@ -249,6 +251,20 @@ export function createPlantPoolMaterial(materialLibrary = null, options = {}) {
           float linear = abs(fract(cycles) * 2.0 - 1.0);
           float smoothed = linear * linear * (3.0 - 2.0 * linear);
           return smoothed * 2.0 - 1.0;
+        }
+
+        // VEG-10: a vertex's phase group (meta.z) selects one of four clock
+        // offsets, so branch groups ride the same travelling wave instead of
+        // independent motion. Weighted select keeps this ES 1.0-safe.
+        float gdoPlantGroupClock(float groupByte) {
+          float gdoPlantGroup = clamp(groupByte, 0.0, 3.0);
+          vec4 gdoPlantWeights = vec4(
+            step(gdoPlantGroup, 0.5),
+            step(0.5, gdoPlantGroup) * step(gdoPlantGroup, 1.5),
+            step(1.5, gdoPlantGroup) * step(gdoPlantGroup, 2.5),
+            step(2.5, gdoPlantGroup)
+          );
+          return gdoPlantWindClock + dot(gdoPlantPhaseGroupOffsets, gdoPlantWeights);
         }
 
         vec2 gdoPlantWholeWind(vec3 plantPosition, vec4 plantMeta, vec3 plantTraits) {
@@ -267,12 +283,13 @@ export function createPlantPoolMaterial(materialLibrary = null, options = {}) {
           localWind /= max(0.0001, length(localWind));
           vec2 worldOrigin = plantWorldMatrix[3].xz;
           float spatialPhase = dot(worldOrigin, vec2(0.013, 0.009));
-          float slowWave = gdoPlantSmoothTriangle(gdoPlantWindClock * 4.0 + plantTraits.z + spatialPhase);
+          float gdoPlantClock = gdoPlantGroupClock(plantMeta.z);
+          float slowWave = gdoPlantSmoothTriangle(gdoPlantClock * 4.0 + plantTraits.z + spatialPhase);
           float gustEnvelope = 0.5 + 0.5 * gdoPlantSmoothTriangle(
-            gdoPlantWindClock + spatialPhase * 0.37
+            gdoPlantClock + spatialPhase * 0.37
           );
           float turbulence = gdoPlantSmoothTriangle(
-            gdoPlantWindClock * 13.0 + plantTraits.z * 1.73 + spatialPhase * 2.1
+            gdoPlantClock * 13.0 + plantTraits.z * 1.73 + spatialPhase * 2.1
           );
           float wave = slowWave * 0.82 + turbulence * gustEnvelope * gdoPlantWindField.w * 0.18;
           float heightResponse = smoothstep(0.01, 0.55, max(0.0, plantPosition.y));

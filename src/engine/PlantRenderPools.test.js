@@ -145,12 +145,17 @@ test('plant material consumes custom palette/age/stiffness data without instance
     assert.match(shader.vertexShader, /gdoPlantWholeWind/);
     assert.match(shader.vertexShader, /plantMeta\.y \/ 255\.0/);
     assert.match(shader.vertexShader, /plantTraits\.z \+ spatialPhase/);
-    assert.doesNotMatch(shader.vertexShader, /plantMeta\.z/, 'VEG-10 branch-group phase remains deferred');
+    // `VEG-10`: the packed phase-group byte now selects a group clock offset.
+    assert.match(shader.vertexShader, /gdoPlantGroupClock\(plantMeta\.z\)/);
+    assert.match(shader.vertexShader, /gdoPlantPhaseGroupOffsets/);
+    assert.match(shader.vertexShader, /gdoPlantClock \* 13\.0/);
+    assert.match(shader.vertexShader, /clamp\(groupByte, 0\.0, 3\.0\)/, 'four groups, clamped');
     assert.match(shader.vertexShader, /rootMask/);
     assert.match(shader.fragmentShader, /vGdoPlantTraits\.x/);
     assert.equal(shader.uniforms.gdoPlantWindClock, material.userData.gdoPlantWind.uniforms.clock);
     assert.equal(shader.uniforms.gdoPlantWindField, material.userData.gdoPlantWind.uniforms.field);
     assert.equal(shader.uniforms.gdoPlantWindAmplitude, material.userData.gdoPlantWind.uniforms.amplitude);
+    assert.equal(shader.uniforms.gdoPlantPhaseGroupOffsets, material.userData.gdoPlantWind.uniforms.phaseGroups);
     assert.equal(material.userData.gdoPlantPoolMaterial.windNamespace, 'gdo:vegetationWind:v1');
     assert.equal(material.userData.gdoPlantPoolMaterial.builtInInstanceColor, false);
     assert.equal(material.vertexColors, false);

@@ -5,6 +5,9 @@ import {
   GDO_PLANT_WIND_PROFILES,
   PlantWindState,
   samplePlantWindOffset,
+  plantPhaseGroupOffset,
+  GDO_PLANT_WIND_PHASE_GROUPS,
+  GDO_PLANT_WIND_PHASE_OFFSETS,
 } from './PlantWind.js';
 
 function magnitude(offset) { return Math.hypot(offset.x, offset.z); }
@@ -44,6 +47,9 @@ test('VEG-09 defines one versioned bounded low-profile wind field', () => {
     maxUniformWritesPerFrame: 1,
     cpuMatrixUpdatesPerFrame: 0,
     steadyFrameAllocations: 0,
+    phaseGroups: 4,
+    phaseGroupOffsets: [0, .25, .5, .75],
+    reducedMotionPhaseGroups: 1,
   });
 });
 
@@ -123,5 +129,85 @@ test('reduced-motion and context lifecycle preserve shared uniform objects', () 
     assert.equal(wind.diagnostics.contextRestores, 1);
     assert.equal(wind.setReducedMotion(false), true);
     assert.equal(field.z, GDO_PLANT_WIND_PROFILES.low.defaultStrength);
+  } finally { wind.dispose(); }
+});
+
+test('VEG-10 groups are four declared clock offsets on the one shared wave', () => {
+  assert.equal(GDO_PLANT_WIND_PHASE_GROUPS, 4);
+  assert.deepEqual([...GDO_PLANT_WIND_PHASE_OFFSETS], [0, .25, .5, .75]);
+  assert.equal(GDO_PLANT_WIND_PROFILES.low.phaseGroups, 4);
+  assert.deepEqual([...GDO_PLANT_WIND_PROFILES.low.phaseGroupOffsets], [0, .25, .5, .75]);
+  assert.equal(plantPhaseGroupOffset(0), 0);
+  assert.equal(plantPhaseGroupOffset(2), .5);
+  // Out-of-range and malformed bytes clamp into the coherent set — never wrap
+  // into invented motion and never produce a non-finite phase.
+  assert.equal(plantPhaseGroupOffset(9), .75);
+  assert.equal(plantPhaseGroupOffset(-3), 0);
+  assert.equal(plantPhaseGroupOffset(Number.NaN), 0);
+  assert.equal(plantPhaseGroupOffset(2.9), .5);
+  assert.equal(plantPhaseGroupOffset(2, { reducedMotion: true }), 0);
+});
+
+test('each phase group is the same wave sampled later, so groups stay coherent', () => {
+  const sample = (phaseGroup, timeMilliseconds) =>
+    samplePlantWindOffset({ ...MOVING_SAMPLE, phaseGroup, timeMilliseconds });
+  // One group period is CLOCK_DIVISOR_SECONDS * 1000 ms per unit of clock.
+  const periodMilliseconds = 64_000;
+  for (const group of [1, 2, 3]) {
+    const offsetMilliseconds = (GDO_PLANT_WIND_PHASE_OFFSETS[group]) * periodMilliseconds;
+    const grouped = sample(group, 40_000);
+    const lagged = sample(0, 40_000 + offsetMilliseconds);
+    assert.ok(Math.abs(grouped.x - lagged.x) < 1e-9, `group ${group} x travels as a delay`);
+    assert.ok(Math.abs(grouped.z - lagged.z) < 1e-9, `group ${group} z travels as a delay`);
+    const flat = sample(group, 40_000);
+    const flatLagged = sample(0, 40_000 + offsetMilliseconds);
+    assert.equal(flat.x, flatLagged.x, 'the same input is pure and repeatable');
+  }
+  // Distinct groups are actually distinct at a given instant (the offsets are
+  // not decorative), while the whole set stays inside the displacement cap.
+  const offsets = [0, 1, 2, 3].map(group => sample(group, 12_345));
+  const distinct = new Set(offsets.map(offset => offset.x.toFixed(6))).size;
+  assert.ok(distinct >= 3, 'four declared groups produce genuinely different phases');
+  for (const offset of offsets) {
+    assert.ok(magnitude(offset) <= GDO_PLANT_WIND_PROFILES.low.maximumDisplacement);
+  }
+});
+
+test('reduced motion collapses group divergence into one calm field', () => {
+  const moving = [0, 1, 2, 3].map(phaseGroup =>
+    samplePlantWindOffset({ ...MOVING_SAMPLE, phaseGroup, reducedMotion: true }));
+  for (const offset of moving) {
+    assert.ok(magnitude(offset) <= GDO_PLANT_WIND_PROFILES.low.maximumDisplacement);
+    assert.ok(magnitude(offset) <= magnitude(samplePlantWindOffset({ ...MOVING_SAMPLE, phaseGroup: 0 })));
+  }
+  // With the group scale collapsed, group bytes cannot separate the motion:
+  // the residual spread is only the plants' own stable phase and position.
+  const spread = Math.max(...moving.map(o => o.x)) - Math.min(...moving.map(o => o.x));
+  const normalSpread = (() => {
+    const normal = [0, 1, 2, 3].map(phaseGroup =>
+      samplePlantWindOffset({ ...MOVING_SAMPLE, phaseGroup }));
+    return Math.max(...normal.map(o => o.x)) - Math.min(...normal.map(o => o.x));
+  })();
+  assert.ok(spread < normalSpread, 'reduced motion removes group travel, not just amplitude');
+
+  const wind = new PlantWindState();
+  try {
+    const phaseUniform = wind.uniforms.phaseGroups.value;
+    assert.deepEqual([...phaseUniform.toArray()], [0, .25, .5, .75]);
+    const writes = wind.diagnostics.totalPhaseGroupWrites;
+    wind.update(1_000);
+    wind.update(2_000);
+    assert.equal(wind.diagnostics.totalPhaseGroupWrites, writes, 'steady frames never rewrite group offsets');
+    assert.equal(wind.diagnostics.lastUniformWrites, 1);
+    assert.equal(wind.diagnostics.phaseGroups, 4);
+    assert.deepEqual(wind.diagnostics.phaseGroupOffsets, [0, .25, .5, .75]);
+    assert.equal(wind.setReducedMotion(true), true);
+    assert.equal(wind.uniforms.phaseGroups.value, phaseUniform, 'the uniform object is shared, not replaced');
+    assert.deepEqual([...phaseUniform.toArray()], [0, 0, 0, 0]);
+    assert.deepEqual(wind.diagnostics.phaseGroupOffsets, [0, 0, 0, 0]);
+    assert.equal(wind.setReducedMotion(false), true);
+    assert.deepEqual([...phaseUniform.toArray()], [0, .25, .5, .75]);
+    wind.handleContextRestored();
+    assert.equal(wind.uniforms.phaseGroups.value, phaseUniform);
   } finally { wind.dispose(); }
 });
