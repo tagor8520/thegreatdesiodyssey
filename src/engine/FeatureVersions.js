@@ -18,6 +18,7 @@ export const GDO_FEATURE_VERSIONS = Object.freeze({
   localPushables: 1,
   elevationEnrichment: 1,
   poseFall: 1,
+  pbdPuppet: 1,
   objectGrammar: 2,
   streetFurniture: 1,
   bridgeGrammar: 1,
