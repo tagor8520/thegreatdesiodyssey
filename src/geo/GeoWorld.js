@@ -46,6 +46,7 @@ import {
 import { createTrafficPools } from './GeoTrafficPools.js';
 import { createLocalDoors } from '../engine/LocalDoors.js';
 import { createLocalPushables, GDO_PUSHABLE_MASK } from '../engine/LocalPushables.js';
+import { createPoseFallBoard } from '../engine/PoseFall.js';
 import { createLocalSave } from '../engine/LocalSave.js';
 import { GDO_TRAVERSAL_MODE, createTraversalController } from '../engine/WaterTraversal.js';
 
@@ -718,6 +719,16 @@ export class GeoWorld {
     this.pushableProxyPositions = new Map();
     this.lastPushableMilliseconds = null;
     this.pushablesSummary = null;
+    // `PHY-03`: the pose-fall *baseline* — a deterministic state machine with no
+    // rigid bodies. Actors are posed segments; the world only advances the
+    // board and hands out the live pose records a renderer would draw.
+    this.poseFalls = createPoseFallBoard({
+      profile,
+      seed: terrainSeedForCoordinate(latitude, longitude),
+      heightAt: (x, z) => terrainHeightAt(x, z, this.terrainSeed),
+    });
+    this.poseFallSummary = null;
+    this.lastPoseFallMilliseconds = null;
     // `NET-01`: the save's settings half. The host writes its live settings
     // here; the envelope only ever carries the declared vocabulary.
     this.saveSettings = { profile, touchControls: false, reducedMotion: false, cameraFade: true };
@@ -2412,6 +2423,36 @@ export class GeoWorld {
   }
 
   /**
+   * `PHY-03`: advance every falling actor on the board's fixed step. A standing
+   * actor costs nothing, and the pose records are mutated in place, so a steady
+   * frame allocates nothing.
+   */
+  updatePoseFalls(deltaMilliseconds = 0) {
+    if (this.disposed || !this.poseFalls) return null;
+    this.poseFalls.update(deltaMilliseconds);
+    this.poseFallSummary = Object.freeze({
+      namespace: this.poseFalls.namespace,
+      actors: this.poseFalls.count,
+      falling: this.poseFalls.falling,
+    });
+    return this.poseFallSummary;
+  }
+
+  /** Knock down the nearest standing actor inside `radius`; named refusals otherwise. */
+  knockDownNearest(x, z, radius, impulse) {
+    if (this.disposed || !this.poseFalls) return { ok: false, refusal: 'unknown-actor' };
+    let best = null, bestDistance = Infinity;
+    for (const pose of this.poseFalls.poses()) {
+      const actor = this.poseFalls.actor(pose.actorId);
+      if (!actor || actor.state !== 'standing') continue;
+      const distance = Math.hypot(actor.x - x, actor.z - z);
+      if (distance < bestDistance && distance <= radius) { best = actor; bestDistance = distance; }
+    }
+    if (!best) return { ok: false, refusal: 'unknown-actor' };
+    return this.poseFalls.knockDown(best.id, impulse);
+  }
+
+  /**
    * `PHY-02`: one bounded pushable pass. The pool integrates on its own fixed
    * step, then its change list is applied to the `COL-09` grid exactly like the
    * door pass — an awake body moves its proxy on the grid's own cell crossings,
@@ -2977,6 +3018,12 @@ export class GeoWorld {
     this.updateTraffic(nowMilliseconds, position);
     this.updateDoors(nowMilliseconds, position);
     this.updatePushables(nowMilliseconds);
+    // `PHY-03`: the same frame clock, as a delta, so the board's fixed step is
+    // driven exactly like the door and pushable passes beside it.
+    const poseFallDelta = Number.isFinite(this.lastPoseFallMilliseconds)
+      ? Math.max(0, nowMilliseconds - this.lastPoseFallMilliseconds) : 0;
+    this.lastPoseFallMilliseconds = nowMilliseconds;
+    this.updatePoseFalls(poseFallDelta);
     this.observeDiscovery(position.x, position.z, nowMilliseconds);
     // `ENV-04`: the weather pass follows the player, so its climate sample is
     // the environment the player is standing in.
