@@ -3,6 +3,18 @@ import { featureNamespace } from './FeatureVersions.js';
 
 export const GDO_PLANT_WIND_NAMESPACE = featureNamespace('vegetationWind');
 
+/**
+ * `VEG-10`: coherent branch-group wind. Every plant vertex already carries a
+ * stable `phaseGroup` byte (plant grammar); the field turns that byte into one
+ * of at most four *clock offsets* on the single shared wave, so a group is the
+ * same wave a fraction of a cycle later rather than independent motion. That
+ * keeps one clock uniform, one wave, and a genuinely travelling gust front.
+ */
+export const GDO_PLANT_WIND_PHASE_GROUPS = 4;
+export const GDO_PLANT_WIND_PHASE_OFFSETS = Object.freeze(
+  Array.from({ length: GDO_PLANT_WIND_PHASE_GROUPS }, (_, group) => group / GDO_PLANT_WIND_PHASE_GROUPS),
+);
+
 export const GDO_PLANT_WIND_PROFILES = Object.freeze({
   low: Object.freeze({
     amplitude: .055,
@@ -15,6 +27,11 @@ export const GDO_PLANT_WIND_PROFILES = Object.freeze({
     maxUniformWritesPerFrame: 1,
     cpuMatrixUpdatesPerFrame: 0,
     steadyFrameAllocations: 0,
+    phaseGroups: GDO_PLANT_WIND_PHASE_GROUPS,
+    phaseGroupOffsets: GDO_PLANT_WIND_PHASE_OFFSETS,
+    // Reduced motion collapses the group divergence: one calm field, no
+    // travelling front, no per-group phase travel.
+    reducedMotionPhaseGroups: 1,
   }),
 });
 
@@ -52,6 +69,19 @@ function resolveProfile(profile) {
 }
 
 /**
+ * Resolve a phase group to its clock offset. Groups are clamped (never wrapped)
+ * so out-of-range bytes stay in the coherent set instead of inventing motion;
+ * reduced motion returns 0 for every group.
+ */
+export function plantPhaseGroupOffset(phaseGroup, { profile = 'low', reducedMotion = false } = {}) {
+  const limits = resolveProfile(profile);
+  if (reducedMotion) return 0;
+  const value = Number.isFinite(phaseGroup) ? Math.floor(phaseGroup) : 0;
+  const group = clamp(value, 0, limits.phaseGroups - 1);
+  return limits.phaseGroupOffsets[group];
+}
+
+/**
  * CPU mirror of the bounded whole-plant vertex deformation. It exists for
  * deterministic acceptance tests and tooling; the live renderer evaluates the
  * same field in the vertex shader and never rewrites vegetation matrices.
@@ -66,6 +96,7 @@ export function samplePlantWindOffset({
   worldX = 0,
   worldZ = 0,
   yaw = 0,
+  phaseGroup = 0,
   timeMilliseconds = 0,
   direction,
   strength,
@@ -85,7 +116,11 @@ export function samplePlantWindOffset({
     : resolvedStrength;
   const effectiveGustiness = reducedMotion ? 0 : (finiteUnit(gustiness) ? gustiness : limits.defaultGustiness);
   const resolvedTime = Number.isFinite(timeMilliseconds) && timeMilliseconds >= 0 ? timeMilliseconds : 0;
-  const clock = (resolvedTime * .001 / CLOCK_DIVISOR_SECONDS) % CLOCK_WRAP;
+  // `VEG-10`: the group offset shifts the whole wave, gust and turbulence
+  // included, so group N is exactly group 0 sampled later — coherent travel,
+  // not four unrelated animations.
+  const clock = (resolvedTime * .001 / CLOCK_DIVISOR_SECONDS) % CLOCK_WRAP +
+    plantPhaseGroupOffset(phaseGroup, { profile, reducedMotion });
   const spatialPhase = worldX * .013 + worldZ * .009;
   const stablePhase = clamp(phase, 0, 1);
   const slowWave = smoothTriangle(clock * 4 + stablePhase + spatialPhase);
@@ -116,10 +151,14 @@ export class PlantWindState {
     this.profile = Object.hasOwn(GDO_PLANT_WIND_PROFILES, profile) ? profile : 'low';
     this.limits = GDO_PLANT_WIND_PROFILES[this.profile];
     this.field = new THREE.Vector4();
+    // `VEG-10`: the four group offsets live in one vec4 written only when the
+    // wind is configured — a steady frame still writes exactly one uniform.
+    this.phaseGroups = new THREE.Vector4();
     this.uniforms = Object.freeze({
       clock: Object.seal({ value: 0 }),
       field: Object.seal({ value: this.field }),
       amplitude: Object.seal({ value: this.limits.amplitude }),
+      phaseGroups: Object.seal({ value: this.phaseGroups }),
     });
     this.directionX = this.limits.defaultDirection[0];
     this.directionZ = this.limits.defaultDirection[1];
@@ -130,6 +169,7 @@ export class PlantWindState {
     this.lastUniformWrites = 0;
     this.totalClockWrites = 0;
     this.totalFieldWrites = 0;
+    this.totalPhaseGroupWrites = 0;
     this.malformedInputs = validOptions && Object.hasOwn(GDO_PLANT_WIND_PROFILES, profile) ? 0 : 1;
     this.contextRestores = 0;
     this.disposed = false;
@@ -143,6 +183,15 @@ export class PlantWindState {
     const effectiveGustiness = this.reducedMotion ? 0 : this.gustiness;
     this.field.set(this.directionX, this.directionZ, effectiveStrength, effectiveGustiness);
     this.totalFieldWrites++;
+    this.#writePhaseGroups();
+  }
+
+  #writePhaseGroups() {
+    // Reduced motion collapses every group to one calm field; otherwise each
+    // group keeps its declared clock offset.
+    if (this.reducedMotion) this.phaseGroups.set(0, 0, 0, 0);
+    else this.phaseGroups.set(...this.limits.phaseGroupOffsets);
+    this.totalPhaseGroupWrites++;
   }
 
   configure(options = {}) {
@@ -221,9 +270,14 @@ export class PlantWindState {
       reducedMotion: this.reducedMotion,
       amplitude: this.limits.amplitude,
       maximumDisplacement: this.limits.maximumDisplacement,
+      phaseGroups: this.limits.phaseGroups,
+      phaseGroupOffsets: Object.freeze(this.reducedMotion
+        ? this.limits.phaseGroupOffsets.map(() => 0)
+        : [...this.limits.phaseGroupOffsets]),
       lastUniformWrites: this.lastUniformWrites,
       totalClockWrites: this.totalClockWrites,
       totalFieldWrites: this.totalFieldWrites,
+      totalPhaseGroupWrites: this.totalPhaseGroupWrites,
       cpuMatrixUpdates: 0,
       steadyFrameAllocations: 0,
       malformedInputs: this.malformedInputs,
