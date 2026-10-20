@@ -47,6 +47,7 @@ import { createTrafficPools } from './GeoTrafficPools.js';
 import { createLocalDoors } from '../engine/LocalDoors.js';
 import { createLocalPushables, GDO_PUSHABLE_MASK } from '../engine/LocalPushables.js';
 import { createPoseFallBoard } from '../engine/PoseFall.js';
+import { createBreakables } from '../engine/BreakableProps.js';
 import { createLocalSave } from '../engine/LocalSave.js';
 import { GDO_TRAVERSAL_MODE, createTraversalController } from '../engine/WaterTraversal.js';
 
@@ -729,6 +730,15 @@ export class GeoWorld {
     });
     this.poseFallSummary = null;
     this.lastPoseFallMilliseconds = null;
+    // `PHY-06`: breakable props, one optional near-player rope, and the flag
+    // wave. Chunks are pooled at construction and recycled, never fractured.
+    this.breakables = createBreakables({
+      profile,
+      seed: terrainSeedForCoordinate(latitude, longitude),
+      heightAt: (x, z) => terrainHeightAt(x, z, this.terrainSeed),
+    });
+    this.breakablesSummary = null;
+    this.lastBreakableMilliseconds = null;
     // `NET-01`: the save's settings half. The host writes its live settings
     // here; the envelope only ever carries the declared vocabulary.
     this.saveSettings = { profile, touchControls: false, reducedMotion: false, cameraFade: true };
@@ -2438,6 +2448,55 @@ export class GeoWorld {
     return this.poseFallSummary;
   }
 
+  /**
+   * `PHY-06`: advance the breakable islands on their own fixed step. An empty
+   * pool costs one accumulator comparison; live chunks and a rope advance in
+   * place, so a steady frame allocates nothing.
+   */
+  updateBreakables(deltaMilliseconds = 0) {
+    if (this.disposed || !this.breakables) return null;
+    this.breakables.update(deltaMilliseconds);
+    const diagnostics = this.breakables.diagnostics;
+    this.breakablesSummary = Object.freeze({
+      namespace: this.breakables.namespace,
+      activeChunks: diagnostics.activeChunks,
+      chunks: diagnostics.chunks,
+      ropes: diagnostics.ropes,
+      steps: diagnostics.steps,
+    });
+    return this.breakablesSummary;
+  }
+
+  /** Break the nearest breakable prop to a point, within `radius`. */
+  breakNearestProp(x, z, radius = 1.5, entry = {}) {
+    if (this.disposed || !this.breakables) return { ok: false, refusal: 'out-of-range' };
+    if (this.pushables) {
+      let best = null, bestDistance = Infinity;
+      for (const body of this.pushables.bodies()) {
+        const distance = Math.hypot(body.x - x, body.z - z);
+        if (distance < bestDistance && distance <= radius) { best = body; bestDistance = distance; }
+      }
+      if (best) {
+        // A pushable kind maps onto a chunk recipe; a ball or cone shatters as
+        // the generic crate recipe rather than inventing an archetype.
+        const archetype = best.kind === 'barrel' ? 'barrel' : 'crate';
+        const broken = this.breakables.breakProp({
+          archetype,
+          x: best.x,
+          z: best.z,
+          y: best.y,
+          impulse: entry.impulse,
+        });
+        if (broken.ok) return broken;
+      }
+    }
+    // No prop within reach: still break where the player swung, if they named one.
+    if (entry.archetype) {
+      return this.breakables.breakProp({ archetype: entry.archetype, x, z });
+    }
+    return { ok: false, refusal: 'out-of-range' };
+  }
+
   /** Knock down the nearest standing actor inside `radius`; named refusals otherwise. */
   knockDownNearest(x, z, radius, impulse) {
     if (this.disposed || !this.poseFalls) return { ok: false, refusal: 'unknown-actor' };
@@ -3024,6 +3083,11 @@ export class GeoWorld {
       ? Math.max(0, nowMilliseconds - this.lastPoseFallMilliseconds) : 0;
     this.lastPoseFallMilliseconds = nowMilliseconds;
     this.updatePoseFalls(poseFallDelta);
+    // `PHY-06`: the same frame clock, one delta behind, exactly like the board.
+    const breakableDelta = Number.isFinite(this.lastBreakableMilliseconds)
+      ? Math.max(0, nowMilliseconds - this.lastBreakableMilliseconds) : 0;
+    this.lastBreakableMilliseconds = nowMilliseconds;
+    this.updateBreakables(breakableDelta);
     this.observeDiscovery(position.x, position.z, nowMilliseconds);
     // `ENV-04`: the weather pass follows the player, so its climate sample is
     // the environment the player is standing in.
