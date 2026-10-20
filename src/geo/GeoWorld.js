@@ -45,6 +45,7 @@ import {
 } from '../engine/LocalTraffic.js';
 import { createTrafficPools } from './GeoTrafficPools.js';
 import { createLocalDoors } from '../engine/LocalDoors.js';
+import { createLocalPushables, GDO_PUSHABLE_MASK } from '../engine/LocalPushables.js';
 import { createLocalSave } from '../engine/LocalSave.js';
 import { GDO_TRAVERSAL_MODE, createTraversalController } from '../engine/WaterTraversal.js';
 
@@ -68,7 +69,7 @@ import {
   applySurfaceDetail, describeSurfaceDetailCatalogue, rolloutSurfaceDetails,
   selectSurfaceDetail, surfaceDetailOf,
 } from '../engine/SurfaceDetailCatalogue.js';
-import { DynamicProxyGrid } from '../engine/DynamicProxyGrid.js';
+import { DynamicProxyGrid, GDO_DYNAMIC_PROXY_KIND } from '../engine/DynamicProxyGrid.js';
 import {
   GDO_DISCOVERY_PROFILES, createDiscoveryJournal, createJournalStorage,
 } from '../engine/DiscoveryJournal.js';
@@ -699,6 +700,16 @@ export class GeoWorld {
     this.lastDoorMilliseconds = null;
     this.doorsSummary = null;
     this.doorsCounters = null;
+    // `PHY-02`: capped pushables. A fixed-step pool of bounded spheres that
+    // sleeps when it stops moving; bodies join the same `COL-09` grid doors use,
+    // so a crate is exactly as solid as the leaf beside it.
+    this.pushables = createLocalPushables({
+      profile,
+      heightAt: (x, z) => terrainHeightAt(x, z, this.terrainSeed),
+    });
+    this.pushableProxyPositions = new Map();
+    this.lastPushableMilliseconds = null;
+    this.pushablesSummary = null;
     // `NET-01`: the save's settings half. The host writes its live settings
     // here; the envelope only ever carries the declared vocabulary.
     this.saveSettings = { profile, touchControls: false, reducedMotion: false, cameraFade: true };
@@ -2312,6 +2323,66 @@ export class GeoWorld {
     return this.doorsSummary;
   }
 
+  /**
+   * `PHY-02`: one bounded pushable pass. The pool integrates on its own fixed
+   * step, then its change list is applied to the `COL-09` grid exactly like the
+   * door pass — an awake body moves its proxy on the grid's own cell crossings,
+   * and a sleeping body contributes nothing at all.
+   */
+  updatePushables(nowMilliseconds = 0) {
+    if (this.disposed || !this.pushables) return null;
+    const previous = this.lastPushableMilliseconds;
+    const dt = Number.isFinite(previous) ? Math.max(0, nowMilliseconds - previous) : 0;
+    this.lastPushableMilliseconds = nowMilliseconds;
+    this.pushables.step(dt);
+    const changes = this.pushables.changes();
+    for (const change of changes) {
+      const proxyId = `pushable:${change.id}`;
+      if (change.type === 'remove') {
+        this.dynamicProxies.remove(proxyId);
+        this.pushableProxyPositions.delete(proxyId);
+        continue;
+      }
+      const declaration = {
+        kind: GDO_DYNAMIC_PROXY_KIND.OBB,
+        x: change.x, z: change.z,
+        halfX: change.radius, halfZ: change.radius,
+        rotation: 0,
+        ySpan: [change.y - change.radius, change.y + change.radius],
+      };
+      const last = this.pushableProxyPositions.get(proxyId);
+      if (change.type === 'move' && last && this.dynamicProxies.has(proxyId)) {
+        this.dynamicProxies.move(proxyId, declaration.x - last.x, declaration.z - last.z,
+          { y: declaration.ySpan[0] });
+      } else if (this.dynamicProxies.has(proxyId)) {
+        this.dynamicProxies.move(proxyId, 0, 0, { y: declaration.ySpan[0] });
+      } else {
+        this.dynamicProxies.insert(proxyId, declaration, { mask: GDO_PUSHABLE_MASK });
+      }
+      this.pushableProxyPositions.set(proxyId, { x: declaration.x, z: declaration.z });
+    }
+    this.pushablesSummary = this.pushables.summary(this.pushablesSummaryRecord ??= {});
+    return this.pushablesSummary;
+  }
+
+  /** Spawn one capped pushable; the pool refuses by name past its cap. */
+  spawnPushable(entry = {}) {
+    if (this.disposed || !this.pushables) return { ok: false, refusal: 'pool-full' };
+    return this.pushables.add(entry);
+  }
+
+  /** Shove the nearest pushable to a point, through the pool's own impulse cap. */
+  pushNearestPushable(x, z, radius, impulse) {
+    if (this.disposed || !this.pushables) return { ok: false, refusal: 'out-of-range' };
+    let best = null, bestDistance = Infinity;
+    for (const body of this.pushables.bodies()) {
+      const distance = Math.hypot(body.x - x, body.z - z);
+      if (distance < bestDistance && distance <= radius) { best = body; bestDistance = distance; }
+    }
+    if (!best) return { ok: false, refusal: 'out-of-range' };
+    return this.pushables.push(best.id, impulse);
+  }
+
   /** The sidewalk graph the pedestrians walk: a declared filter over the roads. */
   get pedestrianSidewalk() { return this.pedestrians.graph; }
 
@@ -2817,6 +2888,7 @@ export class GeoWorld {
     this.updatePedestrians(nowMilliseconds, position);
     this.updateTraffic(nowMilliseconds, position);
     this.updateDoors(nowMilliseconds, position);
+    this.updatePushables(nowMilliseconds);
     this.observeDiscovery(position.x, position.z, nowMilliseconds);
     // `ENV-04`: the weather pass follows the player, so its climate sample is
     // the environment the player is standing in.

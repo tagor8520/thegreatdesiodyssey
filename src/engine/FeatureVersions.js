@@ -15,6 +15,7 @@ export const GDO_FEATURE_VERSIONS = Object.freeze({
   vegetationMorphology: 1,
   vegetationWind: 1,
   plantColonization: 1,
+  localPushables: 1,
   objectGrammar: 2,
   streetFurniture: 1,
   bridgeGrammar: 1,
