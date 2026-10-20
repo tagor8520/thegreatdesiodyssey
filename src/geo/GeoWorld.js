@@ -48,6 +48,7 @@ import { createLocalDoors } from '../engine/LocalDoors.js';
 import { createLocalPushables, GDO_PUSHABLE_MASK } from '../engine/LocalPushables.js';
 import { createPoseFallBoard } from '../engine/PoseFall.js';
 import { createBreakables } from '../engine/BreakableProps.js';
+import { benchmarkAmbientOcclusion, createContactAnchors } from '../engine/AmbientOcclusion.js';
 import { createLocalSave } from '../engine/LocalSave.js';
 import { GDO_TRAVERSAL_MODE, createTraversalController } from '../engine/WaterTraversal.js';
 
@@ -739,6 +740,14 @@ export class GeoWorld {
     });
     this.breakablesSummary = null;
     this.lastBreakableMilliseconds = null;
+    // `ENV-07`: the AO benchmark's shipped half — one pooled instanced draw of
+    // grounding ellipses under the props this world actually holds. The benchmark
+    // itself is quoted on demand; nothing here allocates per frame.
+    this.contactAnchors = createContactAnchors({ profile });
+    // `FND-07`: the pool registers in the world's ledger like every other owner,
+    // so disposal is audited rather than remembered.
+    this.lifecycle.own('pool', 'contact-anchors', this.contactAnchors, pool => pool.dispose());
+    this.contactAnchorSummary = null;
     // `NET-01`: the save's settings half. The host writes its live settings
     // here; the envelope only ever carries the declared vocabulary.
     this.saveSettings = { profile, touchControls: false, reducedMotion: false, cameraFade: true };
@@ -2467,6 +2476,59 @@ export class GeoWorld {
     return this.breakablesSummary;
   }
 
+  /**
+   * `ENV-07`: rebuild the contact-anchor instances around a camera position. The
+   * pool is fixed at construction, so a frame only writes into it; an empty world
+   * issues no draw at all.
+   */
+  updateContactAnchors(cameraX = 0, cameraZ = 0) {
+    if (this.disposed || !this.contactAnchors) return null;
+    this.contactAnchors.begin(cameraX, cameraZ);
+    if (this.pushables) {
+      for (const body of this.pushables.bodies()) {
+        this.contactAnchors.add({
+          x: body.x,
+          z: body.z,
+          groundY: terrainHeightAt(body.x, body.z, this.terrainSeed),
+          // A crate's anchor is its footprint; the pool clamps what it cannot hold.
+          footprint: body.radius * 2,
+        });
+      }
+    }
+    const diagnostics = this.contactAnchors.diagnostics;
+    this.contactAnchorSummary = Object.freeze({
+      namespace: diagnostics.namespace,
+      instances: diagnostics.instances,
+      addedDrawCalls: diagnostics.addedDrawCalls,
+      fullScreenPasses: diagnostics.fullScreenPasses,
+    });
+    return this.contactAnchorSummary;
+  }
+
+  /**
+   * `ENV-07`: quote the benchmark against this world's own contents. Props that
+   * rest on other props are counted separately, because those are exactly the ones
+   * a contact anchor cannot ground.
+   */
+  ambientOcclusionDecision({ profile = this.profile, viewport = {}, scene = null } = {}) {
+    const bodies = this.pushables ? this.pushables.bodies() : [];
+    let stackedProps = 0;
+    for (const body of bodies) {
+      // A body rests at its own radius above the ground; anything higher is
+      // sitting on something, and a contact anchor cannot ground it.
+      const ground = terrainHeightAt(body.x, body.z, this.terrainSeed);
+      if (body.y > ground + body.radius + .18) stackedProps++;
+    }
+    const resolved = scene ?? {
+      props: bodies.length,
+      stackedProps,
+      facades: this.tileProps ?? 0,
+      terrain: 0,
+      vertices: 0,
+    };
+    return benchmarkAmbientOcclusion({ profile, viewport, scene: resolved });
+  }
+
   /** Break the nearest breakable prop to a point, within `radius`. */
   breakNearestProp(x, z, radius = 1.5, entry = {}) {
     if (this.disposed || !this.breakables) return { ok: false, refusal: 'out-of-range' };
@@ -3088,6 +3150,9 @@ export class GeoWorld {
       ? Math.max(0, nowMilliseconds - this.lastBreakableMilliseconds) : 0;
     this.lastBreakableMilliseconds = nowMilliseconds;
     this.updateBreakables(breakableDelta);
+    // `ENV-07`: the anchors follow the camera, not the avatar, so the pool holds
+    // what is actually on screen and nothing else.
+    this.updateContactAnchors(this.viewCamera?.position.x ?? position.x, this.viewCamera?.position.z ?? position.z);
     this.observeDiscovery(position.x, position.z, nowMilliseconds);
     // `ENV-04`: the weather pass follows the player, so its climate sample is
     // the environment the player is standing in.
