@@ -51,6 +51,7 @@ import { createBreakables } from '../engine/BreakableProps.js';
 import { benchmarkAmbientOcclusion, createContactAnchors } from '../engine/AmbientOcclusion.js';
 import { benchmarkRagdoll, createRagdollIsland } from '../engine/RagdollIsland.js';
 import { benchmarkSignStrategy, createSignAtlas } from '../engine/SignAtlas.js';
+import { createInterestSet, encodeJoinPayload, estimateStreamBudget } from '../engine/SpatialInterest.js';
 
 /**
  * `MAT-06`: the atlas may never borrow budget from the shared material textures.
@@ -777,6 +778,12 @@ export class GeoWorld {
     this.signAtlas = createSignAtlas({ profile, memoryCapBytes: GDO_SIGN_MATERIAL_BUDGET });
     this.lifecycle.own('pool', 'sign-atlas', this.signAtlas, atlas => atlas.dispose());
     this.signAtlasSummary = null;
+    // `NET-02`/`NET-03`: a session is an **optional layer**. Nothing is created
+    // until a host opens one, so the single-player frame path is unchanged, and
+    // closing it returns the world to exactly that state.
+    this.session = null;
+    this.sessionSummary = null;
+    this.sessionJoin = null;
     // `NET-01`: the save's settings half. The host writes its live settings
     // here; the envelope only ever carries the declared vocabulary.
     this.saveSettings = { profile, touchControls: false, reducedMotion: false, cameraFade: true };
@@ -2503,6 +2510,119 @@ export class GeoWorld {
       steps: diagnostics.steps,
     });
     return this.breakablesSummary;
+  }
+
+  /**
+   * `NET-03`: open a session. The only world payload is the join record — seed,
+   * content version, weather month, time base, and a session tag — because both
+   * sides regenerate the world from it (`networkGeometryBytes: 0`).
+   */
+  openSession({
+    sessionId = `session:${(this.sessionSequence = (this.sessionSequence ?? 0) + 1)}`,
+    contentVersion = 1,
+    weatherMonth = Number.isFinite(this.weatherMonth) ? this.weatherMonth : 0,
+    timeBaseSeconds = 0,
+  } = {}) {
+    if (this.disposed) return { ok: false, refusal: 'disposed' };
+    if (this.session) return { ok: false, refusal: 'already-open', sessionTag: this.session.interest.sessionTag };
+    const interest = createInterestSet({
+      profile: this.profile,
+      sessionId,
+      seed: this.terrainSeed,
+      heightAt: (x, z) => terrainHeightAt(x, z, this.terrainSeed),
+      queryEntities: (x, z, radius) => this.sessionBoundaryEntities(x, z, radius),
+    });
+    const join = encodeJoinPayload({
+      seed: this.terrainSeed,
+      contentVersion,
+      weatherMonth,
+      timeBaseSeconds,
+      sessionId,
+    });
+    if (!join.ok) return join;
+    this.session = { interest, sessionId, contentVersion, weatherMonth, timeBaseSeconds, join };
+    this.lifecycle.own('pool', 'session', this.session, session => session.interest.dispose());
+    this.sessionJoin = Object.freeze({
+      bytes: join.bytes,
+      geometryBytes: join.geometryBytes,
+      seed: this.terrainSeed,
+      contentVersion,
+      weatherMonth,
+      timeBaseSeconds,
+      sessionTag: interest.sessionTag,
+    });
+    this.sessionSummary = null;
+    return Object.freeze({
+      ok: true,
+      namespace: interest.namespace,
+      sessionTag: interest.sessionTag,
+      join: this.sessionJoin,
+      policy: interest.policy,
+      budget: estimateStreamBudget({ profile: this.profile }),
+    });
+  }
+
+  /**
+   * `NET-03`: the shared entities inside a session's interest cell. This is a
+   * bounded query over what the world already holds — never a geometry transfer.
+   */
+  sessionBoundaryEntities(x, z, radius = 80) {
+    const found = [];
+    if (!this.pushables) return found;
+    let index = 0;
+    for (const body of this.pushables.bodies()) {
+      if (found.length >= 16) break;
+      if (Math.hypot(body.x - x, body.z - z) > radius) { index++; continue; }
+      found.push({
+        id: `prop:${body.id}`,
+        // A stable index into the deterministic prop order, not a string on the wire.
+        index: index++,
+        state: body.asleep ? 0 : 2,
+      });
+    }
+    return found;
+  }
+
+  /** One interest pass for the local player's neighbourhood. */
+  updateSession(x, z, players = [], nowMilliseconds = 0) {
+    if (this.disposed) return { ok: false, refusal: 'disposed' };
+    if (!this.session) return { ok: false, refusal: 'not-a-session' };
+    const result = this.session.interest.update(x, z, { players, nowMilliseconds });
+    if (!result.ok) return result;
+    this.sessionSummary = Object.freeze({
+      namespace: this.session.interest.namespace,
+      tracked: result.tracked.length,
+      entered: result.entered.length,
+      left: result.left.length,
+      overflow: result.overflow,
+      cell: result.cell,
+      crossed: result.crossed,
+      networkGeometryBytes: 0,
+    });
+    return this.sessionSummary;
+  }
+
+  /** Encode the next snapshot; the transport sends `view`. */
+  sessionSnapshot({ tick = 0, sequence = 0, x = 0, z = 0 } = {}) {
+    if (this.disposed) return { ok: false, refusal: 'disposed' };
+    if (!this.session) return { ok: false, refusal: 'not-a-session' };
+    return this.session.interest.encodeSnapshot({ x, z, tick, sequence });
+  }
+
+  /** `NET-02` §4.2: the only door an inbound id may use. */
+  validateSessionReference(id) {
+    if (this.disposed) return { ok: false, refusal: 'disposed' };
+    if (!this.session) return { ok: false, refusal: 'not-a-session' };
+    return this.session.interest.validate(id);
+  }
+
+  closeSession() {
+    if (!this.session) return { ok: false, refusal: 'not-a-session' };
+    this.session.interest.dispose();
+    this.session = null;
+    this.sessionJoin = null;
+    this.sessionSummary = null;
+    return { ok: true };
   }
 
   /**
