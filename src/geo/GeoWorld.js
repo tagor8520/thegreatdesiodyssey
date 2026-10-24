@@ -50,6 +50,14 @@ import { createPoseFallBoard } from '../engine/PoseFall.js';
 import { createBreakables } from '../engine/BreakableProps.js';
 import { benchmarkAmbientOcclusion, createContactAnchors } from '../engine/AmbientOcclusion.js';
 import { benchmarkRagdoll, createRagdollIsland } from '../engine/RagdollIsland.js';
+import { benchmarkSignStrategy, createSignAtlas } from '../engine/SignAtlas.js';
+
+/**
+ * `MAT-06`: the atlas may never borrow budget from the shared material textures.
+ * The profile's own tile cap is the tighter ceiling in practice; this is the cross
+ * check that keeps `QLT-05` authoritative either way.
+ */
+const GDO_SIGN_MATERIAL_BUDGET = GDO_LOW_PROFILE_BUDGETS.materialTextureBytes;
 import { createLocalSave } from '../engine/LocalSave.js';
 import { GDO_TRAVERSAL_MODE, createTraversalController } from '../engine/WaterTraversal.js';
 
@@ -763,6 +771,12 @@ export class GeoWorld {
     this.lifecycle.own('pool', 'ragdoll-island', this.ragdollIsland, island => island.dispose());
     this.ragdollSummary = null;
     this.ragdollProxyQueries = 0;
+    // `MAT-06`: the bounded generated sign atlas. Its own ceiling is the profile's
+    // tile cap, which is inside `QLT-05`'s shared material-texture budget; the
+    // atlas is only *used* where the benchmark says it beats the DOM label path.
+    this.signAtlas = createSignAtlas({ profile, memoryCapBytes: GDO_SIGN_MATERIAL_BUDGET });
+    this.lifecycle.own('pool', 'sign-atlas', this.signAtlas, atlas => atlas.dispose());
+    this.signAtlasSummary = null;
     // `NET-01`: the save's settings half. The host writes its live settings
     // here; the envelope only ever carries the declared vocabulary.
     this.saveSettings = { profile, touchControls: false, reducedMotion: false, cameraFade: true };
@@ -2489,6 +2503,46 @@ export class GeoWorld {
       steps: diagnostics.steps,
     });
     return this.breakablesSummary;
+  }
+
+  /**
+   * `MAT-06`: render one in-scene sign plate into the bounded atlas. The plate's
+   * text must be map-derived — a generated string is refused by the caller's own
+   * content rules, never invented here.
+   */
+  renderSignPlate(text) {
+    if (this.disposed || !this.signAtlas) return { ok: false, refusal: 'disposed' };
+    const rendered = this.signAtlas.render(text);
+    this.signAtlasSummary = this.signAtlas.diagnostics;
+    return rendered.ok ? Object.freeze({
+      ok: true,
+      namespace: this.signAtlas.namespace,
+      key: rendered.key,
+      tile: rendered.tile,
+      scale: rendered.scale,
+      legibility: rendered.legibility,
+      reused: rendered.reused,
+      checksum: this.signAtlas.checksum(rendered.tile),
+      bytes: this.signAtlas.bytes,
+    }) : rendered;
+  }
+
+  /** Regenerate only when the plate set changes; an unchanged set costs nothing. */
+  syncSignPlates(texts = []) {
+    if (this.disposed || !this.signAtlas) return { ok: false, refusal: 'disposed' };
+    const synced = this.signAtlas.sync(texts);
+    this.signAtlasSummary = this.signAtlas.diagnostics;
+    return synced;
+  }
+
+  /**
+   * `MAT-06`: the comparison, quoted against this world's own map names. Map names
+   * are what the texture research protects, so they are passed as `labels`; any
+   * in-scene plates are passed as `plates`.
+   */
+  signStrategy({ plates = [], labels = null } = {}) {
+    const names = labels ?? this.visibleLabels.map(label => label.name);
+    return benchmarkSignStrategy({ profile: this.profile, labels: names, plates });
   }
 
   /**
