@@ -22,6 +22,7 @@ export const GDO_FEATURE_VERSIONS = Object.freeze({
   breakables: 1,
   ambientOcclusion: 1,
   ragdollIsland: 1,
+  signAtlas: 1,
   objectGrammar: 2,
   streetFurniture: 1,
   bridgeGrammar: 1,
