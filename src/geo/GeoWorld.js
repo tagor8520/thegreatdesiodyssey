@@ -49,6 +49,7 @@ import { createLocalPushables, GDO_PUSHABLE_MASK } from '../engine/LocalPushable
 import { createPoseFallBoard } from '../engine/PoseFall.js';
 import { createBreakables } from '../engine/BreakableProps.js';
 import { benchmarkAmbientOcclusion, createContactAnchors } from '../engine/AmbientOcclusion.js';
+import { benchmarkRagdoll, createRagdollIsland } from '../engine/RagdollIsland.js';
 import { createLocalSave } from '../engine/LocalSave.js';
 import { GDO_TRAVERSAL_MODE, createTraversalController } from '../engine/WaterTraversal.js';
 
@@ -748,6 +749,20 @@ export class GeoWorld {
     // so disposal is audited rather than remembered.
     this.lifecycle.own('pool', 'contact-anchors', this.contactAnchors, pool => pool.dispose());
     this.contactAnchorSummary = null;
+    // `PHY-05`: the lazy true-ragdoll island. It owns no solver of its own — a host
+    // supplies one only after a measured comparison recommends it — and every actor
+    // it manages falls on the `PHY-03` board above until then. It shares that board,
+    // so the world still has exactly one clock and one pose record per actor.
+    this.ragdollIsland = createRagdollIsland({
+      profile,
+      seed: terrainSeedForCoordinate(latitude, longitude),
+      heightAt: (x, z) => terrainHeightAt(x, z, this.terrainSeed),
+      querySolids: (x, z, radius) => this.ragdollBoundaryQuery(x, z, radius),
+      poseFalls: this.poseFalls,
+    });
+    this.lifecycle.own('pool', 'ragdoll-island', this.ragdollIsland, island => island.dispose());
+    this.ragdollSummary = null;
+    this.ragdollProxyQueries = 0;
     // `NET-01`: the save's settings half. The host writes its live settings
     // here; the envelope only ever carries the declared vocabulary.
     this.saveSettings = { profile, touchControls: false, reducedMotion: false, cameraFade: true };
@@ -2477,6 +2492,94 @@ export class GeoWorld {
   }
 
   /**
+   * `PHY-05`: the boundary proxy set the ragdoll island may convert. This is a
+   * **query** over the authoritative collision data the player already uses — the
+   * same tile rings and vertical spans — with stable feature ids and the exact
+   * vertical interval. Render meshes are never mirrored into rigid bodies, which
+   * is what keeps the static map query-driven.
+   */
+  ragdollBoundaryQuery(x, z, radius = 4) {
+    const found = [];
+    this.ragdollProxyQueries++;
+    if (![x, z, radius].every(Number.isFinite)) return found;
+    for (const tile of this.tiles.values()) {
+      if (!tile.collisionGrid || !tile.colliders) continue;
+      if (x + radius < tile.bounds.minX || x - radius > tile.bounds.maxX ||
+          z + radius < tile.bounds.minZ || z - radius > tile.bounds.maxZ) continue;
+      const candidates = this._collectCollisionCandidates(tile, x - radius, z - radius, x + radius, z + radius);
+      for (const index of candidates) {
+        const polygonIndex = index / 4;
+        const minX = tile.colliders[index], minZ = tile.colliders[index + 1];
+        const maxX = tile.colliders[index + 2], maxZ = tile.colliders[index + 3];
+        if (x + radius < minX || x - radius > maxX || z + radius < minZ || z - radius > maxZ) continue;
+        const hasSpans = tile.collisionSpans && polygonIndex * 2 + 1 < tile.collisionSpans.length;
+        found.push({
+          id: `${tile.key}:${polygonIndex}`,
+          kind: 'tile-solid',
+          x: (minX + maxX) * .5,
+          z: (minZ + maxZ) * .5,
+          radius: Math.max(maxX - minX, maxZ - minZ) * .5,
+          yMin: hasSpans ? tile.collisionSpans[polygonIndex * 2] : -Infinity,
+          yMax: hasSpans ? tile.collisionSpans[polygonIndex * 2 + 1] : Infinity,
+        });
+      }
+    }
+    return found;
+  }
+
+  /**
+   * `PHY-05`: ask for a true ragdoll. The comparison is measured, not assumed: the
+   * island prices the engines against this profile's transfer budget and the pose
+   * fall keeps the actor if the answer is no, or if no solver has been loaded.
+   */
+  requestRagdoll(x, z, { impulse = null, requires = {}, engine = null, load = null } = {}) {
+    if (this.disposed || !this.ragdollIsland) return { ok: false, refusal: 'disposed' };
+    const requested = this.ragdollIsland.request({
+      actorId: `ragdoll:${this.ragdollSequence = (this.ragdollSequence ?? 0) + 1}`,
+      x, z, impulse, requires, engine, load,
+    });
+    const summary = Object.freeze({
+      namespace: this.ragdollIsland.namespace,
+      actorId: requested.actorId ?? null,
+      state: requested.state ?? null,
+      engine: requested.engine ?? null,
+      reason: requested.reason ?? null,
+      refusal: requested.refusal ?? null,
+      fallback: requested.fallback ?? null,
+      staticMapBodies: 0,
+    });
+    this.ragdollSummary = summary;
+    return summary;
+  }
+
+  /** `PHY-05`: advance the island's solvers (the pose board keeps its own clock). */
+  updateRagdolls(deltaMilliseconds = 0) {
+    if (this.disposed || !this.ragdollIsland) return null;
+    this.ragdollIsland.step(deltaMilliseconds);
+    const diagnostics = this.ragdollIsland.diagnostics;
+    this.ragdollSummary = Object.freeze({
+      namespace: this.ragdollIsland.namespace,
+      actors: diagnostics.actors,
+      active: diagnostics.active,
+      sleeping: diagnostics.sleeping,
+      frozen: diagnostics.frozen,
+      staticMapBodies: diagnostics.staticMapBodies,
+      fallback: diagnostics.fallback,
+    });
+    return this.ragdollSummary;
+  }
+
+  /** `PHY-05`: quote the measured comparison for a workload on this profile. */
+  ragdollDecision({ requires = {}, steps = 60 } = {}) {
+    return benchmarkRagdoll({
+      profile: this.profile,
+      workload: { requires },
+      steps,
+      heightAt: (x, z) => terrainHeightAt(x, z, this.terrainSeed),
+    });
+  }
+
+  /**
    * `ENV-07`: rebuild the contact-anchor instances around a camera position. The
    * pool is fixed at construction, so a frame only writes into it; an empty world
    * issues no draw at all.
@@ -3153,6 +3256,12 @@ export class GeoWorld {
     // `ENV-07`: the anchors follow the camera, not the avatar, so the pool holds
     // what is actually on screen and nothing else.
     this.updateContactAnchors(this.viewCamera?.position.x ?? position.x, this.viewCamera?.position.z ?? position.z);
+    // `PHY-05`: the island's solvers advance on the same frame delta; when nothing
+    // is loaded this is a single accumulator step over an empty actor list.
+    const ragdollDelta = Number.isFinite(this.lastRagdollMilliseconds)
+      ? Math.max(0, nowMilliseconds - this.lastRagdollMilliseconds) : 0;
+    this.lastRagdollMilliseconds = nowMilliseconds;
+    this.updateRagdolls(ragdollDelta);
     this.observeDiscovery(position.x, position.z, nowMilliseconds);
     // `ENV-04`: the weather pass follows the player, so its climate sample is
     // the environment the player is standing in.
