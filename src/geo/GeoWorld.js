@@ -52,6 +52,7 @@ import { benchmarkAmbientOcclusion, createContactAnchors } from '../engine/Ambie
 import { benchmarkRagdoll, createRagdollIsland } from '../engine/RagdollIsland.js';
 import { benchmarkSignStrategy, createSignAtlas } from '../engine/SignAtlas.js';
 import { createInterestSet, encodeJoinPayload, estimateStreamBudget } from '../engine/SpatialInterest.js';
+import { createMultiplayerAvatars } from '../engine/MultiplayerAvatars.js';
 
 /**
  * `MAT-06`: the atlas may never borrow budget from the shared material textures.
@@ -2540,8 +2541,18 @@ export class GeoWorld {
       sessionId,
     });
     if (!join.ok) return join;
-    this.session = { interest, sessionId, contentVersion, weatherMonth, timeBaseSeconds, join };
-    this.lifecycle.own('pool', 'session', this.session, session => session.interest.dispose());
+    // `NET-04`: the avatars ride the same session, so a session's whole surface is
+    // one owned object that either exists or does not.
+    const avatars = createMultiplayerAvatars({
+      profile: this.profile,
+      interest,
+      heightAt: (x, z) => terrainHeightAt(x, z, this.terrainSeed),
+    });
+    this.session = { interest, avatars, sessionId, contentVersion, weatherMonth, timeBaseSeconds, join };
+    this.lifecycle.own('pool', 'session', this.session, session => {
+      session.avatars.dispose();
+      session.interest.dispose();
+    });
     this.sessionJoin = Object.freeze({
       bytes: join.bytes,
       geometryBytes: join.geometryBytes,
@@ -2609,6 +2620,31 @@ export class GeoWorld {
     return this.session.interest.encodeSnapshot({ x, z, tick, sequence });
   }
 
+  /** `NET-04`: one inbound snapshot, validated and interpolated. */
+  ingestSessionSnapshot(view, nowMilliseconds = 0) {
+    if (this.disposed) return { ok: false, refusal: 'disposed' };
+    if (!this.session) return { ok: false, refusal: 'not-a-session' };
+    const result = this.session.avatars.ingest(view, nowMilliseconds);
+    this.sessionAvatars = this.session.avatars.diagnostics;
+    return result;
+  }
+
+  /** `NET-04`: advance every remote avatar to `now - interpolation delay`. */
+  updateSessionAvatars(nowMilliseconds = 0) {
+    if (this.disposed) return { ok: false, refusal: 'disposed' };
+    if (!this.session) return { ok: false, refusal: 'not-a-session' };
+    const result = this.session.avatars.update(nowMilliseconds);
+    this.sessionAvatars = this.session.avatars.diagnostics;
+    return result;
+  }
+
+  /** `NET-04`/§8.2: a peer leaving fades out over two seconds, then is released. */
+  disconnectSessionAvatar(id, nowMilliseconds = 0) {
+    if (this.disposed) return { ok: false, refusal: 'disposed' };
+    if (!this.session) return { ok: false, refusal: 'not-a-session' };
+    return this.session.avatars.disconnect(id, nowMilliseconds);
+  }
+
   /** `NET-02` §4.2: the only door an inbound id may use. */
   validateSessionReference(id) {
     if (this.disposed) return { ok: false, refusal: 'disposed' };
@@ -2618,6 +2654,7 @@ export class GeoWorld {
 
   closeSession() {
     if (!this.session) return { ok: false, refusal: 'not-a-session' };
+    this.session.avatars.dispose();
     this.session.interest.dispose();
     this.session = null;
     this.sessionJoin = null;

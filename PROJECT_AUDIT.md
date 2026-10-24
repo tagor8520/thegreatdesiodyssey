@@ -221,6 +221,8 @@ The UI store is local and immutable. There is no save layer or server authority.
 
 `src/network/MultiplayerClient.js` separately implements JSON-over-WebSocket remote-player snapshots and 100 ms interpolation, but nothing imports it. It lacks a matching server, authentication, server reconciliation, input validation, interest management, persistent identity, inventory authority, and a complete disposal/reconnect lifecycle.
 
+> **Update (`NET-04`):** this module has been deleted. [`feature-roadmap/NET-02_MULTIPLAYER_PROTOCOL.md`](./feature-roadmap/NET-02_MULTIPLAYER_PROTOCOL.md) decided the protocol and quarantined the prototype; `src/engine/SpatialInterest.js` (`NET-03`) and `src/engine/MultiplayerAvatars.js` (`NET-04`) replace it with interest-scoped ids, a fixed-point wire format, validating decode, token buckets, and an optional session layer that leaves single-player untouched. The gaps listed above are now either closed by those rows or explicitly recorded as owner decisions in the protocol document's §9.
+
 ---
 
 ## 6. Performance findings
