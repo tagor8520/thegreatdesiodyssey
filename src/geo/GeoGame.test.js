@@ -86,7 +86,12 @@ export function statementsOf(source) {
   let previous = undefined;
   const closeStatement = end => {
     const head = firstIdentifier(source.slice(statementStart, end));
-    if (head) open.at(-1).statements.push({ name: head.name, at: statementStart + head.at });
+    const block = open.at(-1);
+    // Defensive only: a `}` with no open block cannot happen in parseable source.
+    // Reported as a finding (`name: '?'`) rather than thrown, so a construct this
+    // scanner cannot read fails the gate with a file and a line, not a TypeError.
+    if (!block) { blocks.push({ start: end, statements: [], declarations: new Map(), parent: null, unparsed: true }); return; }
+    if (head) block.statements.push({ name: head.name, at: statementStart + head.at });
     statementStart = end;
   };
   while (index < source.length) {
@@ -341,6 +346,42 @@ test('the coordinate world mounts, runs frames, and disposes on a test device', 
     device.runFrames(3);
     assert.ok(scope.world.stats, 'the world reports its stats after real frames');
     assert.ok(container.children.length >= 1, 'the canvas and overlay reached the container');
+  } finally {
+    scope?.dispose();
+    device.restore();
+  }
+});
+
+test('the mount ships a pause menu, and pausing really freezes the session', async () => {
+  const device = installTestDevice();
+  let scope = null;
+  try {
+    const { register } = await import('node:module');
+    register(`data:text/javascript,${encodeURIComponent(CSS_HOOK)}`, import.meta.url);
+    const { mountGeoGame } = await import('./GeoGame.js');
+    const container = stubElement('main');
+    scope = mountGeoGame(container, {
+      latitude: 28.9845, longitude: 77.7064,
+      place: { name: 'Ghantaghar', subtitle: 'Meerut · Uttar Pradesh' },
+    });
+    // The session carries a real menu and the one settings model.
+    assert.equal(typeof scope.openMenu, 'function');
+    assert.equal(scope.menu?.namespace, 'gdo:gameMenu:v1');
+    assert.equal(scope.settings?.namespace, 'gdo:gameSettings:v1');
+    assert.equal(scope.paused, false);
+    assert.equal(scope.menu.isOpen, false);
+
+    scope.openMenu();
+    assert.equal(scope.paused, true, 'the menu owns the pause');
+    assert.equal(scope.menu.isOpen, true);
+    assert.equal(scope.player.enabled, false, 'input is released while paused');
+    // Frames keep rendering while paused: they must not advance or throw.
+    device.runFrames(2);
+
+    scope.closeMenu();
+    assert.equal(scope.paused, false);
+    assert.equal(scope.menu.isOpen, false, 'resume re-enables the session');
+    device.runFrames(1);
   } finally {
     scope?.dispose();
     device.restore();

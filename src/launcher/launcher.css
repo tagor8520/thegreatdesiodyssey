@@ -1,0 +1,363 @@
+/* The Great Desi Odyssey — the front page.
+   Component styles shared with the in-game pause menu live in `menu.css`; this
+   file adds the page shell, the place deck, and the page-level typography. */
+
+@import './menu.css';
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background:
+    radial-gradient(1200px 600px at 15% -10%, #eef3e6 0%, transparent 60%),
+    radial-gradient(900px 500px at 110% 10%, #f6e7cf 0%, transparent 55%),
+    var(--gdo-paper);
+  color: var(--gdo-ink);
+  font-family: var(--gdo-font);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+body:has(.gdo-shell) { overflow-y: auto; }
+
+.gdo-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 clamp(16px, 4vw, 40px);
+}
+
+/* ── top bar ─────────────────────────────────────────────────────────────── */
+
+.gdo-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 0;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: linear-gradient(180deg, rgba(246, 241, 228, .97) 60%, rgba(246, 241, 228, 0));
+  backdrop-filter: blur(6px);
+}
+
+.gdo-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  background: none;
+  padding: 4px 2px;
+  font: inherit;
+  color: var(--gdo-ink);
+  cursor: pointer;
+  letter-spacing: .01em;
+}
+
+.gdo-brand:focus-visible { outline: 3px solid rgba(40, 123, 101, .45); outline-offset: 3px; border-radius: 8px; }
+
+.gdo-brand-mark {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--gdo-green);
+  color: #f3d79a;
+  font-size: 15px;
+}
+
+.gdo-brand-text { font-size: 1.02rem; }
+.gdo-brand-text strong { font-weight: 800; }
+
+.gdo-nav { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.gdo-nav button {
+  border: 1px solid transparent;
+  background: none;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font: inherit;
+  font-size: .93rem;
+  font-weight: 600;
+  color: var(--gdo-ink-soft);
+  cursor: pointer;
+}
+
+.gdo-nav button:hover { background: rgba(40, 123, 101, .09); color: var(--gdo-green-dark); }
+.gdo-nav button[aria-current="page"] { background: var(--gdo-green); border-color: var(--gdo-green); color: #fff; }
+.gdo-nav button:focus-visible { outline: 3px solid rgba(40, 123, 101, .45); outline-offset: 2px; }
+
+/* ── layout ──────────────────────────────────────────────────────────────── */
+
+.gdo-main { flex: 1 1 auto; padding-bottom: 48px; }
+.gdo-main:focus { outline: none; }
+
+/* ── hero ────────────────────────────────────────────────────────────────── */
+
+.gdo-hero { padding: clamp(16px, 4vw, 44px) 0 clamp(20px, 3vw, 32px); max-width: 780px; }
+
+.gdo-eyebrow {
+  margin: 0 0 14px;
+  font-size: .74rem;
+  font-weight: 700;
+  letter-spacing: .22em;
+  text-transform: uppercase;
+  color: var(--gdo-brass);
+}
+
+.gdo-hero h1 {
+  margin: 0;
+  font-size: clamp(2.6rem, 7vw, 4.6rem);
+  line-height: .98;
+  letter-spacing: -.03em;
+  font-weight: 800;
+}
+
+.gdo-hero h1 span { color: var(--gdo-green); }
+
+.gdo-lede {
+  margin: 20px 0 0;
+  font-size: clamp(1rem, 2.2vw, 1.16rem);
+  color: var(--gdo-ink-soft);
+  max-width: 62ch;
+}
+
+.gdo-hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 26px; }
+.gdo-launch-note { margin: 16px 0 0; font-size: .88rem; color: var(--gdo-ink-soft); max-width: 64ch; }
+
+.gdo-last { display: flex; align-items: baseline; gap: 10px; margin-top: 18px; font-size: .9rem; }
+.gdo-last-label { font-size: .72rem; letter-spacing: .16em; text-transform: uppercase; color: var(--gdo-ink-soft); }
+
+.gdo-last-open {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--gdo-green-dark);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+/* ── links ───────────────────────────────────────────────────────────────── */
+
+.gdo-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  font-size: .9rem;
+  color: var(--gdo-green-dark);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ── sections ────────────────────────────────────────────────────────────── */
+
+.gdo-section { padding: clamp(18px, 3vw, 34px) 0; border-top: 1px solid var(--gdo-line); }
+.gdo-section:first-child { border-top: 0; }
+
+.gdo-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px 20px;
+  margin-bottom: 18px;
+}
+
+.gdo-section-head h2 { margin: 0; font-size: clamp(1.3rem, 2.6vw, 1.7rem); letter-spacing: -.015em; }
+.gdo-section-note { margin: 0; color: var(--gdo-ink-soft); font-size: .92rem; max-width: 68ch; }
+.gdo-subsection { margin-top: 30px; }
+
+/* ── place cards ─────────────────────────────────────────────────────────── */
+
+.gdo-place-grid,
+.gdo-featured {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.gdo-place {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: 16px;
+  border: 1px solid var(--gdo-line);
+  border-radius: var(--gdo-radius);
+  background: var(--gdo-paper-raised);
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: border-color .12s ease, transform .12s ease, box-shadow .12s ease;
+}
+
+.gdo-place:hover { transform: translateY(-2px); box-shadow: var(--gdo-shadow); border-color: #c9bb9d; }
+.gdo-place.is-selected { border-color: var(--gdo-green); box-shadow: inset 0 0 0 1px var(--gdo-green), var(--gdo-shadow); }
+.gdo-place-name { font-weight: 700; font-size: 1.02rem; }
+.gdo-place-city { font-size: .82rem; font-weight: 600; color: var(--gdo-green-dark); letter-spacing: .01em; }
+.gdo-place-blurb { font-size: .86rem; color: var(--gdo-ink-soft); }
+.gdo-place-coord { margin-top: 6px; font-size: .76rem; font-variant-numeric: tabular-nums; color: #8a8577; }
+
+.gdo-place-group + .gdo-place-group { margin-top: 26px; }
+
+.gdo-place-group-title {
+  margin: 0 0 10px;
+  font-size: .74rem;
+  letter-spacing: .2em;
+  text-transform: uppercase;
+  color: var(--gdo-brass);
+}
+
+/* ── launch bar ──────────────────────────────────────────────────────────── */
+
+.gdo-launch-bar {
+  position: sticky;
+  top: 66px;
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 18px;
+  margin-bottom: 20px;
+  border: 1px solid var(--gdo-line);
+  border-radius: var(--gdo-radius);
+  background: rgba(255, 253, 247, .96);
+  box-shadow: var(--gdo-shadow);
+  backdrop-filter: blur(8px);
+}
+
+.gdo-launch-bar-place { display: flex; flex-direction: column; }
+.gdo-launch-bar-place strong { font-size: 1rem; }
+.gdo-launch-bar-place span { font-size: .82rem; color: var(--gdo-ink-soft); font-variant-numeric: tabular-nums; }
+
+/* ── recents ─────────────────────────────────────────────────────────────── */
+
+.gdo-recents { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; }
+
+.gdo-recent-open {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid var(--gdo-line);
+  border-radius: 10px;
+  background: var(--gdo-paper-raised);
+  padding: 8px 12px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gdo-recent-open:hover { border-color: var(--gdo-green); }
+.gdo-recent-name { font-size: .9rem; font-weight: 600; }
+.gdo-recent-coord { font-size: .74rem; color: var(--gdo-ink-soft); font-variant-numeric: tabular-nums; }
+.gdo-recents-empty { margin: 0; color: var(--gdo-ink-soft); font-size: .9rem; }
+
+/* ── coordinate form ─────────────────────────────────────────────────────── */
+
+.gdo-coordinate-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  align-items: end;
+  gap: 14px;
+  max-width: 720px;
+}
+
+.gdo-field { display: flex; flex-direction: column; gap: 6px; font-size: .82rem; font-weight: 600; color: var(--gdo-ink-soft); }
+
+.gdo-field input {
+  border: 1px solid var(--gdo-line);
+  border-radius: 10px;
+  background: var(--gdo-paper-raised);
+  padding: 10px 12px;
+  font: inherit;
+  font-size: .98rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--gdo-ink);
+}
+
+.gdo-field input:focus-visible { outline: 3px solid rgba(40, 123, 101, .45); outline-offset: 2px; }
+
+.gdo-coordinate-form .gdo-form-note { grid-column: 1 / -1; }
+
+/* ── features and news ───────────────────────────────────────────────────── */
+
+.gdo-features { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+
+.gdo-feature {
+  border: 1px solid var(--gdo-line);
+  border-radius: var(--gdo-radius);
+  background: var(--gdo-paper-raised);
+  padding: 18px;
+}
+
+.gdo-feature h3 { margin: 10px 0 6px; font-size: 1.02rem; }
+.gdo-feature p { margin: 0; font-size: .88rem; color: var(--gdo-ink-soft); }
+.gdo-feature footer { margin-top: 12px; font-size: .74rem; letter-spacing: .06em; text-transform: uppercase; color: var(--gdo-brass); }
+.gdo-feature-glyph { font-size: 1.3rem; }
+
+.gdo-news-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+
+.gdo-news {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 4px 14px;
+  border-left: 2px solid var(--gdo-brass);
+  padding: 4px 0 4px 14px;
+}
+
+.gdo-news-tag { grid-row: 1 / span 2; font-size: .74rem; font-weight: 700; letter-spacing: .08em; color: var(--gdo-brass); }
+.gdo-news-title { font-weight: 700; font-size: .96rem; }
+.gdo-news-body { font-size: .86rem; color: var(--gdo-ink-soft); }
+
+/* ── options page ────────────────────────────────────────────────────────── */
+
+.gdo-options-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); gap: 30px; }
+.gdo-options-column { display: flex; flex-direction: column; gap: 18px; align-items: flex-start; }
+
+/* ── credits, footer ─────────────────────────────────────────────────────── */
+
+.gdo-credits { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 24px; }
+.gdo-credits h3 { margin: 0 0 8px; font-size: 1rem; }
+.gdo-attribution { margin: 0 0 10px; font-size: .82rem; color: var(--gdo-ink-soft); }
+.gdo-attribution a, .gdo-footer a, .gdo-link-row a { color: var(--gdo-green-dark); text-decoration: none; border-bottom: 1px solid rgba(40, 123, 101, .3); }
+.gdo-attribution a:hover, .gdo-footer a:hover, .gdo-link-row a:hover { border-bottom-color: var(--gdo-green-dark); }
+.gdo-link-row { display: flex; flex-wrap: wrap; gap: 14px; font-size: .9rem; }
+
+.gdo-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 22px 0 30px;
+  border-top: 1px solid var(--gdo-line);
+  font-size: .82rem;
+}
+
+.gdo-footer p { margin: 0; }
+.gdo-footer-links { display: flex; flex-wrap: wrap; gap: 14px; }
+
+@media (max-width: 860px) {
+  .gdo-options-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 720px) {
+  .gdo-topbar { flex-wrap: wrap; }
+  .gdo-news { grid-template-columns: 1fr; }
+  .gdo-news-tag { grid-row: auto; }
+  .gdo-launch-bar { position: static; }
+}

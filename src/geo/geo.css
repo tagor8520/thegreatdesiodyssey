@@ -1,3 +1,5 @@
+@import '../launcher/menu.css';
+
 .geo-game-canvas {
   display: block;
   width: 100%;
@@ -205,7 +207,7 @@
   font-size: 10px;
 }
 
-.geo-exit,
+.geo-menu,
 .geo-debug-toggle {
   position: absolute;
   top: max(12px, env(safe-area-inset-top));
@@ -217,7 +219,7 @@
   cursor: pointer;
 }
 
-.geo-exit {
+.geo-menu {
   right: max(12px, env(safe-area-inset-right));
   border: 1px solid #e5a28d;
   background: #512828e8;
@@ -433,7 +435,7 @@
 .geo-mobile .geo-stats { max-width: min(72vw, 470px); }
 .geo-mobile .geo-hud-stack { max-width: min(62vw, 260px); top: max(96px, calc(env(safe-area-inset-top) + 96px)); }
 .geo-mobile .geo-source { max-width: 360px; }
-.geo-mobile .geo-exit { padding: 9px 12px; }
+.geo-mobile .geo-menu { padding: 9px 12px; }
 
 @media (max-width: 1100px) {
   .geo-help { left: max(12px, env(safe-area-inset-left)); transform: none; }

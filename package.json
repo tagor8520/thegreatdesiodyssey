@@ -1,13 +1,13 @@
 {
   "name": "desi-odyssey",
   "version": "1.0.0",
-  "description": "The Great Desi Odyssey - A 3D voxel exploration game celebrating Indian meme culture",
+  "description": "The Great Desi Odyssey - a coordinate-driven 3D world generated from open map data",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test src/engine/*.test.js src/reference/*.test.js src/geo/*.test.js",
+    "test": "node --test src/engine/*.test.js src/geo/*.test.js src/launcher/*.test.js",
     "check": "npm test && npm run build",
     "validate:content": "node scripts/validate-content.mjs"
   },
@@ -15,8 +15,6 @@
     "@mapbox/vector-tile": "^3.0.0",
     "earcut": "^3.2.3",
     "pbf": "^5.1.2",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
     "three": "^0.170.0"
   },
   "devDependencies": {

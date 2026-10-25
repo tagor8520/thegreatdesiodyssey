@@ -85,32 +85,34 @@ The combined status matrix, task categories, dependency-ranked canonical build o
 ### Tech Stack
 - **Engine**: [Three.js](https://threejs.org/) (`three`) behind one shared procedural runtime for renderer setup, atmospheric style, lighting, water primitives, deterministic chunk generation, and instanced/merged voxel batches.
 - **Build Tool**: [Vite](https://vitejs.dev/) for HMR, code splitting, and optimized bundling.
-- **Architecture**: JavaScript ES modules. Simulation/rendering stay framework-independent; React is used only for the in-game UI overlay.
+- **Architecture**: JavaScript ES modules. Simulation, rendering, and the whole UI stay framework-independent: the front page, the options/controls menus, and the in-game pause menu are plain DOM built from pure markup functions, so there is one React-free path from the title screen to the world.
 - **Assets**: Gameplay models do not use `.gltf` or `.obj` files. They are generated from procedural geometry and voxel recipes.
 - **Lifecycle and verification**: `src/engine/LifecycleContract.js` owns the shared owner-scoped ledger (`gdo:lifecycle:v1`) that records every worker, listener, observer, timer, geometry, material, mesh, node, pool, and borrowed handle, releases them newest-first, rolls child counts into the parent, and backs `runLifecycleAudit` zero-growth remount proofs plus per-profile live-resource ceilings. `src/engine/DebugHooks.js` owns the bounded `[gdo:*]` log ring and the `window.__gdo` hook (`probe()`, `step()`, `ledger()`, `audits.run('movement')`). `src/engine/MovementAudit.js` owns the retired-capture replacement: fixed scripted paths over the real runtime with deterministic verdicts for clipping, render-order, LOD churn, subpixel/mip/fade, stability, residency, and two-pass determinism.
 - **Procedural materials**: `src/engine/ProceduralMaterials.js` owns deterministic texture bytes/checksums, filters/colour spaces, semantic recipes, uniform-only detail profiles, shared reference counting, and disposal. No texture is allocated per map tile.
 - **Vegetation compilation/rendering**: `src/engine/PlantGrammar.js` owns versioned keyed-random skeleton IR, recipes, termination budgets, placement references, and skeleton caching. `src/engine/PlantGeometryCompiler.js` owns oriented-box transforms, exposed-face reduction, packed upload attributes, and geometry fingerprints. `src/engine/PlantLodCompiler.js` owns deterministic family-aware near/mid/far reduction, projected individual-bound measurement, hysteretic/staggered selection, stable source fingerprints, cache/entry caps, diagnostics, and reference-counted lifecycle. `src/engine/PlantRenderPools.js` owns paired-variant `BufferGeometry` upload, global family/LOD instance membership, custom palette/trait/clearance attributes, exact owner release, deterministic repack, renderer-context restoration, and GPU disposal. `src/engine/PlantWind.js` owns the bounded shared wind field, precision-safe clock, reduced-motion fallback, CPU acceptance mirror, uniform budgets, and lifecycle diagnostics; the pool shader applies its whole-plant deformation without matrix animation. `src/geo/PlantClearance.js` owns actual role extents, exact map/domain acceptance, bounded crown adaptation, and diagnostics; `src/geo/PlantMorphology.js` owns the continuous artistic environment sampler, dominant-three quantization, family/density/trait correlation, and conservative compact transfer; `src/geo/GeoWaterDomains.js` owns the compact shoreline/bank/wetland distance/support field, provider-neutral water classes, quantized polygon flow, per-segment mapped tangents, overlap suppression, transfer ownership, and 512 KiB low-profile byte cap. `src/geo/GeoBuildingGrammar.js` owns stable selected-building priority, the bounded ground-road facade index, road-facing edge resolution, exact-slot roof modules, oriented role-labelled recipes, and the one focus-tile visual-detail batch caps.
-- **Low-end support**: The landing page lazy-loads WebGL. Automatic low/balanced profiles control resolution, effects, shadows, streaming distance, and decoration density. Use `?quality=low`, `?quality=balanced`, or `?quality=high` to force a profile.
+- **Entry point (`SHELL-01`)**: `index.html` boots exactly one module, `src/launcher/main.js`. It renders the front page — a place deck of real standing spots (Delhi, Mumbai, Bengaluru, Varanasi, Kochi, Leh and more), recents, typed coordinates, Options, Controls, Credits — and imports `src/geo/GeoGame.js` **only after a place is chosen**, so the first paint costs ~58 kB instead of the world's 1.3 MB. Choosing a place writes the settings through the `NET-01` envelope and mounts the world; the in-game pause menu (`Esc`, or the `Menu` button) opens the *same* Options and Controls panels, freezes the session while it is open, and offers Change place / Quit to title without a reload. Nothing auto-starts and no place is preselected.
+- **Low-end support**: The launcher lazy-loads WebGL and suggests a profile for the device (phones, touch screens, narrow windows and ≤4-core machines start at `low`). Profiles control resolution, effects, shadows, streaming distance, decoration density, tile-cache ceilings, label pools, particle counts and pedestrian slots; a profile change is stored immediately and applies the next time a place loads. Use `?quality=low`, `?quality=balanced`, or `?quality=high` to force one.
 - **Quality fixtures**: Network-free dense, sparse, concave, courtyard-hole, stacked-grade, coast, OpenMapTiles, and Shortbread fixtures compile through the production worker builders. `npm run check` verifies byte-stable regeneration/remount, disposal, exact topology, and declared memory/draw/triangle/query/worker ceilings.
 
 ### Directory Structure
 ```text
 desi-odyssey/
-├── public/content/         # Static imagery and experimental state data
+├── public/
+│   ├── content/states/     # Versioned, validated state packs (CNT-01…CNT-04)
+│   └── map-providers.json  # Tile providers the game streams from (XYZ templates or PMTiles archives)
 ├── src/
-│   ├── landing.js          # Lightweight shell; lazy-loads the selected 3D runtime
-│   ├── geo/                # Coordinate projection, MVT worker, streaming world, and controls
-│   ├── reference/          # Current curated game runtime, rendering, UI, and tests
-│   ├── engine/             # Shared lifecycle, generated materials, plant grammar, sky, palette, and lighting
-│   ├── world/              # Legacy Classic Explorer world
-│   ├── ui/                 # Legacy UI and shared docs renderer
-│   └── network/            # Experimental, currently disconnected WS client
-├── index.html              # Current optimized game
-├── classic.html            # Preserved legacy explorer
+│   ├── launcher/           # The only entry point: front page, place deck, options, controls, storage, styles
+│   ├── geo/                # Coordinate world: projection, MVT worker, streaming, player, navigation, activities
+│   ├── engine/             # Shared lifecycle, materials, plant grammar, sky, physics, menus' settings model
+│   └── docs/               # Markdown renderer for vision.html / contribution.html / tnc.html
+├── index.html              # The game (one entry point)
+├── vision.html · contribution.html · tnc.html
 └── package.json
 ```
 
-> The files in `public/content/states/` are experimental schemas and are not yet consumed by the current runtime. See `PROJECT_AUDIT.md` for the migration plan.
+The old curated tri-state voxel explorer and its legacy runtime were **deleted** (see `PROJECT_AUDIT.md`); `src/geo/` never imported them, and the three test gates that used its landmark recipes as fixtures now read `src/engine/LandmarkFixtures.js` instead.
+
+> `public/content/states/` is a versioned, validated content path (`npm run validate:content`), not a disconnected prototype any more.
 
 ### Local Development Setup
 1. **Clone the repository**:

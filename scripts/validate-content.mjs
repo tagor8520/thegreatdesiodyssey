@@ -4,7 +4,7 @@
  *
  *   npm run validate:content                       # every shipped state pack
  *   npm run validate:content -- path/to/pack.json  # one pack or landmark file
- *   npm run validate:content -- --landmarks        # the curated landmark recipes
+ *   npm run validate:content -- --landmarks        # the shipped landmark fixtures
  *   npm run validate:content -- --json             # machine-readable verdicts
  *
  * Exit code is non-zero when any input fails, so the tool drops straight into a
@@ -15,7 +15,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve, basename } from 'node:path';
 import { runContentCheck } from '../src/engine/ContentValidatorTool.js';
 import { compileLandmarkRecipe } from '../src/engine/RecipeCompiler.js';
-import { GDO_CURATED_LANDMARKS } from '../src/reference/landmarkRecipes.js';
+import { GDO_LANDMARK_FIXTURES } from '../src/engine/LandmarkFixtures.js';
 import {
   GDO_STATE_PACK_IDS, statePackSourcePath, verifyStatePackFiles,
 } from '../src/engine/StateCatalog.js';
@@ -55,7 +55,7 @@ function readJson(path) {
 
 const inputs = [];
 if (flags.has('--landmarks')) {
-  inputs.push({ label: 'curated landmarks', value: Object.values(GDO_CURATED_LANDMARKS), landmarks: true });
+  inputs.push({ label: 'landmark fixtures', value: Object.values(GDO_LANDMARK_FIXTURES), landmarks: true });
 } else if (flags.has('--list')) {
   console.log(`provider credits:\n  ${budgetProviderCredits.join('\n  ')}`);
   process.exitCode = 0;

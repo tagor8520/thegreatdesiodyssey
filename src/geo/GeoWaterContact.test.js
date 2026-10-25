@@ -4,9 +4,6 @@ import * as THREE from 'three';
 import { GeoWorld } from './GeoWorld.js';
 import { GeoPlayer, GEO_WATER_BODY_HEIGHT, GEO_WATER_GRAVITY } from './GeoPlayer.js';
 import { compileGeoFixture } from './GeoFixtures.js';
-import { BiomeManager, WORLD } from '../reference/BiomeManager.js';
-import { BridgeManager } from '../reference/BridgeManager.js';
-import { Player as CuratedPlayer } from '../reference/Player.js';
 import { GEO_SURFACE_Y } from './GeoLayers.js';
 import {
   GDO_FALL_IMPACT,
@@ -16,9 +13,11 @@ import {
 } from '../engine/WaterContact.js';
 
 /**
- * `COL-08` gate: the water sensor answers in *both* modes. The coordinate world
- * swims in a mapped pond, the curated island swims in its fixed water plane, and
- * both apply the same state, the same §9.5 step, and the same fall bands.
+ * `COL-08` gate: the water sensor answers with the same state, the same §9.5
+ * step, and the same fall bands whether it is reading a mapped pond polygon or
+ * the ground under the body. The curated island's fixed water plane that used to
+ * be the second half of this proof is gone with the old game; the mapped pond,
+ * its shore, the raised road over it, and the exit rules are the live contract.
  */
 
 globalThis.Worker ??= class { addEventListener() {} postMessage() {} terminate() {} };
@@ -184,58 +183,5 @@ test('the avatar applies the state: slower swimming, a lifted camera, capped fal
   } finally {
     player.dispose?.();
     world.dispose();
-  }
-});
-
-test('the curated island answers the same sensor from its fixed water plane', () => {
-  const scene = new THREE.Scene();
-  const manager = new BiomeManager(scene, { loadRadius: 1, unloadRadius: 2, budgetMs: 8, decorationDensity: 0 });
-  const bridges = new BridgeManager(scene);
-  const camera = new THREE.PerspectiveCamera(42, 1, 1, 320);
-  const player = new CuratedPlayer(scene, camera, bridges, {
-    inputTarget: new EventTarget(), manager,
-  });
-  try {
-    // The island's lowest point is its water: the plane at WORLD.waterY is the
-    // same sensor the coordinate world gets from mapped polygons.
-    let waterPoint = null;
-    for (let x = -120; x <= 120; x += 2) {
-      for (let z = -120; z <= 120; z += 2) {
-        const ground = manager.querySupport(x, z, {}).y;
-        if (ground < WORLD.waterY - .4 && (!waterPoint || ground < waterPoint.ground)) waterPoint = { x, z, ground };
-      }
-    }
-    assert.ok(waterPoint, 'the analytic island has water below its plane');
-    const contact = manager.waterContact(waterPoint.x, waterPoint.z, { feetY: waterPoint.ground });
-    assert.equal(contact.source, GDO_WATER_SURFACE_SOURCE.CURATED_PLANE);
-    assert.equal(contact.inWater, true);
-    assert.ok(contact.submersion > 0);
-    assert.ok([GDO_WATER_STATE.SWIMMING, GDO_WATER_STATE.SUBMERGED, GDO_WATER_STATE.WADING].includes(contact.state));
-
-    // The curated avatar reads the same record and slows down in the water.
-    player.setPosition(waterPoint.x, waterPoint.z);
-    player.analogMove.z = 1;
-    for (let step = 0; step < 30; step++) player.step(1 / 30);
-    assert.equal(player.waterState, manager.waterContact(player.position.x, player.position.z,
-      { feetY: player.position.y }).state);
-    assert.ok(player.velocity.y >= -GDO_WATER_CONTACT_PROFILES.low.maxFallSpeedRatio * 30 - 1e-9, 'fall speed capped');
-
-    // The island's highest ground is dry, at full speed.
-    let drySpot = null;
-    for (let x = -120; x <= 120; x += 4) {
-      for (let z = -120; z <= 120; z += 4) {
-        const ground = manager.querySupport(x, z, {}).y;
-        if (!drySpot || ground > drySpot.ground) drySpot = { x, z, ground };
-      }
-    }
-    assert.ok(drySpot.ground > WORLD.waterY, 'the island has land above its water plane');
-    const dryContact = manager.waterContact(drySpot.x, drySpot.z, { feetY: drySpot.ground });
-    assert.equal(dryContact.state, GDO_WATER_STATE.DRY);
-    assert.equal(dryContact.speedMultiplier, 1);
-    assert.throws(() => manager.waterContact(0, 0, { feetY: Number.NaN }), /finite coordinates/);
-  } finally {
-    player.dispose?.();
-    bridges.dispose?.();
-    manager.dispose?.();
   }
 });
