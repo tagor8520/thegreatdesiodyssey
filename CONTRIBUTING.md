@@ -115,8 +115,9 @@ bounding box, and ships as a pick-up: it declares **no** solid hitbox.
 ### Landmark recipes
 
 A landmark is declared as bounded parametric modules plus the openings that must
-stay walkable, and lives beside the code that places it (for example
-`src/reference/landmarkRecipes.js`). Four ops cover the shipped compounds:
+stay walkable. Four ops cover the shipped compounds; `src/engine/LandmarkFixtures.js`
+has two complete worked examples (`gateway`, `chariot`) and
+`npm run validate:content -- --landmarks` checks them:
 
 ```js
 {

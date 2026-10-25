@@ -26,7 +26,9 @@ import { weatherHudText } from '../engine/WeatherState.js';
 import { pedestrianHudText } from '../engine/LocalPedestrians.js';
 import { GDO_PEDESTRIAN_AUDIT_SCRIPT, createPedestrianAuditRunner, pedestrianAuditPlayerAt } from '../engine/PedestrianAudit.js';
 import { actionCapabilitiesForDomain, createActionRegistry } from '../engine/ActionRegistry.js';
-import { createAccessibilitySettings } from '../engine/AccessibilitySettings.js';
+import { createGameSettings } from '../launcher/GameSettings.js';
+import { formatCoordinate } from '../launcher/locations.js';
+import { createGameMenu } from './GameMenu.js';
 import { createAmbientAudio } from '../engine/AmbientAudio.js';
 import { createTouchActionControls, touchActionMarkup } from './GeoActionControls.js';
 import { createContentValidatorExtras } from '../engine/ContentValidatorTool.js';
@@ -38,22 +40,33 @@ function formatBytes(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-// `GME-03`/`GME-05`: the on-screen pad and the keyboard filter are generated from
-// one registry built on the coordinate player domain's declared capabilities.
-const coordinateActions = createActionRegistry({
-  capabilities: {
-    ...actionCapabilitiesForDomain(GDO_COORDINATE_PLAYER_DOMAIN),
-    // `DET-10`: the world declares that it mounts interaction targets, so the
-    // prop `interact` verb reaches the pad, the key filter, and the help line
-    // exactly like every other registered action.
-    interaction: GDO_COORDINATE_WORLD_DOMAIN.capabilities.interaction === true,
-    // `GME-07`: the world derives guidance from mapped places, so the `guide`
-    // verb reaches the same pad, filter, and help line as every other action.
-    navigation: GDO_COORDINATE_WORLD_DOMAIN.capabilities.navigation === true,
-  },
-});
+/**
+ * `GME-03`/`GME-05`: the on-screen pad and the keyboard filter are generated from
+ * one registry built on the coordinate player domain's declared capabilities.
+ *
+ * The registry is **per mount**, not per module. It is mutable state — a player's
+ * remaps live in it, and verbs are registered onto it as the world proves them —
+ * so a module-level instance would carry one session's key bindings into the next
+ * and would refuse the second mount outright ("Duplicate action id: guide"). The
+ * shell can now quit to the title and open another place without a reload, which
+ * makes that reuse a real path rather than a theoretical one.
+ */
+function coordinateActionRegistry() {
+  return createActionRegistry({
+    capabilities: {
+      ...actionCapabilitiesForDomain(GDO_COORDINATE_PLAYER_DOMAIN),
+      // `DET-10`: the world declares that it mounts interaction targets, so the
+      // prop `interact` verb reaches the pad, the key filter, and the help line
+      // exactly like every other registered action.
+      interaction: GDO_COORDINATE_WORLD_DOMAIN.capabilities.interaction === true,
+      // `GME-07`: the world derives guidance from mapped places, so the `guide`
+      // verb reaches the same pad, filter, and help line as every other action.
+      navigation: GDO_COORDINATE_WORLD_DOMAIN.capabilities.navigation === true,
+    },
+  });
+}
 
-function uiMarkup() {
+function uiMarkup(coordinateActions) {
   return `
     <div class="geo-ui">
       <div class="geo-map-labels" aria-hidden="true"></div>
@@ -87,13 +100,13 @@ function uiMarkup() {
         <div class="geo-source"></div>
       </div>
       <button class="geo-debug-toggle" type="button" aria-label="Toggle query and layer diagnostics" aria-controls="geo-debug-output" aria-pressed="false">Debug</button>
-      <button class="geo-exit" type="button" aria-label="Exit coordinate explorer">Exit</button>
+      <button class="geo-menu" type="button" aria-label="Open the pause menu" aria-haspopup="dialog">Menu</button>
       <pre id="geo-debug-output" class="geo-panel geo-debug-output" hidden aria-live="polite"></pre>
       <div class="geo-panel geo-loading" role="status" aria-live="polite">
         <div class="geo-loading-title">Downloading one small vector chunk…</div>
         <div class="geo-loading-detail">Roads are generated first. Landscape and buildings follow in a background worker.</div>
       </div>
-      <div class="geo-panel geo-help">${coordinateActions.keyboardHint()} · F3: debug · Click: look · Scroll: TPP zoom</div>
+      <div class="geo-panel geo-help">${coordinateActions.keyboardHint()} · Esc: menu · F3: debug · Click: look · Scroll: TPP zoom</div>
       <div class="geo-attribution">Map data from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> ·
         <a href="https://www.openmaptiles.org/" target="_blank" rel="noreferrer">OpenMapTiles</a> ·
         tiles by <a href="https://openfreemap.org/" target="_blank" rel="noreferrer">OpenFreeMap</a> ·
@@ -113,8 +126,11 @@ function uiMarkup() {
   `;
 }
 
-export function mountGeoGame(container, { latitude, longitude, onExitRequest, providers, profile, debugHooks = true } = {}) {
+export function mountGeoGame(container, {
+  latitude, longitude, onExitRequest, providers, profile, place = null, debugHooks = true,
+} = {}) {
   const coordinate = validateCoordinate(latitude, longitude);
+  const coordinateActions = coordinateActionRegistry();
   // `FND-07`: one ledger owns this mount. The engine, the world, every pool, the
   // DOM listeners below, and the debug hook all register in it, so `dispose()`
   // is provable and a remount cannot silently leak.
@@ -132,7 +148,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     far: 210,
   });
   const { canvas, overlay, renderer, scene, camera } = engine;
-  overlay.innerHTML = uiMarkup();
+  overlay.innerHTML = uiMarkup(coordinateActions);
 
   const coordinateElement = overlay.querySelector('.geo-coordinates');
   const mapReadoutElement = overlay.querySelector('.geo-map-readout');
@@ -150,7 +166,7 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   const loadingElement = overlay.querySelector('.geo-loading');
   const loadingTitle = overlay.querySelector('.geo-loading-title');
   const loadingDetail = overlay.querySelector('.geo-loading-detail');
-  const exitButton = overlay.querySelector('.geo-exit');
+  const menuButton = overlay.querySelector('.geo-menu');
   const debugButton = overlay.querySelector('.geo-debug-toggle');
   const debugOutput = overlay.querySelector('.geo-debug-output');
   const uiElement = overlay.querySelector('.geo-ui');
@@ -419,14 +435,39 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   // the motion/effect toggles — restored from the `NET-01` settings at boot and
   // persisted through the same envelope. The keyboard remap reaches the pad and
   // the help sentence because they all read the registry.
-  const accessibility = createAccessibilitySettings({
+  //
+  // The settings **model** is the same one the front page uses, so the pause menu
+  // and the title screen cannot disagree about what a toggle means. A change is
+  // applied live through the existing owners and then written by the world's own
+  // `NET-01` writer — there is no second settings store.
+  let menu = null;
+  const applyPreferences = () => {
+    const snapshot = settings.snapshot();
+    // Two preferences and three channels: reduced motion is the global kill
+    // switch, and each channel switch can narrow it further but never widen it.
+    world.setReducedMotion?.(snapshot.reducedMotion);
+    world.weatherEffects?.setReducedMotion?.(snapshot.reducedMotion || !snapshot.weatherEffects);
+    world.cameraFade?.setReducedMotion?.(snapshot.reducedMotion || !snapshot.cameraFade);
+    // The pad is offered on a touch device whether or not the preference was
+    // saved (a phone must not lose its controls to a default), and the preference
+    // can add it on a machine that has a touchscreen but reports none.
+    const showTouch = touchControlsEnabled || snapshot.touchControls;
+    uiElement?.classList.toggle('geo-mobile', showTouch);
+    touchElement?.setAttribute('aria-hidden', String(!showTouch));
+  };
+  const settings = createGameSettings({
     registry: coordinateActions,
-    reducedMotion: world.saveSettings?.reducedMotion ?? false,
+    saved: world.saveSettings ?? {},
+    profile: world.profile,
+    onChange: () => {
+      applyPreferences();
+      world.saveSettings = { ...world.saveSettings, ...settings.toSaveSettings() };
+      world.persistLocalSave?.();
+      menu?.refresh?.();
+    },
   });
-  accessibility.applySaveSettings(world.saveSettings ?? {});
-  world.accessibility = accessibility;
-  world.setReducedMotion?.(accessibility.settings.reducedMotion);
-  if (!accessibility.settings.cameraFade) world.cameraFade?.setReducedMotion?.(true);
+  world.accessibility = settings;
+  applyPreferences();
   // `ENV-06`: the procedural ambient beds. Every voice is generated (noise
   // loops through filters — no samples, legal by construction), the plan is
   // capped by distance and activity, and a browser without audio (or a blocked
@@ -668,8 +709,49 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   touchCleanups.push(() => touchControls.dispose());
 
   const exit = () => onExitRequest?.();
-  // The exit listener is owned by the lifecycle ledger below, together with the
-  // visibility and context listeners.
+
+  /**
+   * Pause ownership. The menu is the only thing that sets this flag: opening
+   * freezes the frame loop — no clock, no tile streaming, no input — and closing
+   * restores exactly the input state it interrupted. Escape opens it, Escape
+   * closes it, and the pause is what makes the settings screen honest: the world
+   * really is standing still while you read it.
+   */
+  let paused = false;
+  let inputWasEnabled = false;
+  const setPaused = next => {
+    if (paused === next) return paused;
+    paused = next;
+    if (paused) {
+      inputWasEnabled = player.enabled;
+      player.enabled = false;
+      player.blur?.();
+    } else {
+      player.enabled = inputWasEnabled;
+      // The gap spent in the menu is not simulated time; clamp it at the source
+      // as well as in the frame loop.
+      lastFrame = performance.now();
+    }
+    return paused;
+  };
+
+  // `gdo:gameMenu:v1`: options, controls and the two ways out, in the session
+  // rather than behind an exit button. Every settings change inside the menu is
+  // announced by the shared model, which applies it live and persists it once.
+  menu = createGameMenu({
+    container: overlay,
+    settings,
+    registry: coordinateActions,
+    place: place ?? { name: 'This place', subtitle: formatCoordinate(latitude, longitude) },
+    onOpen: () => setPaused(true),
+    onClose: () => setPaused(false),
+    onChangePlace: () => exit(),
+    onQuit: () => exit(),
+    // `MAP-09`: the session panel reads the world's own cache counters, so the
+    // menu cannot report a cache the world is not using.
+    getDiagnostics: () => ({ tileCache: world.tileCacheDiagnostics ?? null }),
+  });
+  // The pause listener is owned by the lifecycle ledger below, with the menu.
 
   const maximumPixelRatio = touchControlsEnabled ? .72 : .85;
   const minimumPixelRatio = touchControlsEnabled ? .5 : .6;
@@ -707,6 +789,10 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     const dt = Math.min(frameGap / 1000, .1);
     const cpuStart = performance.now();
     lastFrame = now;
+    // `gdo:gameMenu:v1`: while the menu is open the world is frozen. The last
+    // frame stays on screen and nothing else advances — no day clock, no tile
+    // requests, no player step, no HUD churn.
+    if (paused) { renderer.render(scene, camera); return; }
     // `ENV-02`: the world clock advances with real time, and the bounded writer
     // only touches the sky/light/fog/exposure when a value actually changed.
     timeOfDay.advance(frameGap);
@@ -829,7 +915,15 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
   lifecycle.listener(document, 'visibilitychange', visibility);
   lifecycle.listener(canvas, 'webglcontextlost', contextLost);
   lifecycle.listener(canvas, 'webglcontextrestored', contextRestored);
-  lifecycle.listener(exitButton, 'click', exit);
+  lifecycle.listener(menuButton, 'click', () => menu.open());
+  // Escape is the key a player already reaches for. When the menu is open it
+  // closes itself; this listener only ever opens it.
+  lifecycle.listener(window, 'keydown', event => {
+    if (event.code !== 'Escape' || event.defaultPrevented || menu.isOpen) return;
+    event.preventDefault();
+    menu.open();
+  });
+  lifecycle.own('handle', 'game-menu', menu, handle => handle.dispose());
   lifecycle.timer('frame', 0, () => cancelAnimationFrame(animationFrame), 'animation-loop');
   animationFrame = requestAnimationFrame(frame);
   logger.info('lifecycle', 'world mounted', {
@@ -1291,6 +1385,12 @@ export function mountGeoGame(container, { latitude, longitude, onExitRequest, pr
     scene, camera, renderer, world, player,
     lifecycle,
     logger,
+    menu,
+    settings,
+    /** Host/test entry points for the pause state; the menu owns it. */
+    openMenu: () => menu.open(),
+    closeMenu: () => menu.close(),
+    get paused() { return paused; },
     debugHooks: debugSurface,
     runMovementAudit,
     runWeatherAudit,

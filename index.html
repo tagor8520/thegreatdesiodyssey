@@ -3,34 +3,169 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>The Great Desi Odyssey | Open-Source 3D Virtual Bharat</title>
-    <meta name="title" content="The Great Desi Odyssey | Open-Source 3D Virtual Bharat" />
-    <meta name="description" content="Dive into a 3D voxel virtual universe of India! An open-source WebGL browser game celebrating regional heritage, iconic landmarks, and chaotic Indian meme culture." />
-    <meta name="keywords" content="Three.js, WebGL, open-source game, Indian meme game, virtual Bharat, voxel art, JavaScript, React, web game development, Indian gaming" />
+    <title>The Great Desi Odyssey — a walkable Bharat from open map data</title>
+    <meta name="title" content="The Great Desi Odyssey" />
+    <meta name="description" content="Pick a place in India and walk it: streets, buildings, water, weather and people generated in your browser from open map data. Free, open source, no install." />
+    <meta name="keywords" content="open map game, OpenStreetMap, WebGL, Three.js, vector tiles, virtual Bharat, browser game, open source" />
     <meta name="author" content="Pixellon.in" />
     <link rel="canonical" href="https://desiodyssey.pixellon.in/" />
 
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://desiodyssey.pixellon.in/" />
-    <meta property="og:title" content="The Great Desi Odyssey | 3D Virtual Bharat" />
-    <meta property="og:description" content="Explore India in 3D! An open-source voxel game packed with regional heritage, local street food, and pure internet meme chaos. Come build with us!" />
+    <meta property="og:title" content="The Great Desi Odyssey" />
+    <meta property="og:description" content="Choose a place — Delhi, Mumbai, Varanasi, Leh — and walk it. A 3D world generated in your browser from open map data." />
     <meta property="og:image" content="https://desiodyssey.pixellon.in/social-banner.png" />
     <meta property="og:image:width" content="1680" />
     <meta property="og:image:height" content="941" />
-    <meta property="og:image:alt" content="The Great Desi Odyssey voxel world featuring Maharashtra, Karnataka, and Kerala" />
+    <meta property="og:image:alt" content="The Great Desi Odyssey — a street-level 3D world built from open map data" />
     <meta property="og:site_name" content="The Great Desi Odyssey" />
 
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:url" content="https://desiodyssey.pixellon.in/" />
-    <meta name="twitter:title" content="The Great Desi Odyssey | 3D Virtual Bharat" />
-    <meta name="twitter:description" content="Explore India in 3D! An open-source voxel game packed with regional heritage, local street food, and pure internet meme chaos. Come build with us!" />
+    <meta name="twitter:title" content="The Great Desi Odyssey" />
+    <meta name="twitter:description" content="Choose a place and walk it. Open map data, generated on your device." />
     <meta name="twitter:image" content="https://desiodyssey.pixellon.in/social-banner.png" />
-    <meta name="twitter:image:alt" content="The Great Desi Odyssey voxel world featuring Maharashtra, Karnataka, and Kerala" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet" />
+
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23287b65'/%3E%3Cpath d='M7 24V8h9a8 8 0 0 1 0 16Z' fill='%23edbb69'/%3E%3C/svg%3E" />
-    <style>html,body,#reference-game{width:100%;height:100%;margin:0;overflow:hidden;background:#9fc8e0}button:focus-visible{outline:3px solid #fff;outline-offset:2px}</style>
+    <style>
+      /* Only what must exist before the first stylesheet loads: the game canvas
+         owns the viewport once a place is chosen, and the launcher scrolls. */
+      html, body { width: 100%; min-height: 100%; margin: 0; }
+      body { background: #f6f1e4; }
+      #game-root { min-height: 100vh; }
+      /* A chosen place makes the game own the viewport: the canvas sizes itself
+         to this box, so the box has to be definite rather than min-height. */
+      #game-root.gdo-playing { position: fixed; inset: 0; height: 100%; overflow: hidden; }
+      body:has(#game-root.gdo-playing) { overflow: hidden; }
+      button:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+      /* The boot surface: if the module never mounts, say so in the page rather
+         than leaving an empty page behind. It shares the front page's palette so
+         a failure reads as part of the site, not a crash. */
+      .gdo-boot {
+        max-width: 34rem;
+        margin: 18vh auto;
+        padding: 1.5rem 1.75rem;
+        border-radius: 18px;
+        background: #fffdf7;
+        border: 1px solid #e4dcc6;
+        box-shadow: 0 18px 40px -30px rgba(32, 42, 36, .55);
+        color: #2c3a33;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        line-height: 1.6;
+      }
+      .gdo-boot h1 { margin: 0 0 .5rem; font-size: 1.15rem; letter-spacing: .01em; }
+      .gdo-boot p { margin: 0 0 .75rem; }
+      .gdo-boot code {
+        display: block;
+        margin-top: .75rem;
+        padding: .6rem .7rem;
+        border-radius: 10px;
+        background: #f3eee0;
+        font-size: .8rem;
+        word-break: break-word;
+        color: #6b4a2f;
+      }
+      .gdo-boot button {
+        font: inherit;
+        font-weight: 600;
+        padding: .55rem 1rem;
+        border-radius: 999px;
+        border: 0;
+        background: #287b65;
+        color: #fff;
+        cursor: pointer;
+      }
+    </style>
   </head>
   <body>
-    <main id="reference-game"></main>
-    <script type="module" src="/src/landing.js"></script>
+    <main id="game-root"></main>
+
+    <noscript>
+      <div class="gdo-boot">
+        <h1>The Great Desi Odyssey needs JavaScript</h1>
+        <p>The world is generated in your browser from open map data, so there is
+          nothing to download and nothing to install — but there is also nothing to
+          show until scripts are allowed on this page.</p>
+      </div>
+    </noscript>
+
+    <script>
+      /* A reviewer should never meet a blank page. If the entry module throws, or
+         never arrives, the page says what happened in words and offers the one
+         action worth offering: reload. Nothing here touches the launcher while it
+         is alive — the check is "did `.gdo-shell` ever appear", and this script
+         removes itself from the DOM the moment it has said its piece. */
+      (function () {
+        var root = document.getElementById('game-root');
+        if (!root) return;
+        var armed = true;
+        var heading = null;
+
+        function disarm() {
+          if (!armed) return;
+          armed = false;
+          if (observer) observer.disconnect();
+          window.removeEventListener('error', onError, true);
+          window.removeEventListener('unhandledrejection', onRejection);
+          clearTimeout(deadline);
+        }
+
+        function report(reason) {
+          if (!armed) return;
+          disarm();
+          var box = document.createElement('div');
+          box.className = 'gdo-boot';
+          heading = document.createElement('h1');
+          heading.textContent = 'The front page did not start';
+          var body = document.createElement('p');
+          body.textContent = 'Something went wrong before the launcher could mount. '
+            + 'The details are below and in the console; reloading usually fixes a '
+            + 'network hiccup.';
+          box.appendChild(heading);
+          box.appendChild(body);
+          var detail = document.createElement('code');
+          detail.textContent = String(reason || 'unknown error');
+          box.appendChild(detail);
+          var reload = document.createElement('button');
+          reload.type = 'button';
+          reload.textContent = 'Reload the page';
+          reload.addEventListener('click', function () { location.reload(); });
+          box.appendChild(reload);
+          root.replaceChildren(box);
+        }
+
+        function onError(event) {
+          // Resource failures (a missing icon, say) are not boot failures.
+          if (event && event.target && event.target !== window && event.target.tagName) return;
+          report((event && event.message) || 'script error');
+        }
+
+        function onRejection(event) {
+          var reason = event && event.reason;
+          report((reason && (reason.message || reason)) || 'unhandled rejection');
+        }
+
+        // The moment the launcher exists, this watchdog is wrong to exist: a later
+        // runtime error inside a *started* game must not be dressed up as a failed
+        // front page, so it disarms itself for good.
+        var observer = window.MutationObserver
+          ? new MutationObserver(function () { if (root.querySelector('.gdo-shell')) disarm(); })
+          : null;
+        if (observer) observer.observe(root, { childList: true, subtree: true });
+        if (root.querySelector('.gdo-shell')) { disarm(); return; }
+
+        var deadline = setTimeout(function () {
+          report('the entry module did not mount the launcher');
+        }, 8000);
+
+        window.addEventListener('error', onError, true);
+        window.addEventListener('unhandledrejection', onRejection);
+      })();
+    </script>
+    <script type="module" src="/src/launcher/main.js"></script>
   </body>
 </html>

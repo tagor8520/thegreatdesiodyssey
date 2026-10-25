@@ -9,7 +9,7 @@ import {
   createActionRegistry,
 } from './ActionRegistry.js';
 import { GDO_COORDINATE_PLAYER_DOMAIN } from '../geo/GeoPlayer.js';
-import { GDO_CURATED_PLAYER_DOMAIN } from '../reference/Player.js';
+import { definePlayerDomain } from './DomainInterface.js';
 import { featureNamespace } from './FeatureVersions.js';
 
 /**
@@ -65,12 +65,20 @@ test('an action whose domain capability is missing is skipped, not half-wired', 
   assert.equal(withoutJump.has('jump'), false);
   assert.equal(withoutJump.touchControls().length, 3, 'the joystick and the held run button follow their actions');
 
-  // Both live players declare their own capability sets and both are complete.
+  // Two independent player domains that declare the same capabilities must reach
+  // the same action list: the registry is derived, never hand-listed per world.
   const coordinate = createActionRegistry({ capabilities: actionCapabilitiesForDomain(GDO_COORDINATE_PLAYER_DOMAIN) });
-  const curated = createActionRegistry({ capabilities: actionCapabilitiesForDomain(GDO_CURATED_PLAYER_DOMAIN) });
-  assert.deepEqual(coordinate.actions().map(action => action.id), curated.actions().map(action => action.id));
+  const alternate = definePlayerDomain({
+    id: 'fixture-player',
+    label: 'Fixture player',
+    worldId: 'fixture',
+    cameraModes: ['third-person', 'map'],
+    capabilities: { analogInput: true, jump: true, pointerLook: true },
+  });
+  const other = createActionRegistry({ capabilities: actionCapabilitiesForDomain(alternate) });
+  assert.deepEqual(coordinate.actions().map(action => action.id), other.actions().map(action => action.id));
   assert.equal(actionCapabilitiesForDomain(GDO_COORDINATE_PLAYER_DOMAIN).cameraToggle, true);
-  assert.equal(actionCapabilitiesForDomain(GDO_CURATED_PLAYER_DOMAIN).cameraToggle, true);
+  assert.equal(actionCapabilitiesForDomain(alternate).cameraToggle, true);
   assert.equal(actionCapabilitiesForDomain({}).cameraToggle, false);
   assert.equal(actionCapabilitiesForDomain({ cameraModes: ['map', 'third-person'] }).pointerLook, true);
 });

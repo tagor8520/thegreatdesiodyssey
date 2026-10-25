@@ -1,6 +1,36 @@
 # The Great Desi Odyssey — Technical, Product, and Scalability Audit
 
 **Audit date:** 2026-09-15
+
+> **Post-audit update (2026-10-25) — the strip and the shell.** This document is
+> kept as written: it is the record of what the project looked like on
+> 2026-09-15, and its findings are what drove the roadmap. Two of its blockers
+> have since been closed outright rather than managed:
+>
+> * **§1 blocker 1, "two competing game implementations", is gone.** The curated
+>   tri-state voxel explorer and its whole legacy runtime were deleted —
+>   `src/reference/`, `src/world/`, `src/ui/` (the docs renderer moved to
+>   `src/docs/`), `src/main.js`, `classic.html`, `reference.html`, and the seven
+>   orphan engine modules only they imported (`PlayerController`,
+>   `LerpPlayerController`, `TerrainPhysics`, `CollectibleManager`, `Input`,
+>   `Renderer`). React and react-dom left the dependency list with them; the game
+>   is four dependencies again. Six test files died with the code they tested;
+>   the three gates that only *used* curated data as fixtures
+>   (`ActionRegistry`, `ContentValidator`, `GeoWaterContact`) were re-pointed at
+>   `src/engine/LandmarkFixtures.js` and a locally declared player domain, so no
+>   gate was lost with the implementation. The suite went 636 → 651 tests while
+>   shrinking by ~8 200 lines of product code.
+> * **§1 blocker 5, "the game allocates and renders behind the landing page", is
+>   closed by construction.** `index.html` now boots one module,
+>   `src/launcher/main.js` (57.6 kB), and the world is a dynamic import taken
+>   only after a place is chosen (1.31 MB). There is no longer a shell that
+>   mounts a world nobody asked for.
+>
+> Everything else below — the streaming radius, the draw-call count, the
+> unconditional effects, the hardcoded extent — describes the deleted runtime and
+> is preserved as history; the coordinate world's own answers live in
+> `feature-roadmap/README.md` rows `MAP-*`/`COL-*`/`QLT-*` and in
+> `MAP_STREAMING_RESEARCH.md`.
 **Baseline:** `6cca7483cf0eb515277b248ab2282586d66a1b81`
 **Scope:** Current `/` game, legacy `/classic.html` game, content model, performance architecture, product aim, and defensibility.
 

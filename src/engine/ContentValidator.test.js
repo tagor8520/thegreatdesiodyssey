@@ -12,7 +12,7 @@ import {
 } from './ContentValidator.js';
 import { featureNamespace } from './FeatureVersions.js';
 import { GDO_CONTENT_SCHEMA_VERSION } from './ContentSchema.js';
-import { GDO_CURATED_LANDMARKS } from '../reference/landmarkRecipes.js';
+import { GDO_LANDMARK_FIXTURES } from './LandmarkFixtures.js';
 import {
   createContentValidatorExtras,
   describeContentInput,
@@ -206,7 +206,7 @@ test('attribution is verified against the real provider table', () => {
 
 test('openings are probed, and intruding masonry fails the check', () => {
   // The shipped gateway recipe is clean: nothing intrudes into its arch.
-  const gateway = validateLandmarkRecipe(GDO_CURATED_LANDMARKS.gateway);
+  const gateway = validateLandmarkRecipe(GDO_LANDMARK_FIXTURES.gateway);
   assert.equal(gateway.kind, 'landmark');
   assert.equal(gateway.ok, true, formatValidatorReport(gateway).join('\n'));
   assert.equal(check(gateway, 'openings').ok, true);
@@ -215,10 +215,10 @@ test('openings are probed, and intruding masonry fails the check', () => {
   assert.equal(gateway.compiled[0].openings[0].enclosedModules.length, 0);
   assert.equal(check(gateway, 'attribution').skipped, true);
   // A pinned fingerprint that no longer matches fails determinism by name.
-  const pinned = validateLandmarkRecipe(GDO_CURATED_LANDMARKS.gateway, { expectedFingerprints: 'deadbeef' });
+  const pinned = validateLandmarkRecipe(GDO_LANDMARK_FIXTURES.gateway, { expectedFingerprints: 'deadbeef' });
   assert.equal(check(pinned, 'determinism').ok, false);
   assert.match(check(pinned, 'determinism').detail, /does not match the pinned deadbeef/);
-  assert.equal(check(validateLandmarkRecipe(GDO_CURATED_LANDMARKS.gateway,
+  assert.equal(check(validateLandmarkRecipe(GDO_LANDMARK_FIXTURES.gateway,
     { expectedFingerprints: gateway.fingerprint }), 'determinism').ok, true);
 
   // A block that protrudes into the opening without being enclosed is caught.
@@ -257,7 +257,7 @@ test('openings are probed, and intruding masonry fails the check', () => {
   assert.equal(check(report, 'bounds').ok, true);
   assert.equal(report.ok, false);
   // A compiled landmark that leaves its declared area fails bounds by name.
-  const escaped = validateLandmarkRecipe(GDO_CURATED_LANDMARKS.gateway,
+  const escaped = validateLandmarkRecipe(GDO_LANDMARK_FIXTURES.gateway,
     { bounds: { minX: 0, maxX: 10, minZ: 0, maxZ: 10 } });
   assert.equal(check(escaped, 'bounds').ok, false);
   assert.match(check(escaped, 'bounds').detail, /leave the declared area/);
@@ -269,7 +269,7 @@ test('openings are probed, and intruding masonry fails the check', () => {
 });
 
 test('the preview is bounded, legend-true, and refuses an empty recipe', () => {
-  const compiled = compileLandmarkRecipe(GDO_CURATED_LANDMARKS.chariot);
+  const compiled = compileLandmarkRecipe(GDO_LANDMARK_FIXTURES.chariot);
   const preview = renderModulePreview(compiled, { width: 999, height: 999 });
   assert.ok(preview.columns <= GDO_CONTENT_VALIDATOR_LIMITS.maxPreviewWidth);
   assert.ok(preview.rows <= GDO_CONTENT_VALIDATOR_LIMITS.maxPreviewHeight);
@@ -300,8 +300,8 @@ test('the preview is bounded, legend-true, and refuses an empty recipe', () => {
 test('the tool surface decides what it was handed and reports it the same way', () => {
   assert.equal(describeContentInput(minimalPack()), 'state-pack');
   assert.equal(describeContentInput({ stateId: 'x', collectibles: [] }), 'state-pack');
-  assert.equal(describeContentInput(GDO_CURATED_LANDMARKS.chariot), 'landmark');
-  assert.equal(describeContentInput([GDO_CURATED_LANDMARKS.gateway, GDO_CURATED_LANDMARKS.chariot]), 'landmark');
+  assert.equal(describeContentInput(GDO_LANDMARK_FIXTURES.chariot), 'landmark');
+  assert.equal(describeContentInput([GDO_LANDMARK_FIXTURES.gateway, GDO_LANDMARK_FIXTURES.chariot]), 'landmark');
   assert.throws(() => describeContentInput([]), /at least one landmark recipe/);
   assert.throws(() => describeContentInput(null), /needs a state pack or a landmark recipe/);
   assert.throws(() => describeContentInput({ nothing: true }), /with `collectibles`/);
@@ -317,7 +317,7 @@ test('the tool surface decides what it was handed and reports it the same way', 
   assert.deepEqual([...pack.summary.skipped], ['attribution', 'openings']);
   assert.equal(pack.report.preview.lines.length > 0, true);
 
-  const landmark = runContentCheck(GDO_CURATED_LANDMARKS.gateway, { preview: false });
+  const landmark = runContentCheck(GDO_LANDMARK_FIXTURES.gateway, { preview: false });
   assert.equal(landmark.ok, true);
   assert.equal(landmark.kind, 'landmark');
   assert.equal(landmark.report.preview, null);
@@ -355,7 +355,7 @@ test('the page installs the content tool on the debug hook, reachable from a con
   assert.equal(unverified.ok, false);
   assert.deepEqual([...unverified.summary.failed], ['attribution']);
   // The preview is readable straight from the console.
-  const preview = hook.previewContent(GDO_CURATED_LANDMARKS.chariot);
+  const preview = hook.previewContent(GDO_LANDMARK_FIXTURES.chariot);
   assert.ok(preview.columns > 0 && preview.rows > 0);
   // Unusable input is answered, never thrown: a console typo cannot break the hook.
   const refused = hook.validateContent({ oops: true });
