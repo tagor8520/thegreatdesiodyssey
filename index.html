@@ -42,10 +42,130 @@
       #game-root.gdo-playing { position: fixed; inset: 0; height: 100%; overflow: hidden; }
       body:has(#game-root.gdo-playing) { overflow: hidden; }
       button:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+      /* The boot surface: if the module never mounts, say so in the page rather
+         than leaving an empty page behind. It shares the front page's palette so
+         a failure reads as part of the site, not a crash. */
+      .gdo-boot {
+        max-width: 34rem;
+        margin: 18vh auto;
+        padding: 1.5rem 1.75rem;
+        border-radius: 18px;
+        background: #fffdf7;
+        border: 1px solid #e4dcc6;
+        box-shadow: 0 18px 40px -30px rgba(32, 42, 36, .55);
+        color: #2c3a33;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        line-height: 1.6;
+      }
+      .gdo-boot h1 { margin: 0 0 .5rem; font-size: 1.15rem; letter-spacing: .01em; }
+      .gdo-boot p { margin: 0 0 .75rem; }
+      .gdo-boot code {
+        display: block;
+        margin-top: .75rem;
+        padding: .6rem .7rem;
+        border-radius: 10px;
+        background: #f3eee0;
+        font-size: .8rem;
+        word-break: break-word;
+        color: #6b4a2f;
+      }
+      .gdo-boot button {
+        font: inherit;
+        font-weight: 600;
+        padding: .55rem 1rem;
+        border-radius: 999px;
+        border: 0;
+        background: #287b65;
+        color: #fff;
+        cursor: pointer;
+      }
     </style>
   </head>
   <body>
     <main id="game-root"></main>
+
+    <noscript>
+      <div class="gdo-boot">
+        <h1>The Great Desi Odyssey needs JavaScript</h1>
+        <p>The world is generated in your browser from open map data, so there is
+          nothing to download and nothing to install — but there is also nothing to
+          show until scripts are allowed on this page.</p>
+      </div>
+    </noscript>
+
+    <script>
+      /* A reviewer should never meet a blank page. If the entry module throws, or
+         never arrives, the page says what happened in words and offers the one
+         action worth offering: reload. Nothing here touches the launcher while it
+         is alive — the check is "did `.gdo-shell` ever appear", and this script
+         removes itself from the DOM the moment it has said its piece. */
+      (function () {
+        var root = document.getElementById('game-root');
+        if (!root) return;
+        var armed = true;
+        var heading = null;
+
+        function disarm() {
+          if (!armed) return;
+          armed = false;
+          if (observer) observer.disconnect();
+          window.removeEventListener('error', onError, true);
+          window.removeEventListener('unhandledrejection', onRejection);
+          clearTimeout(deadline);
+        }
+
+        function report(reason) {
+          if (!armed) return;
+          disarm();
+          var box = document.createElement('div');
+          box.className = 'gdo-boot';
+          heading = document.createElement('h1');
+          heading.textContent = 'The front page did not start';
+          var body = document.createElement('p');
+          body.textContent = 'Something went wrong before the launcher could mount. '
+            + 'The details are below and in the console; reloading usually fixes a '
+            + 'network hiccup.';
+          box.appendChild(heading);
+          box.appendChild(body);
+          var detail = document.createElement('code');
+          detail.textContent = String(reason || 'unknown error');
+          box.appendChild(detail);
+          var reload = document.createElement('button');
+          reload.type = 'button';
+          reload.textContent = 'Reload the page';
+          reload.addEventListener('click', function () { location.reload(); });
+          box.appendChild(reload);
+          root.replaceChildren(box);
+        }
+
+        function onError(event) {
+          // Resource failures (a missing icon, say) are not boot failures.
+          if (event && event.target && event.target !== window && event.target.tagName) return;
+          report((event && event.message) || 'script error');
+        }
+
+        function onRejection(event) {
+          var reason = event && event.reason;
+          report((reason && (reason.message || reason)) || 'unhandled rejection');
+        }
+
+        // The moment the launcher exists, this watchdog is wrong to exist: a later
+        // runtime error inside a *started* game must not be dressed up as a failed
+        // front page, so it disarms itself for good.
+        var observer = window.MutationObserver
+          ? new MutationObserver(function () { if (root.querySelector('.gdo-shell')) disarm(); })
+          : null;
+        if (observer) observer.observe(root, { childList: true, subtree: true });
+        if (root.querySelector('.gdo-shell')) { disarm(); return; }
+
+        var deadline = setTimeout(function () {
+          report('the entry module did not mount the launcher');
+        }, 8000);
+
+        window.addEventListener('error', onError, true);
+        window.addEventListener('unhandledrejection', onRejection);
+      })();
+    </script>
     <script type="module" src="/src/launcher/main.js"></script>
   </body>
 </html>
