@@ -9,10 +9,14 @@ import {
   createTileRetainer,
   mapTileUrl,
 } from './GeoTileCacheFetch.js';
+import { GDO_PROVIDER_KIND, loadPmtilesTile, providerKind } from './PmtilesSource.js';
 
 const controllers = new Map();
 const cancelled = new Set();
 const retainer = createTileRetainer();
+// `MAP-10a`: PMTiles sources are per archive URL, so a header and its root
+// directory are read once per session rather than once per tile.
+const pmtilesSources = new Map();
 
 /**
  * Cache-first fetch. Providers are tried in order and the persistent cache is
@@ -29,6 +33,18 @@ async function fetchTile(request, signal) {
   });
   return fetcher.load(request, signal, async (provider, loadRequest, abortSignal) => {
     const url = mapTileUrl(provider.url, loadRequest);
+    // `MAP-10a`: an archive is a provider too. The tile is read out of it over a
+    // range request and arrives decompressed, so everything downstream — the
+    // decode check, the cache policy, the schema adapter — is unchanged.
+    if (providerKind(provider) === GDO_PROVIDER_KIND.PMTILES) {
+      const tile = await loadPmtilesTile(provider, loadRequest, {
+        sources: pmtilesSources,
+        signal: abortSignal,
+      });
+      if (!tile.ok) throw new Error(`PMTiles ${tile.refusal}`);
+      if (!tile.data?.byteLength) throw new Error('empty tile');
+      return { data: tile.data, url: `${provider.url}#${loadRequest.zoom}/${loadRequest.urlX}/${loadRequest.urlY}`, cacheControl: '' };
+    }
     const response = await fetch(url, {
       signal: abortSignal,
       mode: 'cors',
